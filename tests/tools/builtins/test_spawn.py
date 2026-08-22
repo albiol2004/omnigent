@@ -13,7 +13,7 @@ import jsonschema
 import pytest
 
 from omnigent.spec.types import AgentSpec
-from omnigent.tools.builtins.spawn import _build_sys_session_send_schema
+from omnigent.tools.builtins.spawn import SysSessionCreateTool, _build_sys_session_send_schema
 
 
 def _args_schema() -> dict:
@@ -56,6 +56,23 @@ def test_file_ids_present_and_optional() -> None:
     assert "file_ids" not in branch["required"]
     assert branch["required"] == ["input"]
     assert branch["additionalProperties"] is False
+
+
+def test_session_create_reasoning_effort_present_and_optional() -> None:
+    properties = SysSessionCreateTool().get_schema()["function"]["parameters"]["properties"]
+    assert properties["reasoning_effort"]["enum"] == [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
+    assert (
+        "reasoning_effort"
+        not in SysSessionCreateTool().get_schema()["function"]["parameters"]["required"]
+    )
 
 
 def test_description_mentions_file_ids() -> None:

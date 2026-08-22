@@ -58,6 +58,7 @@ from omnigent.model_override import (
     validate_model_override,
 )
 from omnigent.native_coding_agents import public_agent_name
+from omnigent.reasoning_effort import EFFORT_VALUES, validate_effort
 from omnigent.runtime import pending_elicitations
 from omnigent.session_lifecycle import (
     CLOSED_LABEL_KEY,
@@ -2278,6 +2279,7 @@ def _build_session_create_body(
     title: object,
     message: object,
     model: object = None,
+    reasoning_effort: object = None,
 ) -> _JsonObject:
     """
     Build the JSON ``POST /v1/sessions`` body for ``sys_session_create``.
@@ -2306,6 +2308,9 @@ def _build_session_create_body(
         body["title"] = title
     if isinstance(model, str) and model:
         body["model_override"] = model
+    effort = validate_effort(reasoning_effort, "session", EFFORT_VALUES)
+    if effort is not None:
+        body["reasoning_effort"] = effort
     if isinstance(message, str) and message:
         body["initial_items"] = [
             {
@@ -2454,13 +2459,17 @@ async def _execute_session_create(
             agent_spec=agent_spec,
             runner_workspace=runner_workspace,
         )
-    body = _build_session_create_body(
-        str(agent_id),
-        conversation_id,
-        args.get("title"),
-        args.get("message"),
-        model=args.get("model"),
-    )
+    try:
+        body = _build_session_create_body(
+            str(agent_id),
+            conversation_id,
+            args.get("title"),
+            args.get("message"),
+            model=args.get("model"),
+            reasoning_effort=args.get("reasoning_effort"),
+        )
+    except ValueError as exc:
+        return json.dumps({"error": f"invalid reasoning_effort: {exc}"})
     try:
         resp = await server_client.post("/v1/sessions", json=body, timeout=30.0)
     except Exception as exc:  # noqa: BLE001
@@ -2626,6 +2635,12 @@ async def _upload_config_bundle(
     title = args.get("title")
     if isinstance(title, str) and title:
         metadata["title"] = title
+    try:
+        effort = validate_effort(args.get("reasoning_effort"), "session", EFFORT_VALUES)
+    except ValueError as exc:
+        return json.dumps({"error": f"invalid reasoning_effort: {exc}"})
+    if effort is not None:
+        metadata["reasoning_effort"] = effort
     try:
         resp = await server_client.post(
             "/v1/sessions",

@@ -494,6 +494,7 @@ from omnigent.server.routes._sessions.helpers import (
     _require_external_status_forward as _require_external_status_forward,
     _require_host_conn_for_worktree as _require_host_conn_for_worktree,
     _reset_runner_resources_after_switch_impl as _reset_runner_resources_after_switch_impl,
+    _resolve_agent_spec as _resolve_agent_spec,
     _resolve_llm_model as _resolve_llm_model,
     _resolve_skill_meta_text_via_runner as _resolve_skill_meta_text_via_runner,
     _resolve_subagent_spec as _resolve_subagent_spec,

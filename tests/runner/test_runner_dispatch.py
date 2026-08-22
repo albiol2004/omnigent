@@ -6254,7 +6254,14 @@ async def test_sys_session_create_spawns_child_under_caller() -> None:
     ) as server_client:
         output = await execute_tool(
             tool_name="sys_session_create",
-            arguments=json.dumps({"agent_id": "ag_x", "title": "auth", "message": "start"}),
+            arguments=json.dumps(
+                {
+                    "agent_id": "ag_x",
+                    "title": "auth",
+                    "message": "start",
+                    "reasoning_effort": "medium",
+                }
+            ),
             server_client=server_client,
             conversation_id="conv_caller",
         )
@@ -6264,6 +6271,7 @@ async def test_sys_session_create_spawns_child_under_caller() -> None:
     assert captured["parent_session_id"] == "conv_caller"
     assert captured["agent_id"] == "ag_x"
     assert captured["title"] == "auth"
+    assert captured["reasoning_effort"] == "medium"
     assert captured["initial_items"][0]["data"]["content"][0]["text"] == "start"
     handle = json.loads(output)
     assert handle["conversation_id"] == "conv_child"
@@ -6388,7 +6396,12 @@ async def test_sys_session_create_bundle_mode_uploads_child_under_caller(
         output = await execute_tool(
             tool_name="sys_session_create",
             arguments=json.dumps(
-                {"config_path": "helper.yaml", "title": "auth", "message": "start"}
+                {
+                    "config_path": "helper.yaml",
+                    "title": "auth",
+                    "message": "start",
+                    "reasoning_effort": "high",
+                }
             ),
             server_client=server_client,
             conversation_id="conv_caller",
@@ -6401,7 +6414,11 @@ async def test_sys_session_create_bundle_mode_uploads_child_under_caller(
         f"expected exactly one create POST, got {len(create_requests)}"
     )
     parts = _parse_multipart_create(create_requests[0])
-    assert parts["metadata"] == {"parent_session_id": "conv_caller", "title": "auth"}
+    assert parts["metadata"] == {
+        "parent_session_id": "conv_caller",
+        "title": "auth",
+        "reasoning_effort": "high",
+    }
 
     # The uploaded bundle is a gzipped tar holding the authored config
     # verbatim — proves the local file traversed materialize → tar.

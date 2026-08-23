@@ -13,6 +13,12 @@ website under `/releases`.
   separate wall-clock ceiling bounds a call whose prompt never renders at all, so a turn that
   emits several tool calls at once no longer exhausts the queued calls' attempts before cursor
   ever shows them.
+- [Bug fix] A stale pending marker under `--yolo` / `--force` / `-f` no longer surfaces a phantom
+  approval card once the wall-clock ceiling fires with no accept prompt on screen (cursor's Run
+  Everything mode already executed the call; store.db just hadn't caught up) — it is now resolved
+  locally as auto-allowed/stale instead of blocking a piloted parent on a card nobody can click.
+  Set `OMNIGENT_CURSOR_YOLO_STALE_SURFACES_CARD=1` to restore the previous card-surfacing
+  behaviour.
 
 ## [v0.9.0] — 2026-08-11
 

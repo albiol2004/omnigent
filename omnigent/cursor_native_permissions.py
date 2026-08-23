@@ -55,6 +55,7 @@ from omnigent.cursor_native_bridge import capture_cursor_pane, send_cursor_pane_
 # transcript-based detector binds to the SAME cursor chat the forwarder mirrors
 # (one chat per workspace) and reads the live ``-wal`` state correctly.
 from omnigent.cursor_native_forwarder import _discover_store, _read_blob_rows
+from omnigent.process_logging import env_truthy
 
 _logger = logging.getLogger(__name__)
 
@@ -382,6 +383,16 @@ _YOLO_ACCEPT_MAX_ATTEMPTS = _env_int("OMNIGENT_CURSOR_YOLO_ACCEPT_ATTEMPTS", 5)
 # needs a bound so a genuinely stale head cannot block every call behind it
 # forever.
 _YOLO_ACCEPT_STALE_CEILING_S = 60.0
+
+# When the stale ceiling above fires, the pane shows no accept prompt at all
+# (only a live prompt that keystrokes don't clear goes through the attempts
+# path). That means cursor's Run Everything mode already executed the call —
+# nobody is being asked anything — so the default is to drop the pending
+# marker locally rather than surface a human ApprovalCard for a decision that
+# was already made. Set this truthy to restore the pre-existing behaviour
+# (surface a card at the stale ceiling) if an operator ever needs the old
+# fail-safe back.
+_YOLO_STALE_SURFACES_CARD = env_truthy(os.environ.get("OMNIGENT_CURSOR_YOLO_STALE_SURFACES_CARD"))
 
 # Cursor's approval block advertises its accept key as a parenthesised hint on
 # the chosen option line, e.g. ``→ Run (once) (y)``. Auto-accept requires that
@@ -774,6 +785,14 @@ class _YoloAccept(enum.Enum):
     SURFACE_CARD = "surface_card"
     """Auto-accept is not clearing this gate; fall back to the web card."""
 
+    STALE_DROP = "stale_drop"
+    """The stale-marker ceiling fired with no prompt ever rendered: cursor's
+    Run Everything mode already executed this call and store.db's pending
+    marker is simply behind. No human is being asked anything, so drop it from
+    further consideration instead of surfacing a phantom card (see
+    :data:`_YOLO_STALE_SURFACES_CARD` to restore the old surface-a-card
+    behaviour)."""
+
 
 async def _yolo_auto_accept(
     call: CursorPendingToolCall,
@@ -854,20 +873,36 @@ async def _yolo_auto_accept(
     if not _pane_shows_accept_prompt(pane):
         pending_for = now - pending_since
         if pending_for >= _YOLO_ACCEPT_STALE_CEILING_S:
-            # Still nothing on screen after a generous wait: a stale marker
-            # (cursor already resolved it, store.db just hasn't caught up),
-            # not a render that's merely running late. Surface it rather than
-            # blocking every call behind it in the queue forever.
+            # Still nothing on screen after a generous wait: a stale marker —
+            # cursor already resolved it (Run Everything executed the call and
+            # moved on), store.db just hasn't caught up — not a render that's
+            # merely running late. Nobody is being asked anything, so surfacing
+            # a human ApprovalCard here is wrong: it would just block the
+            # parent on a phantom. Drop it locally instead, unless the operator
+            # has asked for the old surface-a-card fail-safe.
+            if _YOLO_STALE_SURFACES_CARD:
+                _logger.warning(
+                    "cursor elicitation: %s stayed pending %.0fs with no accept prompt "
+                    "rendered; surfacing a card; session=%s tool_call_id=%s pane_tail=%r",
+                    call.tool_name,
+                    pending_for,
+                    session_id,
+                    call.tool_call_id.splitlines()[0],
+                    _pane_tail(pane),
+                )
+                return _YoloAccept.SURFACE_CARD
             _logger.warning(
-                "cursor elicitation: %s stayed pending %.0fs with no accept prompt "
-                "rendered; surfacing a card; session=%s tool_call_id=%s pane_tail=%r",
-                call.tool_name,
-                pending_for,
+                "cursor elicitation: stale pending marker under yolo; treating as already "
+                "executed; no card; session=%s tool_call_id=%s tool=%s pending=%.0fs "
+                "run_everything_marker=%s pane_tail=%r",
                 session_id,
                 call.tool_call_id.splitlines()[0],
+                call.tool_name,
+                pending_for,
+                "Run Everything" in pane,
                 _pane_tail(pane),
             )
-            return _YoloAccept.SURFACE_CARD
+            return _YoloAccept.STALE_DROP
         # The store says pending but nothing on screen takes the accept key
         # yet — cursor may still be finishing the previous call's prompt.
         # Wait without touching the attempts budget above: that budget is for
@@ -1072,6 +1107,19 @@ async def supervise_cursor_transcript_elicitations(
                             attempts_by_call=auto_accept_attempts,
                             allow_send=not auto_accepted_this_pass,
                         )
+                        if outcome is _YoloAccept.STALE_DROP:
+                            # No card was ever parked for this call — cursor
+                            # already executed it — so there is nothing to
+                            # resolve server-side (see
+                            # _post_external_elicitation_resolved for the path
+                            # that DOES apply once a card exists). Mark it
+                            # handled in the same bookkeeping a parked card
+                            # uses so later polls skip it outright instead of
+                            # re-evaluating the stale ceiling every pass.
+                            active[call.tool_call_id] = {"elicitation_id": None, "task": None}
+                            first_seen.pop(call.tool_call_id, None)
+                            auto_accept_attempts.pop(call.tool_call_id, None)
+                            continue
                         if outcome is not _YoloAccept.SURFACE_CARD:
                             auto_accepted_this_pass |= outcome is _YoloAccept.SENT
                             continue

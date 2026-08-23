@@ -5,6 +5,15 @@ generated at release time from each PR's `## Changelog` section, tagged by the
 PR's `Type of change` (e.g. `[UI]`); the concise, curated highlights live on the
 website under `/releases`.
 
+## [Unreleased]
+
+- [Bug fix] Cursor-native sessions launched with `--yolo` / `--force` / `-f` no longer surface
+  spurious approval cards for batched tool calls: yolo auto-accept budgeting is now queue-aware
+  (only the call cursor's TUI can currently be showing spends its accept-attempt budget) and a
+  separate wall-clock ceiling bounds a call whose prompt never renders at all, so a turn that
+  emits several tool calls at once no longer exhausts the queued calls' attempts before cursor
+  ever shows them.
+
 ## [v0.9.0] — 2026-08-11
 
 - [UI / Bug fix] Recent servers remain one-click connectable and now include a separate copy action. (#2555)

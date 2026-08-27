@@ -1,0 +1,7 @@
+measurement=capture-pane subprocess wall time
+target=main:0.0
+iterations=200
+warmups=20
+stdout=discarded; tmux server/session unchanged
+plain: mean_ms=1.203 median_ms=1.153 min_ms=1.058 p95_ms=1.467 p99_ms=2.047 max_ms=2.236
+watcher: mean_ms=1.192 median_ms=1.163 min_ms=1.038 p95_ms=1.434 p99_ms=1.697 max_ms=1.844

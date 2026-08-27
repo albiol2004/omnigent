@@ -1,0 +1,12 @@
+{
+  "turns": 320,
+  "chars_per_message": 6000,
+  "message_count": 640,
+  "native_jsonl_records": 640,
+  "native_jsonl_bytes": 3925540,
+  "sdk_fresh_blocks": 1,
+  "sdk_fresh_serialized_bytes": 3849154,
+  "sdk_warm_bytes": 0,
+  "cursor_preamble_bytes": 3849378,
+  "cursor_wrapped_injection_bytes": 3849551
+}

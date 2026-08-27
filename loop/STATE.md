@@ -1,6 +1,8 @@
 schema: 1
-iteration: 0
+iteration: 2
 max_iterations: 3
-status: ready
-mission: Produce a rigorous, evidence-backed root-cause report for three production problems in the user's main work setup, enumerating ALL plausible causes ranked by confidence, each with file:line evidence and a concrete reproduction, plus candidate fixes with risk assessment — without modifying any product code.
-verdict: pending
+status: running
+verdict: ITERATE
+mission: Produce a rigorous, evidence-backed root-cause report for four production problems (fork, render, kill, session-open freeze) without modifying product code.
+eval: iter1 ITERATE (problems 1-3 pass incl. cursor-native 700 ms poll; rc-freeze uninvestigated); loop/evidence/iter1/
+last_run: 2026-08-27

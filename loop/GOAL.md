@@ -12,6 +12,7 @@ Every cause claimed must be backed by (a) file:line citations verified against H
 1. "the fork function is broken as it loads all the session into context so breaks ClaudeCode"
 2. "the UI being very slow to render what the CLI produced"
 3. "sometimes CLI sessions not being killed"
+4. "from time to time the UI freezes in the sense that I try to open a session and it doesn't load, and I have to wait some time until I can load them again, like a minute" (added 2026-08-27 during iteration 1)
 
 ## Scouted facts (starting points — verify, do not trust blindly)
 - Fork server route: omnigent/server/routes/sessions/routes_core.py:1979-2200; DB copy omnigent/stores/conversation_store/sqlalchemy_store.py:3397-3520. Runner consumes fork labels at omnigent/runner/native/orchestration.py:5907-5990, 6233, 6283-6400 (native Claude: clone ~/.claude/projects/<ws>/<sid>.jsonl + `claude --resume`; SDK/cross-family: rebuild JSONL via _ensure_local_claude_resume_transcript). claude-sdk harness replays whole history as one prompt: omnigent/inner/claude_sdk_executor.py:3062-3123 ("Conversation so far:"). Cursor-native: preamble in omnigent/inner/cursor_native_executor.py:93-114. UI predicates web/src/lib/forkHarness.ts. Upstream related: #5498, #5180, #2967 (no harness-path compaction), #3469.
@@ -22,7 +23,8 @@ Every cause claimed must be backed by (a) file:line citations verified against H
 1. **rc-fork** — Determine exactly which harness/path the user's fork goes through (claude-sdk vs claude-native vs cursor), measure what lands in the Claude Code context on fork (prompt size / transcript size / token estimate), reproduce the failure ("Prompt is too long" or equivalent) on a synthetic large session, and enumerate causes + fixes.
 2. **rc-render** — Instrument end-to-end latency CLI output → SSE → DOM for claude-native and claude-sdk; measure per-stage contribution (hook spawn, 250 ms poll, per-delta POST, session_stream, SSE, store update, React render); identify the dominant stage(s); enumerate causes + fixes.
 3. **rc-kill** — Enumerate every session-ending path (stop, close, delete, fork-source, UI tab close, runner restart, sys_session_close, cancel mid-spawn) and for each determine by actual process listing whether claude/tmux/MCP children survive; find orphans on this machine now (`ps -ef` for claude/cursor-agent/tmux/mcp) as evidence; enumerate causes + fixes.
-4. **rc-report** — Consolidate into loop/REPORT.md: per problem, confirmed causes (ranked, with evidence links), unconfirmed hypotheses, candidate fixes with risk (blast radius, upstream-rebase conflict likelihood, reversibility), and a recommended fix order.
+4. **rc-freeze** — Session open hangs ~1 min then self-heals. Enumerate causes with evidence: browser per-host connection limit (HTTP/1.1: 6/host in Chrome) exhausted by concurrent SSE streams (`/v1/sessions/{id}/stream`) + updates WS + tunnels — check whether the UI is served over HTTP/1.1 or h2, how many streams a typical multi-session UI holds open, whether SSE streams are closed when navigating away, the ~5 min ingress cap/reconnect backoff in web/src/store/chatStore.ts:1-90,1051-1058; server-side: updates-WS 4 s rescan over ≤500 ids (routes_core.py:1213-1240) blocking the event loop, DB lock contention (sqlite?) on snapshot `GET /v1/sessions/{id}` + `/items?limit=1000` (#5498), session_stream subscriber overflow/drop (session_stream.py:63-79), runner tunnel WS timeouts, uvicorn worker/threadpool saturation, ~60 s timeouts anywhere (grep `timeout` 60/30 in web/src/lib and server routes). Reproduce or bound each; a measured 60 s constant that matches the symptom counts as strong evidence.
+5. **rc-report** — Consolidate into loop/REPORT.md: per problem, confirmed causes (ranked, with evidence links), unconfirmed hypotheses, candidate fixes with risk (blast radius, upstream-rebase conflict likelihood, reversibility), and a recommended fix order.
 
 ## Constraints
 - ABSOLUTELY NO modifications to files outside loop/. No git commits except mailbox commits (`loop: …`). No `git checkout`, stash, or reset. Reproductions run in the scratch/temp dirs or against throwaway sessions only; never touch the user's real sessions/agents/~/.claude/projects.
@@ -31,7 +33,7 @@ Every cause claimed must be backed by (a) file:line citations verified against H
 - No code-changing slices → the commit gate has nothing to require; the Evaluator's SHIP retirement commit covers the mailbox only.
 
 ## Acceptance
-1. loop/REPORT.md lists, per problem, ≥1 confirmed root cause with file:line verified at ead098caf and a reproduction artifact under loop/evidence/.
+1. loop/REPORT.md lists, per problem (all four), ≥1 confirmed root cause with file:line verified at ead098caf and a reproduction artifact under loop/evidence/.
 2. Every claim from "Scouted facts" is either confirmed (with evidence), refuted (with evidence), or marked unconfirmed — none silently dropped.
 3. Each candidate fix has: change size estimate, files touched, risk, and whether it conflicts with any open upstream PR (#4976, #5603, #5405, #4913, #5081, #5544).
 4. No file outside loop/ differs from ead098caf (`git status --porcelain` shows only loop/).

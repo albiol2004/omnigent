@@ -1,0 +1,20 @@
+🤖 The cursor-native render path is now documented with stage-by-stage bounds and a real `capture-pane` benchmark. The largest known cause is the 700 ms SQLite transcript polling quantum combined with complete-item-only mirroring.
+
+Live end-to-end Cursor, network, database, and React timings remain explicitly unmeasured, so the report qualifies the ranking as “largest known,” not definitively slowest.
+
+Changed:
+- `loop/REPORT.md`
+- `loop/LOG.md`
+- `loop/evidence/iter1/rc-render/CURSOR-NATIVE.md`
+- `TIMING.md`, `CITATIONS.md`, `FINDINGS.md`
+- `capture-pane-benchmark.txt`
+
+Compressed cursor column: `0–700 ms` transcript poll; `1.203 ms` mean `capture-pane`; `1 POST/item`; generic rAF; `0 ms` initial markdown throttle; transport/DB/React unmeasured.
+
+Verification:
+- `git diff --check`: passed.
+- `git status --porcelain`: only `loop/` paths.
+- No sessions started, processes killed, commits, pushes, or product files changed.
+
+Manual review: inspect `CURSOR-NATIVE.md` and the updated Problem 2 section in `loop/REPORT.md`.
+exit=0

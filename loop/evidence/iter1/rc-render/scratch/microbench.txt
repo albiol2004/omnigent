@@ -1,0 +1,6 @@
+sync_O_n_200_deltas_ms=0.417
+coalesced_flush_ms=0.018 flushes=13
+poll_quantum_ms=250
+markdown_throttle_ms=100
+sidebar_ws_rescan_ms=4000
+note: Python analog of O(n) array copy; JS React commit cost unmeasured.

@@ -1,0 +1,1 @@
+- iter 0 | coordinator | mailbox initialized, investigation-only mission, baseline ead098caf

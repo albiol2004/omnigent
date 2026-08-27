@@ -1,0 +1,1 @@
+- iter 0 | coordinator | fix mailbox initialized in worktree /home/alex/omnigent-fixes (branch trio-v0.10.0-fixes, base dadaa04d5)

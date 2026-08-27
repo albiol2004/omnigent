@@ -1,8 +1,8 @@
 schema: 1
 iteration: 2
 max_iterations: 3
-status: running
-verdict: ITERATE
+status: SHIP
+verdict: SHIP
 mission: Produce a rigorous, evidence-backed root-cause report for four production problems (fork, render, kill, session-open freeze) without modifying product code.
-eval: iter1 ITERATE (problems 1-3 pass incl. cursor-native 700 ms poll; rc-freeze uninvestigated); loop/evidence/iter1/
+eval: iter2 SHIP; 4 problems evidenced; loop/evidence/iter1/ + loop/evidence/iter2/rc-freeze/; sqlite QueuePool 156 timeouts
 last_run: 2026-08-27

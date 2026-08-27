@@ -1,7 +1,7 @@
-# REPORT — iter 1 root-cause investigation
+# REPORT — iter 1–2 root-cause investigation
 
 HEAD: `9926c9145` (product tree `ead098caf`). Investigation only. No
-product diffs.
+product diffs. Iter 2 adds problem 4 / **rc-freeze** only.
 
 ## Trioctl / Luna
 
@@ -12,8 +12,10 @@ Resolved scout/builder: **gpt-5.6-luna-max** (`model_effort: max`).
 | rc-fork | `trioctl omnigent run scout --prompt-file loop/briefs/rc-fork.md --workspace . --timeout 1800` | 0 | Captured `loop/evidence/iter1/_trioctl/rc-fork.stdout`. Ask mode blocked file writes; Lead persisted + re-measured. |
 | rc-render | same, `rc-render.md` | 0 | `.../_trioctl/rc-render.stdout`. Ask mode blocked writes; Lead persisted + microbench. |
 | rc-kill | same, `rc-kill.md` | **1** | Timed out 1800s, empty stdout (`rc-kill/SCOUT-STDERR.txt`). Lead completed census + path trace. |
+| rc-freeze | `trioctl omnigent run scout --prompt-file loop/briefs/scout-rc-freeze.md` (coordinator, still writing `SCOUT.md`) | in-flight | Lead did not re-run it. Evidence from line-range reads + live logs. |
 
-No builder product work. Lead wrote evidence under `loop/evidence/iter1/`.
+No builder product work. Iter 1 evidence under `loop/evidence/iter1/`.
+Iter 2 under `loop/evidence/iter2/rc-freeze/`.
 
 ---
 
@@ -281,11 +283,78 @@ cancel the forwarder; track #4976 instead of a competing teardown.
 
 ---
 
+## Problem 4 — Session open hangs ~1 min then self-heals
+
+Evidence: `loop/evidence/iter2/rc-freeze/` (`FINDINGS.md`,
+`TRANSPORT.md`, `CONSTANTS.md`, `DB.md`, `LOG-PARSE.json`).
+
+### Confirmed causes (ranked)
+
+1. **Sqlite QueuePool exhausted: 5 + overflow 10, wait 30 s (high).**
+   Local AP uses sqlite (`~/.omnigent/chat.db` ~1.65 GiB). Sqlite
+   `create_engine` does not set pool kwargs (`db/utils.py:228-238`);
+   SQLAlchemy defaults match the live error *exactly* (`size 5
+   overflow 10 … timeout 30.00`). Postgres engines get pool 200 /
+   timeout 10 (`:268-289`). AnyIO allows 200 `to_thread` workers
+   (`server/app.py:1141-1145`). Today's server log: **156** unhandled
+   QueuePool errors; paired bursts **30 s apart** (17:08:42→17:09:12,
+   20:35:02→20:35:32) — two waits ≈ the user's “about a minute”.
+   Stacks include `list_child_sessions`, `_validate_session`,
+   `session_updates`, `stream_session`, `get_session`,
+   `list_session_items` (`LOG-PARSE.json`). Bind hydrates via
+   `getSessionSlim` + items (`chatStore.ts:3045-3052`) and the UI also
+   hits `child_sessions` (`useChildSessions.ts:178`).
+
+2. **HTTP/1.1 origin + long-lived SSE/WS (medium-high locally).**
+   Uvicorn serves **HTTP/1.1** (`cli.py:4091-4116`; curl `--http2`
+   still HTTP/1.1). Cap 3 live SSE on serial
+   (`conversationRegistry.ts:74-77`); **switch does not close** SSE
+   (`chatStore.ts:1910-1913`). One updates WS per tab + bind's two
+   GETs can fill Chrome's ~6/host pool. Over-budget SSE is allowed
+   (`chatStore.ts:2324-2347`). Client 45 s stall / 70 s WS watchdog
+   can look like a ~1 min thaw. Secondary to (1) in *this* log.
+
+3. **Updates-WS 4 s rescan of ≤500 ids on a huge sqlite file (medium).**
+   `common.py:474-480`; `_fetch_watched_items` via `to_thread`
+   (`routes_core.py:1051-1084,1297-1305`). Occupies the tiny pool; does
+   **not** run sync DB on the event loop.
+
+### Refuted / unconfirmed
+
+- Sync sqlite **on** the asyncio thread in snapshot/updates/`items` —
+  refuted (`asyncio.to_thread`).
+- `database is locked`, slow-query, EMFILE — **0** hits today.
+- SSE reconnect backoff as the 60 s clock — max 5 s
+  (`chatStore.ts:1056-1057`).
+- Overflow as a 60 s hang — reconnect instant; slow only if snapshot
+  then waits on the pool (`session_stream.py:40,296-300`;
+  `helpers.py:7507-7511`).
+- Holding N real SSE streams then timing `GET /v1/sessions/{real id}` —
+  **unreproduced** (would touch production). Fake-id GET 404 in 5.1 ms
+  while the pool was idle.
+
+### Candidate fixes
+
+| Fix | Size | Files | Risk | Upstream |
+|---|---|---|---|---|
+| Give sqlite the same explicit pool as Postgres (or NullPool + short checkout); never default 5/10/30 | S | `omnigent/db/utils.py` | too-large QueuePool vs sqlite writer; prefer modest size + WAL | Low vs #4976/#5603/#5405/#4913/#5081/#5544 |
+| Bound/cache updates-WS rescan; don't checkout 15 conns every 4 s | M | `routes_core.py` `_fetch_watched_items`, ticker | stale sidebar | Low–med #5544 if shared session routes |
+| Defer SSE open until after snapshot+items; serialize hydrate GETs | S–M | `chatStore.ts` `bindStream` | slower first token | Low; coordinate #5405/#4913 if store changes |
+| HTTP/2 (or TLS h2) on local server so 6/host does not apply | M | `cli.py` uvicorn Config / proxy | certs, h2c browser support | Orthogonal to listed PRs |
+| Coalesce `child_sessions` on open (dominant stack) | S | `routes_items.py` / `useChildSessions.ts` | stale child rail | Low vs #4976 |
+
+**Do first:** explicit sqlite pool (or NullPool) so session-open GETs
+cannot sit 30+30 s. Then hydrate/SSE ordering for HTTP/1.1.
+
+---
+
 ## Recommended fix order
 
-1. **Kill:** close/disconnect → stop; `_claude_stop` forwarder cancel (#4976).
-2. **Fork:** oversize preflight + compact-on-fork (after #5603/#5405 awareness).
-3. **Render:** reduce the cursor transcript poll; then Claude-native rAF
+1. **Freeze:** sqlite engine pool (stop 30 s checkouts) — matches
+   production logs; then HTTP/1.1 hydrate/SSE ordering.
+2. **Kill:** close/disconnect → stop; `_claude_stop` forwarder cancel (#4976).
+3. **Fork:** oversize preflight + compact-on-fork (after #5603/#5405 awareness).
+4. **Render:** reduce the cursor transcript poll; then Claude-native rAF
    batching and forwarder backoff (#3000).
 
 ## Out of scope / hygiene

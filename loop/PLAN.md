@@ -1,18 +1,19 @@
-# PLAN — iter 1 (investigation only)
+# PLAN — iter 2 (investigation only)
 
 ## Objective
-Produce an evidence-backed root-cause report for fork context overload,
-slow CLI-output rendering, and unkilled CLI sessions. Confirm or refute
-every scouted fact at HEAD `9926c9145` (product tree `ead098caf`). No
-product code changes.
+Investigate problem 4 / slice **rc-freeze** only: session open hangs
+~1 min then self-heals. Preserve iter-1 slices as complete. No product
+code changes.
 
 ## Verification standard
 mode: implement-then-smoke
 
-Evidence for each investigation slice lives under
-`loop/evidence/iter1/<slice>/` (reproductions, measurements, process
-listings, citation tables). Claims without a file:line at HEAD plus an
-artifact in that directory are unconfirmed hypotheses, not causes.
+Evidence for rc-freeze lives under
+`loop/evidence/iter2/rc-freeze/` (transport facts, timeout constants
+with file:line, DB/event-loop notes, log excerpts, optional read-only
+SSE-hold reproduction). Claims without a file:line at product tree
+`ead098caf` plus an artifact in that directory are unconfirmed
+hypotheses, not causes.
 
 Smoke: Lead cross-checks worker citations with `sed -n` against HEAD,
 `git status --porcelain` is loop/-only, then
@@ -21,8 +22,9 @@ Smoke: Lead cross-checks worker citations with `sed -n` against HEAD,
 ## Out of scope
 No edits outside `loop/`. No git checkout/stash/reset/amend/push. Do not
 kill processes we did not start. Do not touch `~/.claude/projects` or
-real user sessions. Reproductions use temp data dirs / scratch only.
-No `slice(...)` product commits (no code-changing slices).
+real user sessions. Reproductions use temp data dirs / scratch only, or
+read-only GETs against the running server. Do not redo rc-fork /
+rc-render / rc-kill. No `slice(...)` product commits.
 
 ```yaml
 slices:
@@ -54,6 +56,13 @@ slices:
     gate: false
     status: complete
     iteration: 1
+  - id: rc-freeze
+    repo: .
+    writes: [loop/evidence/iter2/rc-freeze/, loop/REPORT.md]
+    reads: []
+    gate: false
+    status: complete
+    iteration: 2
 ```
 
 ## Slices
@@ -84,5 +93,15 @@ confirmed/refuted; ranked causes + candidate fixes.
 ### rc-report
 status: complete
 writes: [loop/REPORT.md, loop/LOG.md, loop/PLAN.md, loop/briefs/, loop/evidence/iter1/_trioctl/]
-done: `loop/REPORT.md` satisfies GOAL Acceptance 1–3; captured `trioctl`
-results and Luna model per worker; LOG line for iter 1.
+done: `loop/REPORT.md` satisfies GOAL Acceptance 1–3 for problems 1–3;
+captured `trioctl` results and Luna model per worker; LOG line for
+iter 1. Problem 4 is iteration 2 (`rc-freeze`).
+
+### rc-freeze
+status: complete
+writes: [loop/evidence/iter2/rc-freeze/, loop/REPORT.md]
+done: Transport facts (HTTP/1.1 vs h2; long-lived conn count per
+open session; close-on-switch); ~30/60/70 s constants with file:line;
+updates-WS 4 s rescan + snapshot/`/items` DB/event-loop facts; local
+server/runner log excerpts; reproduction or explicit unreproduced
+bound. Fold problem-4 section into REPORT recommended fix order.

@@ -1,0 +1,15 @@
+ERROR 08-27 16:30:20.714 server.app                       ...ndled_exception | Unhandled exception: QueuePool limit of size 5 overflow 10 reached, connection timed out, timeout 30.00 (Background on this error at: https://sqlalche.me/e/20/3o7r)
+Traceback (most recent call last):
+  File "/home/alex/.local/share/uv/tools/omnigent/lib/python3.12/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/home/alex/.local/share/uv/tools/omnigent/lib/python3.12/site-packages/starlette/middleware/base.py", line 193, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/server/app.py", line 1493, in _record_server_metrics
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/.local/share/uv/tools/omnigent/lib/python3.12/site-packages/starlette/middleware/base.py", line 168, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "/home/alex/.local/share/uv/tools/omnigent/lib/python3.12/site-packages/starlette/middleware/base.py", line 144, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "/home/alex/omnigent/omnigent/server/ws_origin.py", line 219, in __call__

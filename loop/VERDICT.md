@@ -1,65 +1,100 @@
-VERDICT: ITERATE
+VERDICT: SHIP
 
-## Why not SHIP
+Independent rc-freeze pass (before REPORT): sqlite QueuePool
+5/10/timeout 30 s is a **measured** cause of session-open stalls;
+HTTP/1.1 6/host starvation is **unconfirmed** as the freeze
+mechanism (transport facts confirmed). Problems 1–3 stand from
+iter 1. Report is ready to retire.
 
-GOAL now has problem 4 / slice **rc-freeze** (session open hangs ~1 min,
-then self-heals). The Lead has not investigated it. There is no
-`loop/evidence/iter*/rc-freeze/` artifact, and `loop/REPORT.md` has no
-problem-4 section. Acceptance 1 requires a confirmed root cause plus
-evidence for **all four** problems. Iteration 2 should address only
-rc-freeze.
+## Independent rc-freeze (Evaluator)
 
-## Problems 1–3 (pass)
+Product tree `ead098caf`. `git status --porcelain` was loop/-only
+before this verdict.
 
-Independent re-check of the cursor-native repair and the iter-1
-artifacts. Spot-checks at HEAD (`ead098caf` / `9926c9145`):
+(a) Sqlite `create_engine` omits pool kwargs
+`omnigent/db/utils.py:228-238`. Postgres sets `pool_size=200`,
+`max_overflow=20`, `pool_timeout=10` (`:268-289`). SQLAlchemy
+QueuePool defaults match live errors (`size 5 overflow 10`,
+`timeout 30.00`). AnyIO limiter 200: `server/app.py:1141-1145`.
 
-- **700 ms SQLite transcript poll:**
-  `omnigent/cursor_native_forwarder.py:61`
-  `_DEFAULT_POLL_INTERVAL_S = 0.7`; loop sleeps
-  `poll_interval_s` at `:1194`.
-- **Complete-item-only mirroring:** assistant blob → one
-  `item_type="message"` with full `output_text`
-  (`:668-682`); one `external_conversation_item` POST
-  (`_post_conversation_item` `:760-775`). No
-  `external_output_text_delta`.
-- **capture-pane benchmark:** `capture-pane-benchmark.txt`
-  `plain: mean_ms=1.203` (p95 1.467, max 2.236). Off the
-  assistant-text path; 0.2 s watcher is status only.
-- **rAF path:** `tapLiveDeltas` only diverts
-  `text_delta` + `messageId` (`chatStore.ts` ~4351–4409).
-  Cursor complete items use the generic pump; first content
-  flushes sync, later blocks `scheduler.schedule` (rAF)
-  (`:4504–4511`, `:4736–4744`).
-- **"Primarily claude-native"** is gone from FINDINGS/TIMING
-  as a conclusion. REPORT qualifies it as **not supported**;
-  cursor-native has the largest known ingress quantum.
+(b) `grep -c 'QueuePool limit of size 5'` on
+`~/.omnigent/logs/server/server-20260827-162548-652214.log` =
+**471** (string also appears inside tracebacks). Unhandled ERROR
+lines = **156**, matching `LOG-PARSE.json`. Pairs 17:08:42 / 17:09:12
+and 20:35:02 / 20:35:32 are 30.000 s apart. Last `routes_*.py`
+frames are session-open / session-live paths: `list_child_sessions`
+dominant, plus `_validate_session`, `stream_session`, `get_session`,
+`list_session_items` (Lead also counted `session_updates`).
 
-### Problem 1 — fork
-Pass. Ranked causes; `MEASUREMENT.json` / `MEASUREMENT.md`
-(~3.85–3.93 MB synthetic); scouted SDK-`_ensure` fact
-refuted; fixes with size/files/risk/upstream PRs.
+(c) `curl -sD- -o /dev/null http://127.0.0.1:6767/health` →
+`HTTP/1.1 200` `server: uvicorn`. `--http2` still HTTP/1.1.
 
-### Problem 2 — render
-Pass after repair 1. Cursor-native column in `TIMING.md`;
-`CURSOR-NATIVE.md` stage budget; permissions poll 0.3 s
-classified as approval-only (`cursor_native_permissions.py:54`).
-Live Cursor E2E still unmeasured and correctly listed as
-unconfirmed, not mixed into confirmed causes.
+(d) SSE kept on `switchTo` (`chatStore.ts:1910-1913`). Abort on
+dispose (`conversationRegistry.ts:275-279`). Serial cap 3
+(`conversationRegistry.ts:74-77`; `streamSlots.ts:1-16`). Over-budget
+open allowed (`chatStore.ts:2324-2347`). Bind hydrates
+`getSessionSlim` + items in parallel (`chatStore.ts:3045-3052`).
+Updates WS is app-lifetime (`SessionUpdatesProvider` /
+`sessionUpdatesSocket.ts`). Child list:
+`useChildSessions.ts:177-178`.
 
-### Problem 3 — kill
-Pass. Ranked causes; `CENSUS.md` / `PATHS.md` (list-only);
-scouted orphan-herd claim refuted (live trees, not
-dead-parent zombies); fixes track #4976.
+(e) Snapshot / items / updates DB via `asyncio.to_thread`, not the
+loop: `_get_session_snapshot` `orchestration.py:9004-9020`;
+`list_session_items` `routes_items.py:91-105`; `_fetch_watched_items`
+`routes_core.py:1051-1084`; ticker 4 s `common.py:474`,
+`routes_core.py:1297-1305`. Watch cap 500 (`common.py:480`).
 
-## Do not investigate in this verdict
+**30 s × 2 ≈ 1 min:** confirmed as the **measured length of pool
+saturation episodes** (two timeout waves). Not a stopwatch of one
+UI `GET`. Sequential hydrate + `child_sessions` can stack waits;
+that stacking is inferred, not timed on a real open.
 
-Problem 4 starting points in GOAL (HTTP/1.1 connection
-limits, SSE/WS hold, 4 s updates scan, DB lock, 60 s
-timeouts) stay for iteration 2. This Evaluator did not
-probe them.
+**HTTP/1.1 6/host as freeze cause:** **unconfirmed**. Origin is
+HTTP/1.1; 3 SSE + 1 updates WS + 2 hydrate GETs **can** fill ~6/host.
+No live 6-SSE hold; idle fake-id GET 404 in 5.1 ms. Not refuted.
+
+No Evaluator scout (`trioctl … scout`): line-range + log + curl
+were enough. Ask mode cannot write.
+
+## Acceptance
+
+1. **Pass.** ≥1 confirmed cause per problem + artifact:
+   - P1 fork: unbounded copy/replay; `MEASUREMENT.json` ~3.85–3.93 MB.
+   - P2 render: cursor 0–700 ms poll + complete-item mirror;
+     `CURSOR-NATIVE.md` / `TIMING.md`.
+   - P3 kill: close/disconnect never stop CLI; `CENSUS.md` / `PATHS.md`.
+   - P4 freeze: QueuePool 5+10 wait 30 s; `LOG-PARSE.json`,
+     `EXCERPT-*`, `FINDINGS.md`.
+
+2. **Pass.** GOAL scouted facts live in iter1 `CITATIONS.md` plus
+   iter2 `CONSTANTS.md`/`TRANSPORT.md`/`DB.md` (confirmed / refuted /
+   unconfirmed). None dropped: SDK `_ensure` refuted; global “no rAF”
+   refuted; kill orphan-herd refuted; freeze event-loop sync sqlite
+   refuted; 5 min h2 cap N/A locally; `database is locked` 0 today.
+
+3. **Pass.** Candidate fixes have size / files / risk / listed
+   upstream PRs (#4976, #5603, #5405, #4913, #5081, #5544). Fix order
+   is coherent: freeze pool → kill/#4976 → fork after #5603/#5405 →
+   cursor poll / Claude rAF.
+
+4. **Pass.** No product path differs from `ead098caf`. Mailbox-only
+   retirement commit.
+
+## Discrepancies (non-blocking)
+
+- REPORT ranks HTTP/1.1 6/host as confirmed cause #2. Architecture
+  is confirmed; **starvation as the hang** is unconfirmed. Pool
+  remains the only log-measured freeze cause. Does not fail
+  Acceptance 1.
+- Naive `grep -c 'QueuePool limit of size 5'` is 471, not 156.
+- `HEAD` in REPORT (`9926c9145`) is the iter-1 product alias;
+  mailbox `HEAD` before this commit was `53f9bcc33`; product tree
+  is `ead098caf`.
+- rc-freeze scout stdout was empty/in-flight; Lead + this Evaluator
+  filled from HEAD + logs.
 
 ## Human check
 
-None. `verify: human` is not the blocker; rc-freeze
-evidence is.
+None.
+
+commit: none (investigation-only; no `slice(...)` product commits)

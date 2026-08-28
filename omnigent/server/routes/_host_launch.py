@@ -28,6 +28,7 @@ from omnigent.server.auth import LEVEL_OWNER
 from omnigent.server.host_registry import HostConnection, HostRegistry
 from omnigent.server.permissions import check_session_access
 from omnigent.stores import ConversationStore
+from omnigent.stores.conversation_store import FORK_PREPARING_LABEL_KEY
 from omnigent.stores.host_store import Host, HostStore, host_is_live
 from omnigent.stores.permission_store import PermissionStore
 
@@ -142,6 +143,11 @@ def resolve_host_launch(
     conv = conversation_store.get_conversation(session_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="session not found")
+    if conv.labels.get(FORK_PREPARING_LABEL_KEY) == "1":
+        raise OmnigentError(
+            "Fork is still being prepared; wait for compaction to finish.",
+            code=ErrorCode.CONFLICT,
+        )
 
     # A runner executes tools as the session's driver, so only the
     # session owner may bind one. A non-owner has no owner-level grant

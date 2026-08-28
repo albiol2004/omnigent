@@ -225,14 +225,42 @@ class _ConversationStore:
             )
             source_items = source_items[: cutoff_index + 1]
         self._items[fork_id] = source_items
-        return Conversation(
+        new_conv = Conversation(
             id=fork_id,
             created_at=100,
             updated_at=100,
             root_conversation_id=fork_id,
             title=title or f"Fork of {src.title}",
             agent_id=effective_agent_id,
+            labels=dict(src.labels),
         )
+        self._convs[fork_id] = new_conv
+        return new_conv
+
+    def set_labels(
+        self,
+        conversation_id: str,
+        updates: dict[str, str],
+        updated_at: int | None = None,
+    ) -> None:
+        """Apply label updates to the in-memory conversation."""
+        del updated_at
+        conversation = self._convs[conversation_id]
+        conversation.labels.update(updates)
+
+    def delete_label(self, conversation_id: str, key: str) -> None:
+        """Remove one label from the in-memory conversation."""
+        self._convs[conversation_id].labels.pop(key, None)
+
+    def replace_items(
+        self,
+        conversation_id: str,
+        items: Sequence[ConversationItem],
+    ) -> None:
+        """Replace the copied item snapshot used by route assertions."""
+        if conversation_id not in self._convs:
+            raise LookupError(f"not found: {conversation_id}")
+        self._items[conversation_id] = list(items)
 
     def list_items(
         self,

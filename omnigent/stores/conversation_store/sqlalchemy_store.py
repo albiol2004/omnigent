@@ -2196,6 +2196,70 @@ class SqlAlchemyConversationStore(ConversationStore):
                 )
             )
 
+    def replace_items(
+        self,
+        conversation_id: str,
+        items: Sequence[ConversationItem],
+    ) -> None:
+        """
+        Atomically replace a conversation's item snapshot.
+
+        The item rows and their SQLite FTS rows are rewritten in one
+        transaction so readers never observe a partially compacted fork.
+
+        :param conversation_id: Conversation whose items are replaced.
+        :param items: Ordered replacement snapshot.
+        :raises ConversationNotFoundError: If the conversation is missing.
+        """
+        now = now_epoch()
+        with self._conv_session("replace_conversation_items") as session:
+            self._lock_conversation(session, conversation_id)
+            conversation = session.get(
+                SqlConversation,
+                (current_workspace_id(), conversation_id),
+            )
+            if conversation is None:
+                raise ConversationNotFoundError(f"conversation {conversation_id!r} does not exist")
+
+            delete_fts_by_conversation_ids(session, [conversation_id])
+            session.execute(
+                delete(SqlConversationItem).where(
+                    SqlConversationItem.workspace_id == current_workspace_id(),
+                    SqlConversationItem.conversation_id == conversation_id,
+                )
+            )
+
+            fts_rows: list[tuple[str, str, str]] = []
+            for position, item in enumerate(items):
+                search_item = NewConversationItem(
+                    type=item.type,
+                    response_id=item.response_id,
+                    data=item.data,
+                    created_by=item.created_by,
+                )
+                item_id = generate_item_id(item.type)
+                search_text = self._item_search_text(search_item)
+                row = SqlConversationItem(
+                    id=item_id,
+                    conversation_id=conversation_id,
+                    response_id=item.response_id,
+                    created_at=now,
+                    status=encode_item_status(item.status),
+                    position=position,
+                    type=encode_item_type(item.type),
+                    data=self._encode_item_data(
+                        strip_nul_bytes(json.dumps(item.data.model_dump(exclude_none=True)))
+                    ),
+                    search_text=search_text,
+                    created_by=item.created_by,
+                )
+                session.add(row)
+                fts_rows.append((item_id, conversation_id, search_text or ""))
+
+            insert_fts_bulk(session, fts_rows)
+            conversation.next_position = len(items)
+            conversation.updated_at = now
+
     def list_conversations(
         self,
         limit: int = 20,

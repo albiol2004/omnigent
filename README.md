@@ -431,6 +431,10 @@ and they're in. Signup is invite-only.
   omnigent run --fork <session_id>
   ```
 
+Oversized web forks are created immediately and prepared in the background.
+The fork stays unavailable to runners until its compacted history is ready.
+Set `OMNIGENT_FORK_ASYNC=0` to use the blocking fork behavior.
+
 > [!TIP]
 > Want your team to sign in with the logins they already have (**Google,
 > GitHub, Okta, Microsoft**)? Set `OMNIGENT_OIDC_ISSUER` plus a client ID

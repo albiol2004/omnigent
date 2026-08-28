@@ -57,6 +57,11 @@ FORK_SOURCE_EXTERNAL_SESSION_LABEL_KEY = "omnigent.fork.source_external_session_
 # ``external_session_id`` is NULL).
 FORK_CARRY_HISTORY_LABEL_KEY = "omnigent.fork.carry_history"
 
+# Temporary fork state: ``"1"`` blocks launch while the server compacts the
+# copied transcript; ``"failed"`` leaves the fork visible and deletable.
+FORK_PREPARING_LABEL_KEY = "omnigent.fork.preparing"
+FORK_PREPARING_REASON_LABEL_KEY = "omnigent.fork.preparing_reason"
+
 # Set by an in-place agent switch (``POST /v1/sessions/{id}/switch-agent``):
 # the BUILT-IN agent id the session was switched away from, so the UI can
 # offer a one-click "Switch back". A convenience pointer only — switching
@@ -173,7 +178,12 @@ _INSTANCE_SCOPED_LABEL_KEYS = frozenset(
 
 # Source identity belongs only to the original imported session. Unlike runtime
 # instance labels, these survive an in-place agent switch but never a fork.
-_FORK_ONLY_DROPPED_LABEL_KEYS = IMPORT_PROVENANCE_LABEL_KEYS
+_FORK_ONLY_DROPPED_LABEL_KEYS = IMPORT_PROVENANCE_LABEL_KEYS | frozenset(
+    {
+        FORK_PREPARING_LABEL_KEY,
+        FORK_PREPARING_REASON_LABEL_KEY,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -920,6 +930,25 @@ class ConversationStore(ABC):
         :param conversation_id: The conversation to update,
             e.g. ``"conv_abc123"``.
         :param key: The label key to remove, e.g. ``"omni_project"``.
+        """
+        ...
+
+    @abstractmethod
+    def replace_items(
+        self,
+        conversation_id: str,
+        items: Sequence[ConversationItem],
+    ) -> None:
+        """
+        Atomically replace every item in a conversation.
+
+        Used after asynchronous fork compaction. The replacement
+        snapshot is written with fresh item ids and dense positions,
+        and any search-index rows for the old snapshot are removed.
+
+        :param conversation_id: Conversation whose items are replaced.
+        :param items: Ordered replacement snapshot.
+        :raises ConversationNotFoundError: If the conversation is missing.
         """
         ...
 

@@ -35,6 +35,12 @@ from tests.server.routes.test_sessions_fork import (
 _SOURCE_ID = "e9f8f58523cec9a57d3bdf93be543e8c"
 
 
+@pytest.fixture(autouse=True)
+def _use_synchronous_fork_compaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep legacy blocking assertions explicit as async becomes the default."""
+    monkeypatch.setenv("OMNIGENT_FORK_ASYNC", "0")
+
+
 class _SpecCache:
     """Return one parsed spec without reading a real agent bundle."""
 

@@ -95,6 +95,36 @@ _REPL_TERMINAL_SESSION_KEY = "main"
 _NO_BODY_STATUS_CODES = {204, 304}
 
 
+def _reject_fork_preparing_snapshot(
+    snapshot: Mapping[str, Any],
+    session_id: str,
+) -> None:
+    """Reject native launch config while a fork transcript is incomplete."""
+    from omnigent.stores.conversation_store import FORK_PREPARING_LABEL_KEY
+
+    labels = snapshot.get("labels")
+    if isinstance(labels, Mapping) and labels.get(FORK_PREPARING_LABEL_KEY) == "1":
+        raise RuntimeError(
+            f"Cannot launch native session {session_id!r}: fork preparation is still in progress."
+        )
+
+
+def _fork_preparing_response(session_id: str) -> JSONResponse:
+    """Build the runner-side conflict response for a preparing fork."""
+    return JSONResponse(
+        status_code=409,
+        content={
+            "error": {
+                "code": "conflict",
+                "message": (
+                    f"Cannot launch native session {session_id!r}: "
+                    "fork preparation is still in progress."
+                ),
+            }
+        },
+    )
+
+
 class _EnsureCommentRelay(Protocol):
     """Callable contract for starting a session's native tool relay."""
 
@@ -799,6 +829,7 @@ async def _kiro_native_launch_config(
             f"Could not fetch Kiro launch config for {session_id!r}: "
             "snapshot was not a JSON object."
         )
+    _reject_fork_preparing_snapshot(snapshot, session_id)
     terminal_launch_args = snapshot.get("terminal_launch_args")
     if terminal_launch_args is not None and not (
         isinstance(terminal_launch_args, list)
@@ -873,6 +904,7 @@ async def _pi_native_launch_config(
         raise RuntimeError(
             f"Could not fetch Pi launch config for {session_id!r}: snapshot was not a JSON object."
         )
+    _reject_fork_preparing_snapshot(snapshot, session_id)
     terminal_launch_args = snapshot.get("terminal_launch_args")
     if terminal_launch_args is not None and not (
         isinstance(terminal_launch_args, list)
@@ -972,6 +1004,7 @@ async def _codex_native_launch_config(
             f"Could not fetch Codex launch config for {session_id!r}: "
             "snapshot was not a JSON object."
         )
+    _reject_fork_preparing_snapshot(snapshot, session_id)
     terminal_launch_args = snapshot.get("terminal_launch_args")
     if terminal_launch_args is not None and not (
         isinstance(terminal_launch_args, list)
@@ -1121,6 +1154,7 @@ async def _opencode_native_launch_config(
             f"Could not fetch OpenCode launch config for {session_id!r}: "
             "snapshot was not a JSON object."
         )
+    _reject_fork_preparing_snapshot(snapshot, session_id)
     terminal_launch_args = snapshot.get("terminal_launch_args")
     if terminal_launch_args is not None and not (
         isinstance(terminal_launch_args, list)
@@ -5965,6 +5999,7 @@ def _claude_launch_metadata_from_envelope(
     )
 
     snapshot = session_init.snapshot
+    _reject_fork_preparing_snapshot(snapshot.model_dump(), session_init.session_id)
     fork_source = snapshot.labels.get(FORK_SOURCE_EXTERNAL_SESSION_LABEL_KEY)
     routing_class = routing_class_from_snapshot(
         cost_control_mode=snapshot.cost_control_mode_override,
@@ -6018,6 +6053,7 @@ async def _load_legacy_claude_launch_metadata(
     external_session_id = snapshot.get("external_session_id")
     labels = snapshot.get("labels")
     labels = labels if isinstance(labels, dict) else {}
+    _reject_fork_preparing_snapshot(snapshot, session_id)
     fork_source = labels.get(FORK_SOURCE_EXTERNAL_SESSION_LABEL_KEY)
     cost_control_mode = snapshot.get("cost_control_mode_override")
     harness_override = snapshot.get("harness_override")
@@ -7353,6 +7389,24 @@ async def _launch_claude(ctx: NativeLaunchContext) -> SessionResourceView:
     )
 
 
+async def _native_fork_is_preparing(ctx: NativeLaunchContext) -> bool:
+    """Read the preparing marker before any native terminal is created."""
+    if ctx.session_init is not None:
+        from omnigent.stores.conversation_store import FORK_PREPARING_LABEL_KEY
+
+        return ctx.session_init.snapshot.labels.get(FORK_PREPARING_LABEL_KEY) == "1"
+    snapshot = await _session_payload_for_host_spawn_check(
+        ctx.server_client,
+        ctx.session_id,
+    )
+    if snapshot is None:
+        return False
+    labels = snapshot.get("labels")
+    from omnigent.stores.conversation_store import FORK_PREPARING_LABEL_KEY
+
+    return isinstance(labels, Mapping) and labels.get(FORK_PREPARING_LABEL_KEY) == "1"
+
+
 async def _launch_native_terminal(
     harness_name: str,
     ctx: NativeLaunchContext,
@@ -7409,6 +7463,13 @@ async def _launch_native_terminal(
 
     lock = ensure_locks.setdefault(ctx.session_id, asyncio.Lock())
     async with lock:
+        if await _native_fork_is_preparing(ctx):
+            _logger.info(
+                "Refusing %s terminal launch while fork preparation is active: %s",
+                agent.display_name,
+                ctx.session_id,
+            )
+            return False
         registry = ctx.resource_registry.terminal_registry
         has_terminal = (
             registry is not None
@@ -7520,6 +7581,8 @@ async def _ensure_native_terminal(
     terminal_id = terminal_resource_id(terminal_name, "main")
     lock = ensure_locks.setdefault(ctx.session_id, asyncio.Lock())
     async with lock:
+        if await _native_fork_is_preparing(ctx):
+            return _fork_preparing_response(ctx.session_id)
         existing = await ctx.resource_registry.get_terminal_resource(ctx.session_id, terminal_id)
         if existing is not None:
             if is_owned is None or is_owned(ctx.resource_registry, existing):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import secrets
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -140,6 +141,7 @@ from omnigent.server.routes._sessions.helpers import (
     _presentation_labels_for_agent,
     _prune_session_read_state,
     _publish_collaboration_mode,
+    _publish_compaction_completed,
     _publish_compaction_failed,
     _publish_compaction_in_progress,
     _publish_sandbox_status,
@@ -197,6 +199,8 @@ from omnigent.stores import AgentStore, ConversationStore
 from omnigent.stores.artifact_store import ArtifactStore
 from omnigent.stores.comment_store import CommentStore
 from omnigent.stores.conversation_store import (
+    FORK_PREPARING_LABEL_KEY,
+    FORK_PREPARING_REASON_LABEL_KEY,
     PINNED_LABEL_KEY,
     PROJECT_LABEL_KEY,
     ConversationNotFoundError,
@@ -2385,6 +2389,8 @@ def register_core_routes(
         else:
             passthrough_response_id = body.up_to_response_id
         replacement_items = None
+        async_compaction_pending = False
+        compaction_event_session_id = source_id
         skip_reasons = _native_clone_passthrough_skip_reasons(
             guard_enabled=fork_native_guard_enabled(),
             external_session_id=source.external_session_id,
@@ -2450,36 +2456,8 @@ def register_core_routes(
                 resolved_model: str | None = None
                 resolved_provider: str | None = None
 
-                def _on_llm_ready(resolved: object) -> None:
-                    nonlocal resolved_model, resolved_provider
-                    model = getattr(resolved, "model", None)
-                    if isinstance(model, str):
-                        resolved_model = model
-                        if "/" in model:
-                            resolved_provider = model.split("/", 1)[0]
-                    _publish_compaction_in_progress(source_id)
-
-                try:
-                    replacement_items = await compact_fork_items(
-                        source_id=source_id,
-                        source=source,
-                        source_agent=source_agent,
-                        target_agent=base_agent if switching_agent else None,
-                        context_items=context_items,
-                        agent_cache=agent_cache,
-                        on_llm_ready=_on_llm_ready,
-                    )
-                    compacted_payload = [item.to_api_dict() for item in replacement_items]
-                    compacted_bytes = estimate_fork_context_bytes(
-                        compacted_payload,
-                        renderer=renderer,
-                    )
-                    guard_fork_context_bytes(
-                        compacted_bytes,
-                        threshold=fork_compact_target_bytes(),
-                    )
-                    guard_fork_context_bytes(compacted_bytes)
-                except Exception as compact_exc:
+                def _log_compaction_failure(compact_exc: Exception) -> str:
+                    """Record provider details and return a client-safe reason."""
                     exception_extra = getattr(compact_exc, "extra", None)
                     if not isinstance(exception_extra, Mapping):
                         exception_extra = {}
@@ -2515,12 +2493,55 @@ def register_core_routes(
                             "compact_provider": attempted_provider,
                         },
                     )
-                    _publish_compaction_failed(source_id)
-                    compact_reason = str(compact_exc) or repr(compact_exc)
-                    raise OmnigentError(
-                        f"{exc}; compaction failed: {compact_reason}",
-                        code=exc.code,
-                    ) from compact_exc
+                    return str(compact_exc) or repr(compact_exc)
+
+                async def _compact_and_validate() -> list[Any]:
+                    """Compact the captured prefix and enforce both size limits."""
+                    nonlocal resolved_model, resolved_provider
+
+                    def _on_llm_ready(resolved: object) -> None:
+                        nonlocal resolved_model, resolved_provider
+                        model = getattr(resolved, "model", None)
+                        if isinstance(model, str):
+                            resolved_model = model
+                            if "/" in model:
+                                resolved_provider = model.split("/", 1)[0]
+                        if not async_compaction_pending:
+                            _publish_compaction_in_progress(compaction_event_session_id)
+
+                    compacted = await compact_fork_items(
+                        source_id=source_id,
+                        source=source,
+                        source_agent=source_agent,
+                        target_agent=base_agent if switching_agent else None,
+                        context_items=context_items,
+                        agent_cache=agent_cache,
+                        on_llm_ready=_on_llm_ready,
+                    )
+                    compacted_payload = [item.to_api_dict() for item in compacted]
+                    compacted_bytes = estimate_fork_context_bytes(
+                        compacted_payload,
+                        renderer=renderer,
+                    )
+                    guard_fork_context_bytes(
+                        compacted_bytes,
+                        threshold=fork_compact_target_bytes(),
+                    )
+                    guard_fork_context_bytes(compacted_bytes)
+                    return compacted
+
+                if os.environ.get("OMNIGENT_FORK_ASYNC", "1").strip() != "0":
+                    async_compaction_pending = True
+                else:
+                    try:
+                        replacement_items = await _compact_and_validate()
+                    except Exception as compact_exc:
+                        compact_reason = _log_compaction_failure(compact_exc)
+                        _publish_compaction_failed(source_id)
+                        raise OmnigentError(
+                            f"{exc}; compaction failed: {compact_reason}",
+                            code=exc.code,
+                        ) from compact_exc
 
         try:
             new_conv = await asyncio.to_thread(
@@ -2541,9 +2562,12 @@ def register_core_routes(
                 carry_history_into_native=carry_history_into_native,
                 # Compacted forks must not clone the source JSONL —
                 # that payload is the oversize transcript we just
-                # summarized. Rebuild from replacement items instead.
+                # summarized. Async-preparing forks also rebuild after the
+                # copied transcript has been compacted.
                 resume_source_native_session=(
-                    resume_source_native_session and replacement_items is None
+                    resume_source_native_session
+                    and replacement_items is None
+                    and not async_compaction_pending
                 ),
                 presentation_labels=presentation_labels,
                 up_to_response_id=body.up_to_response_id,
@@ -2569,11 +2593,25 @@ def register_core_routes(
         # Push the forked session to this user's other open tabs.
         _announce_session_added(user_id, new_conv.id)
 
+        if async_compaction_pending:
+            preparing_labels = {
+                FORK_PREPARING_LABEL_KEY: "1",
+                FORK_PREPARING_REASON_LABEL_KEY: "summarizing history",
+            }
+            await asyncio.to_thread(
+                conversation_store.set_labels,
+                new_conv.id,
+                preparing_labels,
+            )
+            new_conv.labels.update(preparing_labels)
+            compaction_event_session_id = new_conv.id
+            _publish_compaction_in_progress(new_conv.id)
+
         fork_items = await asyncio.to_thread(
             conversation_store.list_items, new_conv.id, limit=10000
         )
         level = await _get_permission_level(user_id, new_conv.id, permission_store)
-        return _build_session_response(
+        response = _build_session_response(
             new_conv,
             fork_items.data,
             "idle",
@@ -2581,6 +2619,51 @@ def register_core_routes(
             last_task_error=None,
             agent_name=base_agent.name,
         )
+        if async_compaction_pending:
+
+            async def _finish_async_compaction() -> None:
+                """Swap the compacted snapshot and publish its final state."""
+                try:
+                    compacted = await _compact_and_validate()
+                    await asyncio.to_thread(
+                        conversation_store.replace_items,
+                        new_conv.id,
+                        compacted,
+                    )
+                    await asyncio.to_thread(
+                        conversation_store.delete_label,
+                        new_conv.id,
+                        FORK_PREPARING_LABEL_KEY,
+                    )
+                    await asyncio.to_thread(
+                        conversation_store.delete_label,
+                        new_conv.id,
+                        FORK_PREPARING_REASON_LABEL_KEY,
+                    )
+                    _publish_compaction_completed(new_conv.id, None)
+                except Exception as compact_exc:
+                    compact_reason = _log_compaction_failure(compact_exc)
+                    with contextlib.suppress(Exception):
+                        await asyncio.to_thread(
+                            conversation_store.set_labels,
+                            new_conv.id,
+                            {
+                                FORK_PREPARING_LABEL_KEY: "failed",
+                                FORK_PREPARING_REASON_LABEL_KEY: (
+                                    f"Compaction failed: {compact_reason}"
+                                ),
+                            },
+                        )
+                    _publish_compaction_failed(new_conv.id)
+
+            task = asyncio.create_task(_finish_async_compaction())
+            tasks = getattr(request.app.state, "_fork_compaction_tasks", None)
+            if tasks is None:
+                tasks = set()
+                request.app.state._fork_compaction_tasks = tasks
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+        return response
 
     # ── POST /sessions/{session_id}/switch-agent ─────────────────
 

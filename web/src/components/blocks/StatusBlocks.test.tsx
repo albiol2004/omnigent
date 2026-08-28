@@ -338,9 +338,7 @@ describe("ErrorBanner", () => {
     render(<ErrorBanner message="The model switch failed." source="execution" code={code} />);
 
     expect(screen.getByTestId("error-headline")).toHaveTextContent(headline);
-    expect(screen.getByTestId("error-headline")).not.toHaveTextContent(
-      "Something went wrong",
-    );
+    expect(screen.getByTestId("error-headline")).not.toHaveTextContent("Something went wrong");
   });
 
   it("dismisses only the visible banner", () => {

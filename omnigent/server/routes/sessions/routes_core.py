@@ -38,6 +38,11 @@ from omnigent.entities import (
 )
 from omnigent.entities.permission import SessionPermission
 from omnigent.errors import ErrorCode, OmnigentError
+from omnigent.fork_context import (
+    ForkContextTooLarge,
+    guard_fork_context,
+    summary_only_items,
+)
 from omnigent.model_override import validate_model_override
 from omnigent.reasoning_effort import (
     EFFORT_CLEAR_VALUES,
@@ -188,6 +193,45 @@ from omnigent.stores.conversation_store import (
 from omnigent.stores.file_store import FileStore
 from omnigent.stores.permission_store import PermissionStore
 from omnigent.stores.project_store import ProjectStore
+
+
+def _fetch_all_fork_items(
+    conversation_store: ConversationStore,
+    conversation_id: str,
+) -> list[Any]:
+    """Read every source item before the fork transaction begins."""
+    items: list[Any] = []
+    after: str | None = None
+    while True:
+        page = conversation_store.list_items(
+            conversation_id,
+            limit=1000,
+            after=after,
+            order="asc",
+        )
+        page_items = list(page.data)
+        items.extend(page_items)
+        if not page.has_more:
+            return items
+        next_after = page.last_id
+        if not page_items or next_after is None or next_after == after:
+            raise RuntimeError(
+                f"Conversation item pagination made no progress for {conversation_id!r}"
+            )
+        after = next_after
+
+
+def _items_through_response(
+    items: list[Any],
+    response_id: str | None,
+) -> list[Any] | None:
+    """Return the route's requested fork prefix, or ``None`` if unknown."""
+    if response_id is None:
+        return items
+    matching = [index for index, item in enumerate(items) if item.response_id == response_id]
+    if not matching:
+        return None
+    return items[: matching[-1] + 1]
 
 
 def register_core_routes(
@@ -2147,6 +2191,26 @@ def register_core_routes(
             owned = await asyncio.to_thread(project_store.get, source.project_id, user_id=user_id)
             if owned is not None:
                 fork_project_id = source.project_id
+
+        source_items = await asyncio.to_thread(
+            _fetch_all_fork_items,
+            conversation_store,
+            source_id,
+        )
+        context_items = _items_through_response(
+            source_items,
+            body.up_to_response_id,
+        )
+        if context_items is not None:
+            payload = [item.to_api_dict() for item in context_items]
+            compacted_payload = summary_only_items(payload)
+            try:
+                guard_fork_context(
+                    payload,
+                    compacted_value=compacted_payload,
+                )
+            except ForkContextTooLarge as exc:
+                raise OmnigentError(str(exc), code=exc.code) from exc
 
         try:
             new_conv = await asyncio.to_thread(

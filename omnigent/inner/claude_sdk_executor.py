@@ -45,6 +45,7 @@ from typing import Any, Protocol, TypeAlias, cast
 from omnigent import model_catalog
 from omnigent._platform import resolve_cli_binary, stable_user_id
 from omnigent.databricks_ai_gateway import is_databricks_ai_gateway_url
+from omnigent.fork_context import ForkContextTooLarge, guard_fork_context
 from omnigent.inner import _proc
 from omnigent.inner.bundle_skills import ensure_bundle_plugin_manifest
 from omnigent.inner.hook_scripts import subagent_router
@@ -2242,9 +2243,6 @@ class ClaudeSDKExecutor(Executor):
         observe the message stream and yield ExecutorEvents for the Session
         to record in History.
         """
-        sdk = cast(_ClaudeSDK, _ensure_sdk())
-        from claude_agent_sdk.types import StreamEvent as _StreamEvent
-
         cfg = config or ExecutorConfig()
 
         session_key = self._session_key(messages)
@@ -2257,15 +2255,22 @@ class ClaudeSDKExecutor(Executor):
                 )
             )
             return
-        prompt = self._build_prompt(
-            messages,
-            resume_session=session_key in self._clients,
-        )
+        try:
+            prompt = self._build_prompt(
+                messages,
+                resume_session=session_key in self._clients,
+            )
+        except ForkContextTooLarge as exc:
+            yield ExecutorError(message=str(exc))
+            return
         if not prompt:
             # Resumed sessions can have nothing new to say; signal turn
             # completion with no assistant text instead of an empty string.
             yield TurnComplete(response=None)
             return
+
+        sdk = cast(_ClaudeSDK, _ensure_sdk())
+        from claude_agent_sdk.types import StreamEvent as _StreamEvent
 
         # Build MCP tools from Omnigent tool schemas
         mcp_tools = _build_mcp_tools(tools, self._tool_executor) if tools else []
@@ -3114,13 +3119,16 @@ class ClaudeSDKExecutor(Executor):
         prior_blocks = _coalesce_text_blocks(prior_blocks)
 
         if isinstance(latest_content, list):
-            return [*prior_blocks, *latest_content]
+            prompt: str | list[_JsonObject] = [*prior_blocks, *latest_content]
         # Coalescing leaves an all-text history as the single opening block, so
         # more than one block means an attachment survived and the prompt has
         # to stay structured for its bytes to reach the model.
-        if len(prior_blocks) > 1:
-            return [*prior_blocks, _text_block(f"\nuser: {latest_content}")]
-        return f"{prior_blocks[0]['text']}\n\nuser: {latest_content}"
+        elif len(prior_blocks) > 1:
+            prompt = [*prior_blocks, _text_block(f"\nuser: {latest_content}")]
+        else:
+            prompt = f"{prior_blocks[0]['text']}\n\nuser: {latest_content}"
+        guard_fork_context(prompt)
+        return prompt
 
     @staticmethod
     def _extract_latest_user_content(

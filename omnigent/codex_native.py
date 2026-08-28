@@ -62,6 +62,11 @@ from omnigent.codex_native_forwarder import supervise_forwarder
 from omnigent.codex_native_state import read_launch_state, write_launch_state
 from omnigent.conversation_browser import conversation_url, open_conversation_link_if_enabled
 from omnigent.entities.session_resources import terminal_resource_id
+from omnigent.fork_context import (
+    guard_fork_context_bytes,
+    max_fork_context_bytes,
+    summary_only_items,
+)
 from omnigent.harness_availability import (
     HARNESS_BINARY_MISSING,
     HARNESS_NEEDS_AUTH,
@@ -1709,6 +1714,41 @@ def _copy_rollout_with_cwd(
             dst.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
+def _compact_codex_rollout(path: Path) -> bool:
+    """Keep the latest Codex compacted record and everything after it."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    records: list[_JsonObject] = []
+    latest_compacted: int | None = None
+    for index, line in enumerate(lines):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise click.ClickException(
+                f"Cannot compact malformed Codex rollout {path}: "
+                f"line {index + 1} is not valid JSON."
+            ) from exc
+        if not isinstance(record, dict):
+            continue
+        records.append(record)
+        if record.get("type") == "compacted":
+            latest_compacted = len(records) - 1
+    if latest_compacted is None:
+        return False
+    prefix = [
+        record for record in records[:latest_compacted] if record.get("type") == "session_meta"
+    ]
+    compacted_path = path.with_suffix(".compact.tmp")
+    try:
+        with compacted_path.open("w", encoding="utf-8") as handle:
+            for record in [*prefix, *records[latest_compacted:]]:
+                handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+        os.replace(compacted_path, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            compacted_path.unlink()
+    return True
+
+
 def _clone_codex_rollout(
     *,
     source_session_id: str,
@@ -1775,6 +1815,15 @@ def _clone_codex_rollout(
             target=tmp,
             clone_workspace=clone_workspace,
             new_thread_id=target_thread_id,
+        )
+        initial_bytes = tmp.stat().st_size
+        compacted_bytes: int | None = None
+        if initial_bytes > max_fork_context_bytes():
+            if _compact_codex_rollout(tmp):
+                compacted_bytes = tmp.stat().st_size
+        guard_fork_context_bytes(
+            initial_bytes,
+            compacted_bytes=compacted_bytes,
         )
         os.replace(tmp, target)
     finally:
@@ -1864,6 +1913,7 @@ async def _ensure_local_codex_resume_rollout(
         with tmp.open("w", encoding="utf-8") as handle:
             for record in records:
                 handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+        guard_fork_context_bytes(tmp.stat().st_size)
         os.replace(tmp, target)
     except OSError as exc:
         raise click.ClickException(
@@ -1943,12 +1993,12 @@ async def _fetch_all_session_items_for_codex_resume(
         for item in data:
             if isinstance(item, dict):
                 items.append(item)
-        if not payload.get("has_more"):
+        if not data or not payload.get("has_more"):
             return items
         last_id = payload.get("last_id")
-        if not isinstance(last_id, str) or not last_id:
+        if not isinstance(last_id, str) or not last_id or last_id == after:
             raise click.ClickException(
-                f"History fetch for {session_id!r} set has_more without last_id."
+                f"History fetch for {session_id!r} set has_more without a forward cursor."
             )
         after = last_id
 
@@ -1994,6 +2044,7 @@ def _codex_rollout_records_from_session_items(
     :param terminal_launch_args: Persisted Codex approval/sandbox launch args.
     :returns: Codex rollout record dictionaries.
     """
+    items = summary_only_items(items)
     timestamp = _codex_rollout_timestamp()
     turn_context_policy_fields = _codex_turn_context_policy_fields_from_launch_args(
         terminal_launch_args
@@ -2022,9 +2073,12 @@ def _codex_rollout_records_from_session_items(
         # replacement_history replaces them.
         if item.get("type") == "compaction":
             compacted_msgs = item.get("compacted_messages")
-            if compacted_msgs:
+            if not isinstance(compacted_msgs, list):
+                compacted_msgs = []
+            summary = item.get("summary")
+            if compacted_msgs or isinstance(summary, str):
                 compacted_payload: _JsonObject = {
-                    "message": item.get("summary", ""),
+                    "message": summary if isinstance(summary, str) else "",
                     "replacement_history": compacted_msgs,
                 }
                 compacted_record: _JsonObject = {

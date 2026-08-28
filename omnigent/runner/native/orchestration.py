@@ -19,7 +19,7 @@ import sys
 import time
 import urllib.parse
 import uuid
-from collections.abc import Awaitable, Callable, Mapping, MutableMapping
+from collections.abc import Awaitable, Callable, Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
@@ -47,6 +47,13 @@ from omnigent.entities.session_resources import (
     SessionResourceView,
     session_resource_view_to_dict,
     terminal_resource_id,
+)
+from omnigent.fork_context import (
+    ForkContextTooLarge,
+    guard_fork_context,
+    guard_fork_context_bytes,
+    jsonl_context_bytes,
+    summary_only_items,
 )
 from omnigent.harness_plugins import native_provider_for_key
 from omnigent.model_override import validate_model_override
@@ -1722,7 +1729,7 @@ def _opencode_native_mcp_servers_from_spec(
         return []
 
 
-def _render_opencode_transcript_text(items: list[object]) -> str:
+def _render_opencode_transcript_text(items: Sequence[object]) -> str:
     """
     Render committed Omnigent message items into a plain-text transcript.
 
@@ -1771,14 +1778,32 @@ async def _rehydrate_opencode_session_from_transcript(
     """
     if server_client is None:
         return False
+    items: list[_JsonObject] = []
+    after: str | None = None
     try:
-        resp = await server_client.get(
-            f"/v1/sessions/{urllib.parse.quote(omnigent_session_id, safe='')}/items",
-            params={"limit": 1000, "order": "asc"},
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
+        while True:
+            params: dict[str, str | int] = {"limit": 1000, "order": "asc"}
+            if after is not None:
+                params["after"] = after
+            resp = await server_client.get(
+                f"/v1/sessions/{urllib.parse.quote(omnigent_session_id, safe='')}/items",
+                params=params,
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                raise ValueError("history page was not an object")
+            data = payload.get("data")
+            if not isinstance(data, list):
+                raise ValueError("history page did not contain an item list")
+            items.extend(item for item in data if isinstance(item, dict))
+            if not data or not payload.get("has_more"):
+                break
+            last_id = payload.get("last_id")
+            if not isinstance(last_id, str) or not last_id or last_id == after:
+                raise ValueError("history pagination did not advance")
+            after = last_id
     except (httpx.HTTPError, ValueError):
         _logger.warning(
             "opencode resume: could not fetch transcript for %s",
@@ -1786,8 +1811,7 @@ async def _rehydrate_opencode_session_from_transcript(
             exc_info=True,
         )
         return False
-    items = payload.get("data", []) if isinstance(payload, dict) else []
-    transcript = _render_opencode_transcript_text(items if isinstance(items, list) else [])
+    transcript = _render_opencode_transcript_text(summary_only_items(items))
     if not transcript:
         return False
     provider_id: str | None = None
@@ -1799,6 +1823,7 @@ async def _rehydrate_opencode_session_from_transcript(
         "host, so the earlier conversation is included below for context. Treat "
         "it as history; do not re-run prior actions.]\n\n" + transcript
     )
+    guard_fork_context(text)
     try:
         await opencode_client.seed_context(
             opencode_session_id, text, provider_id=provider_id, model_id=model_id
@@ -1957,6 +1982,8 @@ async def _resolve_pi_resume_session(
                 workspace=workspace,
                 model=model,
             )
+        except ForkContextTooLarge:
+            raise
         except Exception:  # noqa: BLE001 — best-effort; launch fresh on failure
             built = None
             _logger.warning(
@@ -1997,6 +2024,8 @@ async def _resolve_pi_resume_session(
                 workspace=workspace,
                 model=model,
             )
+        except ForkContextTooLarge:
+            raise
         except Exception:  # noqa: BLE001 — best-effort; launch fresh on failure
             built = None
             _logger.warning(
@@ -2412,7 +2441,11 @@ async def _auto_create_cursor_terminal(
             fork_items = await _fetch_all_session_items_for_claude_resume(
                 server_client, session_id
             )
-            write_fork_preamble(bridge_dir, _cursor_fork_history_preamble(fork_items))
+            preamble = _cursor_fork_history_preamble(fork_items)
+            guard_fork_context(preamble)
+            write_fork_preamble(bridge_dir, preamble)
+        except ForkContextTooLarge:
+            raise
         except Exception:  # noqa: BLE001 — context carry-over is best-effort
             _logger.warning(
                 "cursor-native: could not build fork history preamble (session=%s).",
@@ -3221,9 +3254,12 @@ async def _build_qwen_fork_recording(
                 session_id,
             )
             return None
+        guard_fork_context_bytes(jsonl_context_bytes(records))
         recording = await asyncio.to_thread(
             write_qwen_session_recording, qwen_session_id, workspace, records
         )
+    except ForkContextTooLarge:
+        raise
     except Exception:  # noqa: BLE001 — best-effort; launch fresh on failure
         _logger.warning(
             "Could not build qwen recording from items for forked clone %s; launching fresh",
@@ -3800,6 +3836,8 @@ async def _auto_create_codex_terminal(
                 clone_codex_home=codex_home,
                 clone_workspace=clone_workspace,
             )
+        except ForkContextTooLarge:
+            raise
         except Exception:  # noqa: BLE001 — best-effort; fall back to stored items
             cloned_rollout = None
             _logger.warning(
@@ -3876,6 +3914,8 @@ async def _auto_create_codex_terminal(
                 codex_path=_codex_cli_path,
                 terminal_launch_args=launch_config.terminal_launch_args,
             )
+        except ForkContextTooLarge:
+            raise
         except Exception:  # noqa: BLE001 — best-effort; launch fresh on failure
             built_rollout = None
             _logger.warning(
@@ -5430,6 +5470,7 @@ def _cursor_fork_history_preamble(items: list[_JsonObject]) -> str:
     :returns: A blank-line-separated transcript like ``"You: …\\n\\nAssistant:
         …"``, or ``""`` when no replayable user/assistant text exists.
     """
+    items = summary_only_items(items)
     turns: list[str] = []
     for item in items:
         if item.get("type") != "message":
@@ -5676,6 +5717,8 @@ def _native_terminal_start_error_payload(exc: BaseException, runtime_name: str) 
         not surfaced to the caller.
     """
     _logger.warning("Native %s terminal start failed: %s", runtime_name, exc, exc_info=exc)
+    if isinstance(exc, ForkContextTooLarge):
+        return {"code": exc.code, "message": str(exc)}
     if IS_WINDOWS:
         # Native terminals are tmux/PTY-based and disabled on Windows by design.
         # Give the client an actionable message instead of a log pointer.
@@ -5740,8 +5783,9 @@ def _native_terminal_start_error_response(exc: BaseException, runtime_name: str)
     :returns: HTTP 500 response with an ``error`` object carrying the
         real failure message.
     """
+    status_code = exc.http_status if isinstance(exc, ForkContextTooLarge) else 500
     return JSONResponse(
-        status_code=500,
+        status_code=status_code,
         content={"error": _native_terminal_start_error_payload(exc, runtime_name)},
     )
 
@@ -6274,6 +6318,8 @@ async def _auto_create_claude_terminal(
             if _transcript is not None:
                 resume_external_session_id = session_external_id
                 resume_prefix_bytes = _measured_prefix_bytes(_transcript)
+        except ForkContextTooLarge:
+            raise
         except Exception:  # noqa: BLE001 — best-effort; launch fresh on failure
             _logger.warning(
                 "Could not synthesize Claude resume transcript for %s; launching without --resume",
@@ -6301,6 +6347,8 @@ async def _auto_create_claude_terminal(
                 target_external_session_id=our_uuid,
                 clone_workspace=_clone_workspace,
             )
+        except ForkContextTooLarge:
+            raise
         except Exception:  # noqa: BLE001 — best-effort; launch fresh on failure
             _cloned = None
             _logger.warning(
@@ -6365,6 +6413,8 @@ async def _auto_create_claude_terminal(
                 external_session_id=our_uuid,
                 workspace=_clone_workspace,
             )
+        except ForkContextTooLarge:
+            raise
         except Exception:  # noqa: BLE001 — best-effort; launch fresh on failure
             _built = None
             _logger.warning(

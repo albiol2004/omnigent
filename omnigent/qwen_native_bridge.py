@@ -40,8 +40,10 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 from omnigent._platform import stable_user_id
+from omnigent.fork_context import summary_only_items
 from omnigent.json_types import JsonObject as _JsonObject
 
 #: Env var carrying the bridge dir into the harness executor process.
@@ -199,6 +201,34 @@ def _qwen_text_from_api_content(content: object, api_type: str) -> str:
     return "".join(parts)
 
 
+def _qwen_resume_items(items: list[_JsonObject]) -> list[_JsonObject]:
+    """Replace persisted compaction markers with their summary messages."""
+    normalized: list[_JsonObject] = []
+    for item in summary_only_items(items):
+        if item.get("type") != "compaction":
+            normalized.append(item)
+            continue
+        replacements = item.get("compacted_messages")
+        if not isinstance(replacements, list) or not replacements:
+            summary = item.get("summary")
+            replacements = [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "[Previous summary]"}],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": summary or ""}],
+                },
+            ]
+        for replacement in replacements:
+            if isinstance(replacement, dict):
+                normalized.append(cast(_JsonObject, replacement))
+    return normalized
+
+
 def qwen_session_records_from_session_items(
     items: list[_JsonObject],
     *,
@@ -235,6 +265,7 @@ def qwen_session_records_from_session_items(
         value for deterministic output in tests.
     :returns: qwen recording record dicts in order (empty if nothing carryable).
     """
+    items = _qwen_resume_items(items)
     ts = timestamp or _qwen_iso_now()
     cwd_str = os.path.realpath(str(cwd))
     skip_response_ids = {

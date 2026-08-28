@@ -21,6 +21,8 @@ class ErrorCode:
 
     :cvar NOT_FOUND: Resource does not exist (HTTP 404).
     :cvar INVALID_INPUT: Request validation failed (HTTP 400).
+    :cvar FORK_CONTEXT_TOO_LARGE: Fork history exceeds the configured
+        harness context limit (HTTP 413).
     :cvar ALREADY_EXISTS: Duplicate resource (HTTP 409).
     :cvar CONFLICT: Operation conflicts with current state (HTTP 409).
     :cvar INTERNAL_ERROR: Unexpected server error (HTTP 500).
@@ -64,6 +66,7 @@ class ErrorCode:
     FORBIDDEN = "forbidden"
     NOT_FOUND = "not_found"
     INVALID_INPUT = "invalid_input"
+    FORK_CONTEXT_TOO_LARGE = "fork_context_too_large"
     ALREADY_EXISTS = "already_exists"
     CONFLICT = "conflict"
     INTERNAL_ERROR = "internal_error"
@@ -83,6 +86,7 @@ _CODE_TO_HTTP_STATUS: dict[str, int] = {
     ErrorCode.FORBIDDEN: 403,
     ErrorCode.NOT_FOUND: 404,
     ErrorCode.INVALID_INPUT: 400,
+    ErrorCode.FORK_CONTEXT_TOO_LARGE: 413,
     ErrorCode.ALREADY_EXISTS: 409,
     ErrorCode.CONFLICT: 409,
     ErrorCode.INTERNAL_ERROR: 500,

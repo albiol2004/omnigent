@@ -42,6 +42,11 @@ from typing import cast
 
 import httpx
 
+from omnigent.fork_context import (
+    guard_fork_context_bytes,
+    jsonl_context_bytes,
+    summary_only_items,
+)
 from omnigent.host.daemon_launch import error_text
 from omnigent.json_types import JsonObject as _JsonObject
 from omnigent.native_terminal import url_component
@@ -147,6 +152,34 @@ def _pi_text_blocks_from_api_content(content: object, *, api_type: str) -> list[
     return blocks
 
 
+def _pi_resume_items(items: list[_JsonObject]) -> list[_JsonObject]:
+    """Replace persisted compaction markers with their summary messages."""
+    normalized: list[_JsonObject] = []
+    for item in summary_only_items(items):
+        if item.get("type") != "compaction":
+            normalized.append(item)
+            continue
+        replacements = item.get("compacted_messages")
+        if not isinstance(replacements, list) or not replacements:
+            summary = item.get("summary")
+            replacements = [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "[Previous summary]"}],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": summary or ""}],
+                },
+            ]
+        for replacement in replacements:
+            if isinstance(replacement, dict):
+                normalized.append(cast(_JsonObject, replacement))
+    return normalized
+
+
 def _pi_tool_arguments(value: object) -> _JsonObject:
     """Parse an Omnigent function-call ``arguments`` string into a Pi object.
 
@@ -237,6 +270,7 @@ def pi_session_records_from_session_items(
         ``model``.
     :returns: Pi session record dictionaries (header first).
     """
+    items = _pi_resume_items(items)
     timestamp = _pi_entry_timestamp()
     header: _JsonObject = {
         "type": "session",
@@ -502,11 +536,13 @@ async def fetch_all_session_items_for_pi_resume(
         for item in data:
             if isinstance(item, dict):
                 items.append(item)
-        if not payload.get("has_more"):
+        if not data or not payload.get("has_more"):
             return items
         last_id = payload.get("last_id")
-        if not isinstance(last_id, str) or not last_id:
-            raise RuntimeError(f"History fetch for {session_id!r} set has_more without last_id.")
+        if not isinstance(last_id, str) or not last_id or last_id == after:
+            raise RuntimeError(
+                f"History fetch for {session_id!r} set has_more without a forward cursor."
+            )
         after = last_id
 
 
@@ -587,5 +623,6 @@ async def ensure_local_pi_resume_session(
     if len(records) <= 1:
         return None
     target = pi_resume_session_path(session_dir, external_session_id)
+    guard_fork_context_bytes(jsonl_context_bytes(records))
     write_pi_session_records(target, records)
     return target

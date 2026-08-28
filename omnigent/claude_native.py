@@ -104,6 +104,11 @@ from omnigent.claude_native_state import (
 )
 from omnigent.conversation_browser import conversation_url, open_conversation_link_if_enabled
 from omnigent.entities.session_resources import terminal_resource_id
+from omnigent.fork_context import (
+    guard_fork_context_bytes,
+    max_fork_context_bytes,
+    summary_only_items,
+)
 from omnigent.host.daemon_launch import (
     DAEMON_POLL_INTERVAL_S,
     error_text,
@@ -1658,6 +1663,47 @@ def _copy_transcript_with_cwd(
             dst.write(json.dumps(payload, separators=(",", ":")) + "\n")
 
 
+def _compact_cloned_transcript(path: Path) -> bool:
+    """Keep the latest Claude compaction boundary and everything after it."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    payloads: list[_JsonObject | None] = []
+    latest_summary: int | None = None
+    latest_boundary: int | None = None
+    for index, line in enumerate(lines):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise click.ClickException(
+                f"Cannot compact malformed Claude transcript {path}: "
+                f"line {index + 1} is not valid JSON."
+            ) from exc
+        parsed = _json_object(payload)
+        payloads.append(parsed)
+        if parsed is None:
+            continue
+        if parsed.get("isCompactSummary") is True:
+            latest_summary = index
+        if parsed.get("subtype") == "compact_boundary":
+            latest_boundary = index
+    if latest_summary is None and latest_boundary is None:
+        return False
+
+    start = latest_summary if latest_summary is not None else latest_boundary
+    if latest_boundary is not None:
+        start = latest_boundary
+    compacted_path = path.with_suffix(".compact.tmp")
+    try:
+        with compacted_path.open("w", encoding="utf-8") as handle:
+            for payload in payloads[start:]:
+                if payload is not None:
+                    handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        os.replace(compacted_path, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            compacted_path.unlink()
+    return True
+
+
 def _sanitize_cloned_tool_result_record(payload: _JsonObject) -> None:
     """
     Repair image duplication in one copied transcript record, in place.
@@ -1835,6 +1881,15 @@ def _clone_claude_transcript(
             target=tmp,
             current=clone_workspace,
             new_session_id=target_external_session_id,
+        )
+        initial_bytes = tmp.stat().st_size
+        compacted_bytes: int | None = None
+        if initial_bytes > max_fork_context_bytes():
+            if _compact_cloned_transcript(tmp):
+                compacted_bytes = tmp.stat().st_size
+        guard_fork_context_bytes(
+            initial_bytes,
+            compacted_bytes=compacted_bytes,
         )
         os.replace(tmp, target)
     finally:
@@ -4173,6 +4228,7 @@ async def _ensure_local_claude_resume_transcript(
     # fetch the bytes back so the rebuilt transcript can reference a
     # live local file instead of silently dropping the attachment.
     items = await _resolve_session_item_file_references(client, session_id=session_id, items=items)
+    items = summary_only_items(items)
     records = _claude_transcript_records_from_session_items(
         items,
         session_id=session_id,
@@ -4191,6 +4247,7 @@ async def _ensure_local_claude_resume_transcript(
         with tmp.open("w", encoding="utf-8") as handle:
             for record in records:
                 handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+        guard_fork_context_bytes(tmp.stat().st_size)
         os.replace(tmp, target)
     except OSError as exc:
         raise click.ClickException(
@@ -4238,7 +4295,11 @@ async def _fetch_all_session_items_for_claude_resume(
             raise click.ClickException(
                 f"History fetch for {session_id!r} returned non-JSON body: {exc}"
             ) from exc
-        data = payload.get("data") if payload is not None else None
+        if payload is None:
+            raise click.ClickException(
+                f"History fetch for {session_id!r} returned an invalid item list."
+            )
+        data = payload.get("data")
         if not isinstance(data, list):
             raise click.ClickException(
                 f"History fetch for {session_id!r} returned an invalid item list."
@@ -4247,12 +4308,12 @@ async def _fetch_all_session_items_for_claude_resume(
             parsed_item = _json_object(item)
             if parsed_item is not None:
                 items.append(parsed_item)
-        if payload is None or not payload.get("has_more"):
+        if not data or not payload.get("has_more"):
             return items
         last_id = payload.get("last_id")
-        if not isinstance(last_id, str) or not last_id:
+        if not isinstance(last_id, str) or not last_id or last_id == after:
             raise click.ClickException(
-                f"History fetch for {session_id!r} set has_more without last_id."
+                f"History fetch for {session_id!r} set has_more without a forward cursor."
             )
         after = last_id
 
@@ -4330,12 +4391,33 @@ def _claude_transcript_records_from_session_items(
     records: list[_JsonObject] = []
     parent_uuid: str | None = None
     tool_parent_by_call_id: dict[str, str] = {}
+    items = summary_only_items(items)
     for index, item in enumerate(items):
         # Compaction items carry the post-compaction context. Replace
         # all prior records with the compacted messages so the
         # reconstructed transcript reflects the compacted state.
         if item.get("type") == "compaction":
             compacted_messages = item.get("compacted_messages")
+            if not isinstance(compacted_messages, list) or not compacted_messages:
+                summary = item.get("summary")
+                if isinstance(summary, str) and summary:
+                    compacted_messages = [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "[Previous conversation summary]",
+                                }
+                            ],
+                        },
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": summary}],
+                        },
+                    ]
             if isinstance(compacted_messages, list) and compacted_messages:
                 records.clear()
                 parent_uuid = None

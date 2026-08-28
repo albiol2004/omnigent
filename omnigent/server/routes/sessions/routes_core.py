@@ -2377,12 +2377,19 @@ def register_core_routes(
             source_items,
             body.up_to_response_id,
         )
+        full_prefix_requested = context_items is not None and len(context_items) == len(
+            source_items
+        )
+        if full_prefix_requested:
+            passthrough_response_id = None
+        else:
+            passthrough_response_id = body.up_to_response_id
         replacement_items = None
         skip_reasons = _native_clone_passthrough_skip_reasons(
             guard_enabled=fork_native_guard_enabled(),
             external_session_id=source.external_session_id,
             resume_source_native_session=resume_source_native_session,
-            up_to_response_id=body.up_to_response_id,
+            up_to_response_id=passthrough_response_id,
             carry_history_into_native=carry_history_into_native,
             target_harness=target_harness,
         )

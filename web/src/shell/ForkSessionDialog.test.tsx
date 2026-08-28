@@ -253,6 +253,7 @@ describe("ForkSessionDialog", () => {
     await waitFor(() => expect(submit).toHaveAttribute("aria-busy", "true"));
     expect(submit).toBeDisabled();
     expect(screen.getByRole("status", { name: "Loading" })).toBeInTheDocument();
+    expect(screen.getByText("Summarizing history…")).toBeInTheDocument();
 
     settle({ id: "conv_fork" } as Fork);
     await waitFor(() => expect(navigateMock).toHaveBeenCalledWith("/c/conv_fork"));
@@ -319,6 +320,19 @@ describe("ForkSessionDialog", () => {
       expect(screen.getByTestId("fork-session-error")).toHaveTextContent("403 forbidden"),
     );
     // A failed fork must not navigate the user away from the source session.
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves the oversized-context error text inline", async () => {
+    const message = "Fork context too large: 3900000 bytes exceeds threshold 600000 bytes";
+    forkSessionMock.mockRejectedValue(new Error(message));
+    renderDialog();
+
+    fireEvent.click(screen.getByTestId("fork-session-submit"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("fork-session-error")).toHaveTextContent(message),
+    );
     expect(navigateMock).not.toHaveBeenCalled();
   });
 

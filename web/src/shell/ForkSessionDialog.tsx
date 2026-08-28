@@ -844,6 +844,17 @@ export function ForkSessionForm({
         </div>
       </div>
 
+      {submitting && (
+        <p
+          data-testid="fork-session-progress"
+          role="status"
+          aria-live="polite"
+          className="text-sm text-muted-foreground"
+        >
+          Summarizing history…
+        </p>
+      )}
+
       {error !== null && (
         <p data-testid="fork-session-error" className="text-sm text-destructive">
           {error}

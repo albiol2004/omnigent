@@ -8,10 +8,17 @@ from types import SimpleNamespace
 import pytest
 from starlette.testclient import TestClient
 
-from omnigent.entities import CompactionData, ConversationItem, MessageData
-from omnigent.fork_context import serialized_context_bytes
+from omnigent.entities import (
+    CompactionData,
+    ConversationItem,
+    FunctionCallData,
+    FunctionCallOutputData,
+    MessageData,
+)
+from omnigent.fork_context import estimate_fork_context_bytes, serialized_context_bytes
 from omnigent.runtime.compaction import CompactionResult, SummaryMetadata
 from omnigent.server.routes._sessions.common import _session_status_cache
+from omnigent.server.routes.sessions.routes_core import _fork_context_renderer
 from omnigent.spec import AgentSpec
 from omnigent.spec.types import ExecutorSpec
 from tests.server.routes.test_sessions_fork import (
@@ -79,14 +86,57 @@ def _message_text(item: ConversationItem) -> str:
     )
 
 
-def _spec_cache(model: str = "spec-model") -> _SpecCache:
+def _spec_cache(
+    model: str = "spec-model",
+    harness: str = "omnigent",
+) -> _SpecCache:
     """Build a cache with the model used by the route's compaction pass."""
     return _SpecCache(
         AgentSpec(
             spec_version=1,
-            executor=ExecutorSpec(model=model),
+            executor=ExecutorSpec(model=model, config={"harness": harness}),
         )
     )
+
+
+def _rendered_size_items() -> list[ConversationItem]:
+    """Build 496 mixed items whose Claude JSONL envelope exceeds 600 kB."""
+    items: list[ConversationItem] = []
+    text = "x" * 780
+    for index in range(496):
+        response_id = f"response_{index // 4:04d}"
+        kind = index % 4
+        if kind < 2:
+            data = MessageData(
+                role="user",
+                content=[{"type": "input_text", "text": text}],
+            )
+            item_type = "message"
+        elif kind == 2:
+            data = FunctionCallData(
+                agent="agent",
+                name="Read",
+                arguments=f'{{"path":"src/file.py","query":"{text}"}}',
+                call_id=f"call_{index:04d}",
+            )
+            item_type = "function_call"
+        else:
+            data = FunctionCallOutputData(
+                call_id=f"call_{index - 1:04d}",
+                output=text,
+            )
+            item_type = "function_call_output"
+        items.append(
+            ConversationItem(
+                id=f"item_{index:04d}",
+                type=item_type,
+                status="completed",
+                response_id=response_id,
+                created_at=1,
+                data=data,
+            )
+        )
+    return items
 
 
 def _patch_compaction_clients(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -105,7 +155,7 @@ async def test_oversized_fork_uses_compacted_replacement_items(
 ) -> None:
     """A short mocked summary is copied without changing the source."""
     store, source_item = _oversized_store()
-    actual = serialized_context_bytes([source_item.to_api_dict()])
+    actual = estimate_fork_context_bytes([source_item.to_api_dict()])
     monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", str(actual - 1))
     _patch_compaction_clients(monkeypatch)
     calls: list[dict[str, object]] = []
@@ -143,6 +193,86 @@ async def test_oversized_fork_uses_compacted_replacement_items(
 
 
 @pytest.mark.asyncio
+async def test_rendered_claude_size_triggers_compaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude's rendered JSONL, rather than API JSON, triggers compaction."""
+    items = _rendered_size_items()
+    store = _ConversationStore(
+        conversations={_SOURCE_ID: _make_conversation()},
+        items_by_conv={_SOURCE_ID: items},
+    )
+    payload = [item.to_api_dict() for item in items]
+    raw_bytes = serialized_context_bytes(payload)
+    assert 450_000 < raw_bytes < 500_000
+    monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", "600000")
+    _patch_compaction_clients(monkeypatch)
+    calls: list[dict[str, object]] = []
+
+    async def _compact(*args: object, **kwargs: object) -> CompactionResult:
+        del args
+        calls.append(kwargs)
+        return CompactionResult(
+            messages=[],
+            summary_metadata=SummaryMetadata(
+                text="compact rendered history",
+                last_item_id=items[-1].id,
+                model="spec-model",
+                token_count=3,
+            ),
+        )
+
+    monkeypatch.setattr("omnigent.fork_compact.compact", _compact)
+
+    response = TestClient(
+        _build_app(
+            store,
+            agent_cache=_spec_cache(harness="claude-native"),
+        )
+    ).post(f"/v1/sessions/{_SOURCE_ID}/fork", json={})
+
+    assert response.status_code == 201, response.text
+    assert len(calls) == 1
+    fork_items = store._items[response.json()["id"]]
+    assert fork_items[0].type == "compaction"
+    assert isinstance(fork_items[0].data, CompactionData)
+    assert fork_items[0].data.summary == "compact rendered history"
+
+
+def test_rendered_claude_size_still_rejects_when_compaction_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rendered estimate still returns 413 when compaction is disabled."""
+    item = _make_item("item_1", "x" * 300)
+    store = _ConversationStore(
+        conversations={_SOURCE_ID: _make_conversation()},
+        items_by_conv={_SOURCE_ID: [item]},
+    )
+    payload = [item.to_api_dict()]
+    renderer = _fork_context_renderer(
+        "claude-native",
+        session_id=_SOURCE_ID,
+        workspace=None,
+        terminal_launch_args=None,
+    )
+    assert renderer is not None
+    actual = estimate_fork_context_bytes(payload, renderer=renderer)
+    monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", str(actual - 1))
+    monkeypatch.setenv("OMNIGENT_FORK_COMPACT", "0")
+
+    response = TestClient(
+        _build_app(
+            store,
+            agent_cache=_spec_cache(harness="claude-native"),
+        )
+    ).post(f"/v1/sessions/{_SOURCE_ID}/fork", json={})
+
+    assert response.status_code == 413, response.text
+    assert str(actual) in response.json()["error"]["message"]
+    assert store.fork_calls == []
+
+
+@pytest.mark.asyncio
 async def test_oversized_fork_keeps_recent_assistant_tail_verbatim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -170,7 +300,7 @@ async def test_oversized_fork_keeps_recent_assistant_tail_verbatim(
         items_by_conv={_SOURCE_ID: items},
     )
     source_snapshot = [item.to_api_dict() for item in items]
-    actual = serialized_context_bytes(source_snapshot)
+    actual = estimate_fork_context_bytes(source_snapshot)
     monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", str(actual - 1))
     monkeypatch.setenv("OMNIGENT_FORK_COMPACT", "1")
     monkeypatch.delenv("OMNIGENT_FORK_COMPACT_MODEL", raising=False)
@@ -228,7 +358,7 @@ async def test_summary_failure_keeps_original_413_and_source(
 ) -> None:
     """A failed summary never reaches the fork store operation."""
     store, source_item = _oversized_store()
-    actual = serialized_context_bytes([source_item.to_api_dict()])
+    actual = estimate_fork_context_bytes([source_item.to_api_dict()])
     monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", str(actual - 1))
     _patch_compaction_clients(monkeypatch)
 
@@ -257,7 +387,7 @@ async def test_running_source_rejects_fork_compaction(
 ) -> None:
     """A running source cannot be compacted concurrently with its turn."""
     store, source_item = _oversized_store()
-    actual = serialized_context_bytes([source_item.to_api_dict()])
+    actual = estimate_fork_context_bytes([source_item.to_api_dict()])
     monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", str(actual - 1))
     monkeypatch.setitem(_session_status_cache, _SOURCE_ID, "running")
 

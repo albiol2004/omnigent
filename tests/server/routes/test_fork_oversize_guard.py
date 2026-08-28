@@ -6,7 +6,7 @@ from starlette.testclient import TestClient
 
 from omnigent.entities import ConversationItem, PagedList
 from omnigent.entities.conversation import CompactionData
-from omnigent.fork_context import serialized_context_bytes, summary_only_items
+from omnigent.fork_context import estimate_fork_context_bytes, summary_only_items
 from tests.server.routes.test_sessions_fork import (
     _build_app,
     _ConversationStore,
@@ -26,7 +26,7 @@ def test_fork_refuses_oversized_history_before_store_fork(
         conversations={_SOURCE_ID: _make_conversation()},
         items_by_conv={_SOURCE_ID: [item]},
     )
-    actual = serialized_context_bytes([item.to_api_dict()])
+    actual = estimate_fork_context_bytes([item.to_api_dict()])
     monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", str(actual - 1))
     monkeypatch.setenv("OMNIGENT_FORK_COMPACT", "0")
 
@@ -65,7 +65,7 @@ def test_fork_allows_summary_only_compaction(monkeypatch) -> None:
         items_by_conv={_SOURCE_ID: source_items},
     )
     payload = [item.to_api_dict() for item in source_items]
-    compacted_size = serialized_context_bytes(summary_only_items(payload))
+    compacted_size = estimate_fork_context_bytes(summary_only_items(payload))
     monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", str(compacted_size + 1))
 
     response = TestClient(_build_app(store)).post(

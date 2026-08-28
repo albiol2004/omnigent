@@ -9,15 +9,59 @@ import httpx
 import pytest
 
 import omnigent.claude_native as claude_native
+from omnigent import claude_native_bridge
 from omnigent.claude_native import _fetch_all_session_items_for_claude_resume
 from omnigent.fork_context import (
+    DEFAULT_FORK_JSONL_INFLATION,
     DEFAULT_FORK_MAX_CONTEXT_BYTES,
     ForkContextTooLarge,
+    estimate_fork_context_bytes,
+    fork_jsonl_inflation,
     guard_fork_context,
     max_fork_context_bytes,
     serialized_context_bytes,
     summary_only_items,
 )
+
+
+def _configure_claude_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep Claude estimate tests inside the temporary worktree."""
+    monkeypatch.setattr(claude_native, "_CLAUDE_PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(
+        claude_native_bridge,
+        "bridge_dir_for_conversation_id",
+        lambda _session_id: tmp_path / "bridge",
+    )
+
+
+def _estimate_history_handler(request: httpx.Request) -> httpx.Response:
+    """Serve a small synthetic conversation to the Claude rebuild."""
+    del request
+    return httpx.Response(
+        200,
+        json={
+            "data": [
+                {
+                    "id": "user_1",
+                    "type": "message",
+                    "role": "user",
+                    "response_id": "response_1",
+                    "content": [{"type": "input_text", "text": "x" * 200}],
+                },
+                {
+                    "id": "assistant_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "response_id": "response_1",
+                    "content": [{"type": "output_text", "text": "done"}],
+                },
+            ],
+            "has_more": False,
+        },
+    )
 
 
 def test_oversized_context_names_actual_size_and_threshold(
@@ -41,6 +85,22 @@ def test_invalid_limit_uses_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Invalid environment values do not disable the safety guard."""
     monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", "not-an-int")
     assert max_fork_context_bytes() == DEFAULT_FORK_MAX_CONTEXT_BYTES
+
+
+def test_invalid_jsonl_inflation_uses_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invalid renderer fallback values do not disable the safety estimate."""
+    monkeypatch.setenv("OMNIGENT_FORK_JSONL_INFLATION", "not-a-number")
+    assert fork_jsonl_inflation() == DEFAULT_FORK_JSONL_INFLATION
+
+
+def test_fork_estimate_uses_jsonl_inflation_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing renderer applies the configured JSONL inflation factor."""
+    payload = {"role": "user", "content": "x" * 100}
+    monkeypatch.setenv("OMNIGENT_FORK_JSONL_INFLATION", "2")
+
+    assert estimate_fork_context_bytes(payload) == 2 * serialized_context_bytes(payload)
 
 
 def test_summary_only_compaction_is_measured_again() -> None:
@@ -106,6 +166,44 @@ async def test_claude_history_fetch_drains_all_pages() -> None:
     assert len(requests) == 2
     assert requests[0].url.params["limit"] == "1000"
     assert requests[1].url.params["after"] == "first"
+
+
+@pytest.mark.asyncio
+async def test_claude_fork_estimate_matches_rebuilt_transcript(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pure estimate matches the bytes written by Claude's rebuild."""
+    _configure_claude_paths(tmp_path, monkeypatch)
+    workspace = tmp_path / "workspace"
+    external_session_id = "00000000-0000-0000-0000-000000000000"
+    bridge_dir = tmp_path / "bridge"
+
+    def render(value: object) -> list[dict[str, object]]:
+        return claude_native._claude_transcript_records_from_session_items(
+            value,  # type: ignore[arg-type]
+            session_id="conv_claude",
+            external_session_id=external_session_id,
+            cwd=workspace,
+            bridge_dir=bridge_dir,
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_estimate_history_handler),
+        base_url="https://example.com",
+    ) as client:
+        items = await _fetch_all_session_items_for_claude_resume(client, "conv_claude")
+        estimated = estimate_fork_context_bytes(items, renderer=render)
+        written = await claude_native._ensure_local_claude_resume_transcript(
+            client,
+            session_id="conv_claude",
+            external_session_id=external_session_id,
+            workspace=workspace,
+            guard=False,
+        )
+
+    assert written is not None
+    assert estimated == written.stat().st_size
 
 
 def test_small_context_is_returned_without_mutation() -> None:

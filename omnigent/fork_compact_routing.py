@@ -43,6 +43,12 @@ _PROVIDER_FAMILIES = {
 _CODEX_MODELS_BY_NAME: dict[str, str] = {model.lower(): model for model in _CODEX_MODELS}
 
 
+_VENDOR_ROOT_URLS = {
+    ANTHROPIC_FAMILY: "https://api.anthropic.com",
+    OPENAI_FAMILY: "https://api.openai.com",
+}
+
+
 def _key_connection(
     providers: Mapping[str, object],
     family_name: str,
@@ -66,7 +72,11 @@ def _key_connection(
         connection = {"api_key": api_key}
         base_url = getattr(family, "base_url", None)
         if isinstance(base_url, str) and base_url.strip():
-            connection["base_url"] = base_url
+            stripped = base_url.strip().rstrip("/")
+            # Config often stores the vendor origin without /v1; the
+            # generic adapters already append /messages or /responses.
+            if stripped != _VENDOR_ROOT_URLS.get(family_name):
+                connection["base_url"] = base_url.strip()
         return connection
     return None
 

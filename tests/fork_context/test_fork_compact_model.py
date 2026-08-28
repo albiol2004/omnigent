@@ -163,6 +163,29 @@ def test_codex_slug_maps_to_openai_key_provider(install_providers) -> None:
     }
 
 
+def test_anthropic_origin_url_does_not_override_adapter_v1(
+    install_providers,
+) -> None:
+    """Vendor origin URLs without /v1 must not be forwarded as base_url."""
+    install_providers(
+        _key_provider(
+            "anthropic",
+            ANTHROPIC_FAMILY,
+            "sk-anthropic",
+            base_url="https://api.anthropic.com",
+        )
+    )
+
+    resolved = fork_compact.resolve_fork_compact_model(
+        source_model_override="fable",
+        target_model=None,
+        spec_model=None,
+    )
+
+    assert resolved.model == "anthropic/claude-fable-5"
+    assert resolved.connection == {"api_key": "sk-anthropic"}
+
+
 def test_no_callable_model_raises_before_summary(install_providers) -> None:
     """No provider key produces a clear error instead of a generic LLM call."""
     install_providers()

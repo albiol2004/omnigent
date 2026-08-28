@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 import omnigent.claude_native as claude_native
+import omnigent.codex_native as codex_native
 from omnigent import claude_native_bridge
 from omnigent.claude_native import _fetch_all_session_items_for_claude_resume
 from omnigent.fork_context import (
@@ -217,11 +218,13 @@ def test_small_context_is_returned_without_mutation() -> None:
     assert measured == serialized_context_bytes(payload)
 
 
+@pytest.mark.parametrize("native_guard", [False, True], ids=["passthrough", "guarded"])
 def test_claude_clone_refuses_oversized_transcript(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    native_guard: bool,
 ) -> None:
-    """A native clone is rejected before its destination is committed."""
+    """A native clone only rejects oversized history in guarded mode."""
     source = tmp_path / "source.jsonl"
     source.write_text(
         json.dumps({"type": "user", "message": {"content": "x" * 200}}) + "\n",
@@ -239,15 +242,111 @@ def test_claude_clone_refuses_oversized_transcript(
         lambda _cwd: target_root,
     )
     monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", "32")
+    if native_guard:
+        monkeypatch.setenv("OMNIGENT_FORK_NATIVE_GUARD", "1")
+    else:
+        monkeypatch.delenv("OMNIGENT_FORK_NATIVE_GUARD", raising=False)
 
-    with pytest.raises(ForkContextTooLarge):
-        claude_native._clone_claude_transcript(
+    def clone() -> Path | None:
+        return claude_native._clone_claude_transcript(
             source_external_session_id="00000000-0000-0000-0000-000000000000",
             target_external_session_id="11111111-1111-1111-1111-111111111111",
             clone_workspace=tmp_path / "clone",
         )
 
-    assert not (target_root / "11111111-1111-1111-1111-111111111111.jsonl").exists()
+    target = target_root / "11111111-1111-1111-1111-111111111111.jsonl"
+    if native_guard:
+        with pytest.raises(ForkContextTooLarge):
+            clone()
+        assert not target.exists()
+    else:
+        result = clone()
+        assert result == target
+        assert target.is_file()
+        assert target.stat().st_size > 32
+
+
+@pytest.mark.parametrize("native_guard", [False, True], ids=["passthrough", "guarded"])
+def test_codex_clone_oversized_rollout_honors_native_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    native_guard: bool,
+) -> None:
+    """A Codex clone only rejects oversized history in guarded mode."""
+    source_home = tmp_path / "source-home"
+    source = (
+        source_home / "sessions" / "2026" / "06" / "05" / "rollout-2026-06-05T15-23-07-"
+        "019e96aa-0be2-7343-8d3b-6f914d60936b.jsonl"
+    )
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": "019e96aa-0be2-7343-8d3b-6f914d60936b",
+                            "cwd": str(tmp_path),
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {"text": "x" * 200},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        codex_native,
+        "codex_home_for_bridge_dir",
+        lambda _bridge_dir: source_home,
+    )
+    monkeypatch.setattr(
+        codex_native,
+        "_find_codex_rollout",
+        lambda *_args: source,
+    )
+    monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", "32")
+    if native_guard:
+        monkeypatch.setenv("OMNIGENT_FORK_NATIVE_GUARD", "1")
+    else:
+        monkeypatch.delenv("OMNIGENT_FORK_NATIVE_GUARD", raising=False)
+
+    target_thread = "019eaa11-1111-7222-8333-444455556666"
+    clone_home = tmp_path / "clone-home"
+
+    def clone() -> Path | None:
+        return codex_native._clone_codex_rollout(
+            source_session_id="conv_source",
+            source_thread_id="019e96aa-0be2-7343-8d3b-6f914d60936b",
+            target_thread_id=target_thread,
+            clone_codex_home=clone_home,
+            clone_workspace=tmp_path / "clone",
+        )
+
+    target = (
+        clone_home
+        / "sessions"
+        / "2026"
+        / "06"
+        / "05"
+        / (f"rollout-2026-06-05T15-23-07-{target_thread}.jsonl")
+    )
+    if native_guard:
+        with pytest.raises(ForkContextTooLarge):
+            clone()
+        assert not target.exists()
+    else:
+        result = clone()
+        assert result == target
+        assert target.is_file()
+        assert target.stat().st_size > 32
 
 
 def test_claude_clone_retries_with_summary_only_transcript(

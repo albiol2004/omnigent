@@ -63,6 +63,7 @@ from omnigent.codex_native_state import read_launch_state, write_launch_state
 from omnigent.conversation_browser import conversation_url, open_conversation_link_if_enabled
 from omnigent.entities.session_resources import terminal_resource_id
 from omnigent.fork_context import (
+    fork_native_guard_enabled,
     guard_fork_context_bytes,
     max_fork_context_bytes,
     summary_only_items,
@@ -1757,6 +1758,7 @@ def _clone_codex_rollout(
     target_thread_id: str,
     clone_codex_home: Path,
     clone_workspace: Path,
+    guard: bool | None = None,
 ) -> Path | None:
     """
     Clone a source Codex rollout into the clone's own ``CODEX_HOME``.
@@ -1789,6 +1791,8 @@ def _clone_codex_rollout(
     :param clone_workspace: The resolved directory the clone will run in
         (its worktree or same dir). Written into the structural ``cwd``
         fields. Pass an already-resolved path.
+    :param guard: Whether to reject an oversized clone. ``None`` uses the
+        ``OMNIGENT_FORK_NATIVE_GUARD`` environment setting.
     :returns: Path to the written clone rollout, or ``None`` when the ids
         are unsafe or the source rollout can't be found on this host
         (caller launches fresh in that case).
@@ -1811,6 +1815,7 @@ def _clone_codex_rollout(
     target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     tmp = target.with_suffix(".jsonl.tmp")
     try:
+        guard = fork_native_guard_enabled() if guard is None else guard
         _copy_rollout_with_cwd(
             source=source,
             target=tmp,
@@ -1825,6 +1830,7 @@ def _clone_codex_rollout(
         guard_fork_context_bytes(
             initial_bytes,
             compacted_bytes=compacted_bytes,
+            guard=guard,
         )
         os.replace(tmp, target)
     finally:

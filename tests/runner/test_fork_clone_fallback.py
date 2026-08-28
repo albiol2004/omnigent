@@ -29,21 +29,30 @@ async def _noop_forwarder(**kwargs: Any) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "rebuild_oversized",
-    [False, True],
-    ids=["rebuilds", "still-oversized"],
+    "native_guard,rebuild_oversized",
+    [
+        (False, False),
+        (True, False),
+        (True, True),
+    ],
+    ids=["clone-passthrough", "guarded-rebuilds", "guarded-still-oversized"],
 )
 async def test_claude_fork_clone_oversize_rebuilds_from_items(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    native_guard: bool,
     rebuild_oversized: bool,
 ) -> None:
-    """An oversized clone rebuilds from compacted fork items."""
+    """Only the guarded oversized clone falls back to copied items."""
     monkeypatch.setattr(claude_native_bridge, "_TRUSTED_PARENT", tmp_path)
     monkeypatch.setattr(claude_native_bridge, "_BRIDGE_ROOT", tmp_path / "bridges")
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://127.0.0.1:17400")
     monkeypatch.setenv("OMNIGENT_RUNNER_WORKSPACE", str(tmp_path))
+    if native_guard:
+        monkeypatch.setenv("OMNIGENT_FORK_NATIVE_GUARD", "1")
+    else:
+        monkeypatch.delenv("OMNIGENT_FORK_NATIVE_GUARD", raising=False)
 
     metadata = orchestration._ClaudeSessionLaunchMetadata(
         fork_source_external_id="source-claude-id",
@@ -59,7 +68,11 @@ async def test_claude_fork_clone_oversize_rebuilds_from_items(
 
     def _oversized_clone(**kwargs: Any) -> Path:
         clone_calls.append(kwargs)
-        raise ForkContextTooLarge(782_357, 600_000)
+        if native_guard:
+            raise ForkContextTooLarge(782_357, 600_000)
+        transcript = tmp_path / "cloned.jsonl"
+        transcript.write_bytes(b"x" * 600_001)
+        return transcript
 
     monkeypatch.setattr(claude_native, "_clone_claude_transcript", _oversized_clone)
     rebuild_calls: list[dict[str, Any]] = []
@@ -138,7 +151,7 @@ async def test_claude_fork_clone_oversize_rebuilds_from_items(
             )
 
     with caplog.at_level(logging.INFO, logger="omnigent.runner.app"):
-        if rebuild_oversized:
+        if native_guard and rebuild_oversized:
             with pytest.raises(ForkContextTooLarge) as raised:
                 await orchestration._auto_create_claude_terminal(
                     "forked-session",
@@ -158,16 +171,28 @@ async def test_claude_fork_clone_oversize_rebuilds_from_items(
             await asyncio.sleep(0)
 
     assert len(clone_calls) == 1
-    assert len(rebuild_calls) == 1
-    assert rebuild_calls[0]["guard"] is True
-    assert (
-        "source transcript 782357 bytes > threshold; rebuilding from compacted items"
-    ) in caplog.text
-    if rebuild_oversized:
-        assert launched_args == []
+    if native_guard:
+        assert len(rebuild_calls) == 1
+        assert rebuild_calls[0]["guard"] is True
+        assert (
+            "source transcript 782357 bytes > threshold; rebuilding from compacted items"
+        ) in caplog.text
     else:
+        assert rebuild_calls == []
+        assert "rebuilding from compacted items" not in caplog.text
+        assert clone_calls[0]["target_external_session_id"]
+        assert (tmp_path / "cloned.jsonl").stat().st_size > 600_000
+    if native_guard and rebuild_oversized:
+        assert launched_args == []
+    elif native_guard:
         assert len(launched_args) == 1
         assert list(launched_args[0][:2]) == [
             "--resume",
             rebuild_calls[0]["external_session_id"],
+        ]
+    else:
+        assert len(launched_args) == 1
+        assert list(launched_args[0][:2]) == [
+            "--resume",
+            clone_calls[0]["target_external_session_id"],
         ]

@@ -105,6 +105,7 @@ from omnigent.claude_native_state import (
 from omnigent.conversation_browser import conversation_url, open_conversation_link_if_enabled
 from omnigent.entities.session_resources import terminal_resource_id
 from omnigent.fork_context import (
+    fork_native_guard_enabled,
     guard_fork_context_bytes,
     max_fork_context_bytes,
     summary_only_items,
@@ -253,6 +254,19 @@ _SESSION_LABELS = {
     _WRAPPER_LABEL_KEY: _WRAPPER_LABEL_VALUE,
 }
 _CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+
+
+def _claude_projects_dir() -> Path:
+    """Return Claude's projects root, overridable for throwaway tests."""
+    override = os.environ.get("OMNIGENT_CLAUDE_PROJECTS_DIR", "").strip()
+    if override:
+        return Path(override)
+    configured = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if configured:
+        return Path(configured) / "projects"
+    return _CLAUDE_PROJECTS_DIR
+
+
 _CLAUDE_CODE_MANAGED_SETTINGS_PATHS: tuple[Path, ...] = (
     Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
     Path("/etc/claude-code/managed-settings.json"),
@@ -1605,7 +1619,7 @@ def _redirect_claude_transcript_to_current_project(
     if source is None:
         raise click.ClickException(
             f"Claude transcript {external_session_id!r} was not found under "
-            f"{_CLAUDE_PROJECTS_DIR}."
+            f"{_claude_projects_dir()}."
         )
     target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     tmp = target.with_suffix(".jsonl.tmp")
@@ -1828,6 +1842,7 @@ def _clone_claude_transcript(
     source_external_session_id: str,
     target_external_session_id: str,
     clone_workspace: Path,
+    guard: bool | None = None,
 ) -> Path | None:
     """
     Clone a source Claude transcript into the clone's project dir.
@@ -1860,6 +1875,8 @@ def _clone_claude_transcript(
         project dir and the rewritten ``cwd`` value. Pass an
         already-resolved path (symlinks collapsed) so the project-dir
         encoding matches what Claude computes.
+    :param guard: Whether to reject an oversized clone. ``None`` uses the
+        ``OMNIGENT_FORK_NATIVE_GUARD`` environment setting.
     :returns: Path to the written clone transcript, or ``None`` when the
         target id is unsafe or the source transcript can't be found on
         this host (caller launches fresh in that case).
@@ -1876,6 +1893,7 @@ def _clone_claude_transcript(
     target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     tmp = target.with_suffix(".jsonl.tmp")
     try:
+        guard = fork_native_guard_enabled() if guard is None else guard
         _copy_transcript_with_cwd(
             source=source,
             target=tmp,
@@ -1890,6 +1908,7 @@ def _clone_claude_transcript(
         guard_fork_context_bytes(
             initial_bytes,
             compacted_bytes=compacted_bytes,
+            guard=guard,
         )
         os.replace(tmp, target)
     finally:
@@ -1912,12 +1931,13 @@ def _find_claude_transcript(
     """
     if not _CLAUDE_SESSION_ID_RE.fullmatch(external_session_id):
         return None
-    if not _CLAUDE_PROJECTS_DIR.is_dir():
+    projects_dir = _claude_projects_dir()
+    if not projects_dir.is_dir():
         return None
     matches: list[Path] = []
     filename = f"{external_session_id}.jsonl"
     excluded = exclude.resolve() if exclude is not None else None
-    for project_dir in _CLAUDE_PROJECTS_DIR.iterdir():
+    for project_dir in projects_dir.iterdir():
         if not project_dir.is_dir():
             continue
         candidate = project_dir / filename
@@ -1940,7 +1960,7 @@ def _claude_project_dir_for_cwd(cwd: Path) -> Path:
     :param cwd: Absolute cwd, e.g. ``Path("/home/me/repo")``.
     :returns: Claude project transcript directory.
     """
-    return _CLAUDE_PROJECTS_DIR / _sanitize_claude_project_name(str(cwd))
+    return _claude_projects_dir() / _sanitize_claude_project_name(str(cwd))
 
 
 def _sanitize_claude_project_name(path: str) -> str:

@@ -47,6 +47,7 @@ from omnigent.fork_compact import (
 from omnigent.fork_context import (
     ForkContextTooLarge,
     estimate_fork_context_bytes,
+    fork_native_guard_enabled,
     guard_fork_context_bytes,
     summary_only_items,
 )
@@ -2344,7 +2345,31 @@ def register_core_routes(
             body.up_to_response_id,
         )
         replacement_items = None
-        if context_items is not None:
+        target_is_native_clone = _normalized_fork_harness(target_harness) in {
+            "claude-native",
+            "codex-native",
+        }
+        native_clone_passthrough = (
+            not fork_native_guard_enabled()
+            and isinstance(source.external_session_id, str)
+            and bool(source.external_session_id)
+            and resume_source_native_session
+            and body.up_to_response_id is None
+            and carry_history_into_native
+            and target_is_native_clone
+        )
+        if native_clone_passthrough:
+            source_harness = await _resolve_fork_target_harness(
+                source,
+                source_agent,
+                copy_model_settings=True,
+                agent_cache=agent_cache,
+            )
+            native_clone_passthrough = _normalized_fork_harness(source_harness) in {
+                "claude-native",
+                "codex-native",
+            }
+        if context_items is not None and not native_clone_passthrough:
             payload = [item.to_api_dict() for item in context_items]
             compacted_payload = summary_only_items(payload)
             renderer = _fork_context_renderer(

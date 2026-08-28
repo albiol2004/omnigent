@@ -7,11 +7,14 @@ from starlette.testclient import TestClient
 from omnigent.entities import ConversationItem, PagedList
 from omnigent.entities.conversation import CompactionData
 from omnigent.fork_context import estimate_fork_context_bytes, summary_only_items
+from omnigent.server.routes.sessions import routes_core as routes_core_module
 from tests.server.routes.test_sessions_fork import (
     _build_app,
     _ConversationStore,
     _make_conversation,
     _make_item,
+    _StubAgentCache,
+    _switch_agent_store,
 )
 
 _SOURCE_ID = "e9f8f58523cec9a57d3bdf93be543e8c"
@@ -40,6 +43,96 @@ def test_fork_refuses_oversized_history_before_store_fork(
     assert error["code"] == "fork_context_too_large"
     assert str(actual) in error["message"]
     assert f"threshold {actual - 1} bytes" in error["message"]
+    assert store.fork_calls == []
+
+
+def test_same_family_native_clone_skips_preflight_compaction(monkeypatch) -> None:
+    """A native clone carries its local transcript without preflight compaction."""
+    source = _make_conversation()
+    source.external_session_id = "source-native-session"
+    item = _make_item("item_1", "x" * 300)
+    store = _ConversationStore(
+        conversations={_SOURCE_ID: source},
+        items_by_conv={_SOURCE_ID: [item]},
+    )
+    actual = estimate_fork_context_bytes([item.to_api_dict()])
+    monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", str(actual - 1))
+    monkeypatch.setenv("OMNIGENT_FORK_COMPACT", "1")
+    monkeypatch.delenv("OMNIGENT_FORK_NATIVE_GUARD", raising=False)
+
+    async def _native_target_harness(*_args, **_kwargs) -> str:
+        return "claude-native"
+
+    def _native_history(_agent) -> bool:
+        return True
+
+    def _no_cursor_history(_agent) -> bool:
+        return False
+
+    async def _unexpected_compaction(*_args, **_kwargs) -> None:
+        raise AssertionError("native clone should skip compact_fork_items")
+
+    monkeypatch.setattr(
+        routes_core_module,
+        "_resolve_fork_target_harness",
+        _native_target_harness,
+    )
+    monkeypatch.setattr(
+        routes_core_module,
+        "_agent_carries_native_fork_history",
+        _native_history,
+    )
+    monkeypatch.setattr(
+        routes_core_module,
+        "_agent_carries_cursor_fork_history",
+        _no_cursor_history,
+    )
+    monkeypatch.setattr(
+        routes_core_module,
+        "compact_fork_items",
+        _unexpected_compaction,
+    )
+
+    response = TestClient(_build_app(store)).post(
+        f"/v1/sessions/{_SOURCE_ID}/fork",
+        json={},
+    )
+
+    assert response.status_code == 201, response.text
+    assert store.fork_calls[0]["replacement_items"] is None
+    assert store._items["c538360473d41c84c1eee13918fbeca0"] == [item]
+
+
+def test_sdk_source_external_id_keeps_preflight_guard(monkeypatch) -> None:
+    """A native target does not bypass the guard for an SDK source."""
+    source = _make_conversation()
+    source.external_session_id = "stale-sdk-session"
+    item = _make_item("item_1", "x" * 300)
+    store = _ConversationStore(
+        conversations={_SOURCE_ID: source},
+        items_by_conv={_SOURCE_ID: [item]},
+    )
+    agent_store = _switch_agent_store()
+    cache = _StubAgentCache(
+        {
+            "087b7cb7ac30abf4debfaa578d052ec6": "claude_sdk",
+            "280d725b404d2915f9e9d6cccce91303": "claude-native",
+        }
+    )
+    monkeypatch.setattr(
+        "omnigent.server.routes.sessions.get_agent_cache",
+        lambda: cache,
+    )
+    monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", "32")
+    monkeypatch.setenv("OMNIGENT_FORK_COMPACT", "0")
+
+    app = _build_app(store, agent_store=agent_store, agent_cache=cache)
+    response = TestClient(app).post(
+        f"/v1/sessions/{_SOURCE_ID}/fork",
+        json={"agent_id": "280d725b404d2915f9e9d6cccce91303"},
+    )
+
+    assert response.status_code == 413, response.text
     assert store.fork_calls == []
 
 

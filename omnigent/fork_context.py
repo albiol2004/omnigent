@@ -15,6 +15,7 @@ FORK_MAX_CONTEXT_BYTES_ENV = "OMNIGENT_FORK_MAX_CONTEXT_BYTES"
 DEFAULT_FORK_MAX_CONTEXT_BYTES = 600_000
 FORK_JSONL_INFLATION_ENV = "OMNIGENT_FORK_JSONL_INFLATION"
 DEFAULT_FORK_JSONL_INFLATION = 1.8
+FORK_NATIVE_GUARD_ENV = "OMNIGENT_FORK_NATIVE_GUARD"
 
 # When no pure renderer is available, multiply API JSON bytes by this factor.
 # Override with OMNIGENT_FORK_JSONL_INFLATION; 1.8 covers native envelopes.
@@ -58,6 +59,11 @@ def max_fork_context_bytes() -> int:
         if configured > 0:
             return configured
     return DEFAULT_FORK_MAX_CONTEXT_BYTES
+
+
+def fork_native_guard_enabled() -> bool:
+    """Return whether native fork clones use the strict size guard."""
+    return os.environ.get(FORK_NATIVE_GUARD_ENV, "").strip() == "1"
 
 
 def serialized_context_bytes(value: object, *, ensure_ascii: bool = False) -> int:

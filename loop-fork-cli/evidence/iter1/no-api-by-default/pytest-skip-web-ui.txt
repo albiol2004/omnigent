@@ -1,0 +1,10 @@
+   Building omnigent @ file:///home/alex/omnigent-fixes
+      Built omnigent @ file:///home/alex/omnigent-fixes
+Installed 94 packages in 160ms
+2026-08-28T18:57:12.127026Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 10 items in this shard
+..........                                                               [100%]
+========================= Top tests by peak-RSS delta ==========================
++  101.7 MB  (now    101.7 MB)  tests/fork_context/test_fork_compact_model.py::test_source_pin_wins_over_target_and_spec
++    0.6 MB  (now    102.3 MB)  tests/fork_context/test_fork_compact_model.py::test_compaction_ready_callback_precedes_call_and_disables_inner_sse
+10 passed in 0.06s

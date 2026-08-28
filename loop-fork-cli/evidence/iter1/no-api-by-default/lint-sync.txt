@@ -1,0 +1,16 @@
+Resolved 288 packages in 1ms
+Installed 14 packages in 27ms
+ + cfgv==3.5.0
+ + distlib==0.4.2
+ + filelock==3.29.1
+ + grpcio==1.83.0
+ + grpcio-tools==1.81.1
+ + identify==2.6.19
+ + nodeenv==1.10.0
+ + platformdirs==4.10.0
+ + pre-commit==4.6.0
+ + pyrefly==1.1.1
+ + python-discovery==1.4.0
+ + ruff==0.15.16
+ + setuptools==83.0.0
+ + virtualenv==21.4.2

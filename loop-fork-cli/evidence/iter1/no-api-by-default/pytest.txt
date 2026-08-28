@@ -1,0 +1,88 @@
+Using CPython 3.12.13 interpreter at: /home/alex/.local/bin/python3.12
+Creating virtual environment at: .venv
+   Building omnigent @ file:///home/alex/omnigent-fixes
+   Building omnigent-client @ file:///home/alex/omnigent-fixes/sdks/python-client
+   Building omnigent-ui-sdk @ file:///home/alex/omnigent-fixes/sdks/ui
+      Built omnigent-ui-sdk @ file:///home/alex/omnigent-fixes/sdks/ui
+      Built omnigent-client @ file:///home/alex/omnigent-fixes/sdks/python-client
+  × Failed to build `omnigent @ file:///home/alex/omnigent-fixes`
+  ├─▶ The build backend returned an error
+  ╰─▶ Call to `setuptools.build_meta.build_editable` failed (exit status: 1)
+
+      [stdout]
+      running editable_wheel
+      creating
+      /home/alex/.cache/uv/builds-v0/.tmpUfipmc/.tmp-1ar9l5t4/omnigent.egg-info
+      writing
+      /home/alex/.cache/uv/builds-v0/.tmpUfipmc/.tmp-1ar9l5t4/omnigent.egg-info/PKG-INFO
+      writing dependency_links to
+      /home/alex/.cache/uv/builds-v0/.tmpUfipmc/.tmp-1ar9l5t4/omnigent.egg-info/dependency_links.txt
+      writing entry points to
+      /home/alex/.cache/uv/builds-v0/.tmpUfipmc/.tmp-1ar9l5t4/omnigent.egg-info/entry_points.txt
+      writing requirements to
+      /home/alex/.cache/uv/builds-v0/.tmpUfipmc/.tmp-1ar9l5t4/omnigent.egg-info/requires.txt
+      writing top-level names to
+      /home/alex/.cache/uv/builds-v0/.tmpUfipmc/.tmp-1ar9l5t4/omnigent.egg-info/top_level.txt
+      writing manifest file
+      '/home/alex/.cache/uv/builds-v0/.tmpUfipmc/.tmp-1ar9l5t4/omnigent.egg-info/SOURCES.txt'
+      reading manifest file
+      '/home/alex/.cache/uv/builds-v0/.tmpUfipmc/.tmp-1ar9l5t4/omnigent.egg-info/SOURCES.txt'
+      adding license file 'LICENSE'
+      adding license file 'NOTICE'
+      writing manifest file
+      '/home/alex/.cache/uv/builds-v0/.tmpUfipmc/.tmp-1ar9l5t4/omnigent.egg-info/SOURCES.txt'
+      creating
+      '/home/alex/.cache/uv/builds-v0/.tmpUfipmc/.tmp-1ar9l5t4/omnigent-0.10.0.dist-info'
+      creating
+      /home/alex/.cache/uv/builds-v0/.tmpUfipmc/.tmp-1ar9l5t4/omnigent-0.10.0.dist-info/WHEEL
+      running build_py
+
+      [stderr]
+      /home/alex/.cache/uv/builds-v0/.tmpH1ahhK/lib/python3.12/site-packages/setuptools/config/_apply_pyprojecttoml.py:61:
+      SetuptoolsDeprecationWarning: License classifiers are deprecated.
+      !!
+
+      
+      ********************************************************************************
+              Please consider removing the following classifiers in favor of a
+      SPDX license expression:
+
+              License :: OSI Approved :: Apache Software License
+
+              See
+      https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license
+      for details.
+      
+      ********************************************************************************
+
+      !!
+        dist._finalize_license_expression()
+      /home/alex/.cache/uv/builds-v0/.tmpH1ahhK/lib/python3.12/site-packages/setuptools/dist.py:765:
+      SetuptoolsDeprecationWarning: License classifiers are deprecated.
+      !!
+
+      
+      ********************************************************************************
+              Please consider removing the following classifiers in favor of a
+      SPDX license expression:
+
+              License :: OSI Approved :: Apache Software License
+
+              See
+      https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license
+      for details.
+      
+      ********************************************************************************
+
+      !!
+        self._finalize_license_expression()
+      omnigent build: pnpm not found on PATH, so the web UI cannot be built.
+      Omnigent requires Node.js 22 LTS or newer with pnpm (the web UI is a
+      pnpm workspace; the Claude / Codex / Pi harness CLIs are npm packages).
+      Install Node from https://nodejs.org/en/download and enable pnpm with
+      `corepack enable` (or `npm install -g pnpm`), then rerun the install.
+      To deliberately install without the web UI (API-only server), set
+      OMNIGENT_SKIP_WEB_UI=true.
+
+
+hint: Build failures usually indicate a problem with the package or the build environment

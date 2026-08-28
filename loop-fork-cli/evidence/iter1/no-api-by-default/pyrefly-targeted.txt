@@ -1,0 +1,7 @@
+ WARN PYTHONPATH environment variable is set to `/home/alex/omnigent-fixes`. Checks in other environments may not include these paths.
+ WARN PYTHONPATH environment variable is set to `/home/alex/omnigent-fixes`. Checks in other environments may not include these paths.
+ERROR tests/fork_context/test_fork_compact_model.py:7:8-14: Cannot find module `pytest` [missing-import]
+ERROR tests/fork_context/test_fork_compact_model.py:297:16-52: Argument `SimpleNamespace` is not assignable to parameter `source` with type `Conversation` in function `omnigent.fork_compact.compact_fork_items` [bad-argument-type]
+ERROR tests/fork_context/test_fork_compact_model.py:298:22-30: Argument `object` is not assignable to parameter `source_agent` with type `Agent` in function `omnigent.fork_compact.compact_fork_items` [bad-argument-type]
+ERROR tests/fork_context/test_fork_compact_model.py:301:21-29: Argument `object` is not assignable to parameter `agent_cache` with type `AgentCache | None` in function `omnigent.fork_compact.compact_fork_items` [bad-argument-type]
+ INFO 4 errors

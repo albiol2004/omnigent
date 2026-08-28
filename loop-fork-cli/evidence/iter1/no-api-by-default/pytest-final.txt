@@ -1,0 +1,8 @@
+2026-08-28T18:59:28.475520Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 10 items in this shard
+..........                                                               [100%]
+========================= Top tests by peak-RSS delta ==========================
++  100.1 MB  (now    100.1 MB)  tests/fork_context/test_fork_compact_model.py::test_source_pin_wins_over_target_and_spec
++    1.9 MB  (now    102.2 MB)  tests/fork_context/test_fork_compact_model.py::test_compaction_ready_callback_precedes_call_and_disables_inner_sse
++    0.2 MB  (now    100.3 MB)  tests/fork_context/test_fork_compact_model.py::test_fable_without_key_falls_through_to_callable_spec
+10 passed in 0.05s

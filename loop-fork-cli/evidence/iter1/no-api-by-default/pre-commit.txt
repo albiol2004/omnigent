@@ -1,0 +1,60 @@
+ruff format..............................................................Failed
+- hook id: ruff-format
+- exit code: 1
+
+/home/alex/omnigent-fixes/.venv/bin/python: No module named ruff
+
+ruff check...............................................................Failed
+- hook id: ruff-check
+- exit code: 1
+
+/home/alex/omnigent-fixes/.venv/bin/python: No module named ruff
+
+pyrefly..................................................................Failed
+- hook id: pyrefly
+- exit code: 1
+
+Executable `.venv/bin/pyrefly` not found
+
+no globally-clobbering asyncio monkeypatch...............................Passed
+no unconditional `@pytest.mark.skip`.....................................Passed
+no new hardcoded LLM model ids...........................................Failed
+- hook id: no-hardcoded-models
+- exit code: 1
+
+loop-fork-real/evidence/iter1/e2e/E2E.json:24: hardcoded model id `openai/gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/E2E.json:37: hardcoded model id `claude-fable-5`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/E2E.json:38: hardcoded model id `claude-fable-5`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/E2E.json:39: hardcoded model id `openai/gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/E2E.json:42: hardcoded model id `claude-fable-5`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/E2E.json:42: hardcoded model id `gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/E2E.json:42: hardcoded model id `openai/gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/E2E.json:42: hardcoded model id `claude-fable-5`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/FAIL413.json:3: hardcoded model id `claude-fable-5`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/FAIL413.json:3: hardcoded model id `gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/FAIL413.json:3: hardcoded model id `openai/gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/eval-e2e/E2E.json:25: hardcoded model id `openai/gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/eval-e2e/FAIL413.json:3: hardcoded model id `claude-fable-5`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/eval-e2e/FAIL413.json:3: hardcoded model id `gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/eval-e2e/FAIL413.json:3: hardcoded model id `openai/gpt-4o-mini`; resolve from the configured provider/model catalog instead
+
+Avoid adding hardcoded model names outside tests. Unavoidable static aliases belong in complete StaticModelFallback records in omnigent/model_fallbacks.py.
+
+web prettier.........................................(no files to check)Skipped
+web oxlint...........................................(no files to check)Skipped
+web TypeScript type check............................(no files to check)Skipped
+VS Code extension TypeScript type check..............(no files to check)Skipped
+android ktlint format................................(no files to check)Skipped
+android ktlint check.................................(no files to check)Skipped
+web ios swift-format.................................(no files to check)Skipped
+web ios swift format lint............................(no files to check)Skipped
+sync omnigent/version.py to pyproject version........(no files to check)Skipped
+normalize uv.lock registry to pypi.org...............(no files to check)Skipped
+routing protobuf bindings are up to date.............(no files to check)Skipped
+trim trailing whitespace.................................................Passed
+ensure files end with newline............................................Passed
+check yaml syntax....................................(no files to check)Skipped
+check for merge conflicts................................................Passed
+prevent large files......................................................Passed
+check for case conflicts.................................................Passed
+check line endings.......................................................Passed

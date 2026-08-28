@@ -1,6 +1,8 @@
 schema: 1
-iteration: 0
+iteration: 1
 max_iterations: 4
-status: ready
-mission: Make an oversize fork of a real claude-native session on this machine succeed with a summary written by the pinned subscription CLI in headless mode, with API-key providers excluded from fork compaction unless `OMNIGENT_FORK_COMPACT_ALLOW_API=1` is set, and keep every failure honest (413 names the CLI/model tried and the reason; no fake "Summarizing…").
+status: running
+mission: Make a fork of a native claude/codex session on the same host launch as a plain CLI fork with no byte guard and no server-side summarization — while keeping the guard and a CLI-produced (never API-key) summary only for cross-family, SDK, and rebuild-from-items forks — verified by a real fork of the user's oversize session e34847899b7d47b3ad322948d4ea6002 on a throwaway server.
 verdict: pending
+eval: pending
+last_run: 2026-08-28

@@ -1,1 +1,2 @@
 - iter 0 | coordinator | fork-compact-cli mailbox initialized (base 94c7921a6; user: summaries via subscription CLIs only, no API keys)
+- iter 1 | coordinator | REDIRECT: user decision — native same-family forks reuse the CLI fork with no guard/summary; CLI-only summaries for rebuild paths; headless-summarizer WIP parked in evidence/iter1/abandoned/

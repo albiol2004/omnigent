@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from omnigent.onboarding.provider_config import CLI_CONFIG_KIND, SUBSCRIPTION_KIND
+from omnigent.onboarding.provider_config import (
+    CLI_CONFIG_KIND,
+    KEY_KIND,
+    SUBSCRIPTION_KIND,
+)
 
 
 @dataclass(frozen=True)
@@ -32,6 +36,7 @@ _CLAUDE_SUBSCRIPTION_MODELS = (
 #: is rejected here with a 400 — unlike the gateway catalogs below, which are
 #: correctly hyphenated. Ordered cheapest-safe default first.
 _CODEX_MODELS = ("gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.5")
+_FORK_COMPACT_OPENAI_MODELS = ("gpt-4o-mini",)
 
 _STATIC_MODEL_FALLBACKS = {
     (SUBSCRIPTION_KIND, "claude"): StaticModelFallback(
@@ -45,6 +50,12 @@ _STATIC_MODEL_FALLBACKS = {
         owner="Codex subscription adapter",
         provenance="Omnigent's release-curated Codex alias catalog",
         discovery_gap="Codex subscription availability is not exposed before launch",
+    ),
+    (KEY_KIND, "fork_compact"): StaticModelFallback(
+        model_ids=_FORK_COMPACT_OPENAI_MODELS,
+        owner="Fork compaction OpenAI fallback",
+        provenance="Last-resort server-side summary when a Claude alias key is rejected",
+        discovery_gap="Fork compaction uses the generic LLM client, not a CLI catalog",
     ),
     (CLI_CONFIG_KIND, "codex"): StaticModelFallback(
         model_ids=_CODEX_MODELS,

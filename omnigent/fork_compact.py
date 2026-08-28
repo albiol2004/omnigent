@@ -12,10 +12,10 @@ from omnigent.db.utils import generate_item_id, generate_task_id, now_epoch
 from omnigent.entities import Agent, CompactionData, Conversation, ConversationItem
 from omnigent.fork_compact_routing import (
     ResolvedForkCompactModel,
-    resolve_fork_compact_candidates,
+    list_fork_compact_candidates,
 )
-from omnigent.fork_context import max_fork_context_bytes
-from omnigent.onboarding.provider_config import load_providers
+from omnigent.model_fallbacks import static_model_fallback
+from omnigent.onboarding.provider_config import KEY_KIND, load_providers
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.runtime.compaction import SummaryMetadata, _CompactionState, compact
 from omnigent.spec import AgentSpec
@@ -35,6 +35,8 @@ def fork_compact_enabled() -> bool:
 
 def fork_compact_target_bytes() -> int:
     """Return the positive byte target for a successful compacted fork."""
+    from omnigent.fork_context import max_fork_context_bytes
+
     raw = os.environ.get(FORK_COMPACT_TARGET_BYTES_ENV)
     if raw is not None:
         try:
@@ -46,6 +48,24 @@ def fork_compact_target_bytes() -> int:
     return max(1, int(max_fork_context_bytes() * 0.7))
 
 
+def _fork_compact_candidate_rows(
+    *,
+    source_model_override: str | None,
+    target_model: str | None,
+    spec_model: str | None,
+) -> tuple[tuple[str, str | None], ...]:
+    """Return the documented candidate list plus an OpenAI summary fallback."""
+    fallback = static_model_fallback(KEY_KIND, "fork_compact")
+    openai_fallback = fallback.model_ids[0] if fallback and fallback.model_ids else None
+    return (
+        ("env", os.environ.get(FORK_COMPACT_MODEL_ENV)),
+        ("source_override", source_model_override),
+        ("target_spec", target_model),
+        ("source_spec", spec_model),
+        ("openai_fallback", openai_fallback),
+    )
+
+
 def resolve_fork_compact_model(
     *,
     source_model_override: str | None,
@@ -53,14 +73,15 @@ def resolve_fork_compact_model(
     spec_model: str | None,
 ) -> ResolvedForkCompactModel:
     """Resolve the model in the documented fork-compaction precedence order."""
-    candidates = (
-        ("env", os.environ.get(FORK_COMPACT_MODEL_ENV)),
-        ("source_override", source_model_override),
-        ("target_spec", target_model),
-        ("source_spec", spec_model),
-    )
     providers = load_providers(load_global_config())
-    return resolve_fork_compact_candidates(candidates, providers)
+    return list_fork_compact_candidates(
+        _fork_compact_candidate_rows(
+            source_model_override=source_model_override,
+            target_model=target_model,
+            spec_model=spec_model,
+        ),
+        providers,
+    )[0]
 
 
 def _spec_model(spec: AgentSpec) -> str | None:
@@ -91,33 +112,21 @@ def _llm_config_for_model(
     )
 
 
-async def compact_fork_items(
+async def _compact_with_resolved(
     *,
     source_id: str,
-    source: Conversation,
-    source_agent: Agent,
-    target_agent: Agent | None,
+    source_spec: AgentSpec,
+    config_spec: AgentSpec,
     context_items: Sequence[ConversationItem],
-    agent_cache: AgentCache | None,
-    on_llm_ready: Callable[[ResolvedForkCompactModel], None] | None = None,
+    resolved: ResolvedForkCompactModel,
+    on_llm_ready: Callable[[ResolvedForkCompactModel], None] | None,
 ) -> list[ConversationItem]:
-    """Compact an in-memory fork prefix and return its replacement items."""
-    source_spec = _load_spec(agent_cache, source_agent)
-    target_spec = _load_spec(agent_cache, target_agent) if target_agent else None
-    resolved = resolve_fork_compact_model(
-        source_model_override=source.model_override,
-        target_model=_spec_model(target_spec) if target_spec else None,
-        spec_model=_spec_model(source_spec),
-    )
-    config_spec = target_spec if resolved.source == "target_spec" else source_spec
-    assert config_spec is not None
+    """Run Layer-2 compact for one already-resolved callable model."""
     llm_config = _llm_config_for_model(
         config_spec,
         resolved.model,
         resolved.connection,
     )
-
-    # Reuse workflow routing and client singletons.
     from omnigent.runtime.workflow import (
         _get_llm_client,
         _prepare_messages,
@@ -159,8 +168,6 @@ async def compact_fork_items(
     task_id = generate_task_id()
     if on_llm_ready is not None:
         on_llm_ready(resolved)
-    # Fork compaction is server-side: never tunnel summarize through the
-    # session's runner (it may be disconnected, or only speak CLI aliases).
     result = await compact(
         messages,
         history,
@@ -180,6 +187,59 @@ async def compact_fork_items(
     if summary is None or not summary.text or not summary.last_item_id:
         raise ValueError("Compaction did not produce a valid summary")
     return _replacement_items(summary, history, task_id)
+
+
+async def compact_fork_items(
+    *,
+    source_id: str,
+    source: Conversation,
+    source_agent: Agent,
+    target_agent: Agent | None,
+    context_items: Sequence[ConversationItem],
+    agent_cache: AgentCache | None,
+    on_llm_ready: Callable[[ResolvedForkCompactModel], None] | None = None,
+) -> list[ConversationItem]:
+    """Compact an in-memory fork prefix and return its replacement items."""
+    source_spec = _load_spec(agent_cache, source_agent)
+    target_spec = _load_spec(agent_cache, target_agent) if target_agent else None
+    providers = load_providers(load_global_config())
+    resolved_list = list_fork_compact_candidates(
+        _fork_compact_candidate_rows(
+            source_model_override=source.model_override,
+            target_model=_spec_model(target_spec) if target_spec else None,
+            spec_model=_spec_model(source_spec),
+        ),
+        providers,
+    )
+    last_error: BaseException | None = None
+    published = False
+    for resolved in resolved_list:
+        config_spec = target_spec if resolved.source == "target_spec" else source_spec
+        assert config_spec is not None
+        try:
+            replacement = await _compact_with_resolved(
+                source_id=source_id,
+                source_spec=source_spec,
+                config_spec=config_spec,
+                context_items=context_items,
+                resolved=resolved,
+                on_llm_ready=on_llm_ready if not published else None,
+            )
+        except Exception as exc:
+            last_error = exc
+            text = str(exc)
+            is_auth = any(token in text for token in ("401", "403", "Unauthorized", "Forbidden"))
+            if not is_auth:
+                raise
+            _logger.warning(
+                "Fork compaction auth failed for %s; trying next candidate",
+                resolved.model,
+            )
+            published = True
+            continue
+        return replacement
+    assert last_error is not None
+    raise last_error
 
 
 def _replacement_items(

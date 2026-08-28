@@ -123,13 +123,13 @@ def _resolve_candidate(
     return model, _key_connection(providers, family_name)
 
 
-def resolve_fork_compact_candidates(
+def list_fork_compact_candidates(
     candidates: tuple[tuple[str, str | None], ...],
     providers: Mapping[str, object],
-) -> ResolvedForkCompactModel:
-    """Select the first candidate callable by the generic LLM client."""
+) -> list[ResolvedForkCompactModel]:
+    """Return every candidate the generic LLM client can call, in order."""
     attempts: list[str] = []
-    resolved: ResolvedForkCompactModel | None = None
+    resolved_list: list[ResolvedForkCompactModel] = []
 
     for source, raw_candidate in candidates:
         if not isinstance(raw_candidate, str) or not raw_candidate.strip():
@@ -147,22 +147,32 @@ def resolve_fork_compact_candidates(
             )
             continue
         attempts.append(f"{source} model={candidate} -> tried provider/model={model}")
-        resolved = ResolvedForkCompactModel(
-            model=model,
-            source=source,
-            connection=connection,
+        resolved_list.append(
+            ResolvedForkCompactModel(
+                model=model,
+                source=source,
+                connection=connection,
+            )
         )
-        break
 
     chain = "; ".join(attempts)
-    if resolved is None:
+    if not resolved_list:
         _logger.info("Fork compaction model resolution: chain=%s", chain)
         raise ValueError(f"No callable model is configured for fork compaction; tried: {chain}")
 
+    resolved = resolved_list[0]
     _logger.info(
         "Fork compaction model resolution: chain=%s; source=%s provider/model=%s",
         chain,
         resolved.source,
         resolved.model,
     )
-    return resolved
+    return resolved_list
+
+
+def resolve_fork_compact_candidates(
+    candidates: tuple[tuple[str, str | None], ...],
+    providers: Mapping[str, object],
+) -> ResolvedForkCompactModel:
+    """Select the first candidate callable by the generic LLM client."""
+    return list_fork_compact_candidates(candidates, providers)[0]

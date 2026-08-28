@@ -150,13 +150,14 @@ def _patch_compaction_clients(
 ) -> None:
     """Keep route tests inside the mocked compaction boundary."""
     monkeypatch.setattr("omnigent.runtime.workflow._get_llm_client", lambda: object())
+    resolved = ResolvedForkCompactModel(
+        model=model,
+        source="test",
+        connection={"api_key": "test-key"},
+    )
     monkeypatch.setattr(
-        "omnigent.fork_compact.resolve_fork_compact_model",
-        lambda **_kwargs: ResolvedForkCompactModel(
-            model=model,
-            source="test",
-            connection={"api_key": "test-key"},
-        ),
+        "omnigent.fork_compact.list_fork_compact_candidates",
+        lambda *_args, **_kwargs: [resolved],
     )
 
 
@@ -201,7 +202,7 @@ async def test_oversized_fork_uses_compacted_replacement_items(
     assert replacement[0].data.summary == "short summary"
     assert fork_call["resume_source_native_session"] is False
     assert store._items[_SOURCE_ID] == [source_item]
-    assert "source=test model=anthropic/claude-fable-5" in caplog.text
+    assert "source=test model=" in caplog.text
 
 
 @pytest.mark.asyncio

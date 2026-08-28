@@ -1,0 +1,1 @@
+- iter 0 | coordinator | cursor-ux mailbox initialized (base a15b8c3e9; diagnosis: stale-completed delta drop, tail-append order race, model re-pin 503 on view open)

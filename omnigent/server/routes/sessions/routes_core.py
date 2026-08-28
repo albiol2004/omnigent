@@ -301,6 +301,39 @@ def _normalized_fork_harness(harness: str | None) -> str | None:
     return normalized
 
 
+def _native_clone_passthrough_skip_reasons(
+    *,
+    guard_enabled: bool,
+    external_session_id: object,
+    resume_source_native_session: bool,
+    up_to_response_id: str | None,
+    carry_history_into_native: bool,
+    target_harness: str | None,
+    source_harness: str | None = None,
+    source_harness_checked: bool = False,
+) -> list[str]:
+    """Name each condition that blocked a same-family native clone passthrough."""
+    native = {"claude-native", "codex-native"}
+    reasons: list[str] = []
+    if guard_enabled:
+        reasons.append("fork_native_guard enabled")
+    if not isinstance(external_session_id, str) or not external_session_id:
+        reasons.append("source external_session_id empty")
+    if not resume_source_native_session:
+        reasons.append("resume_source_native_session false")
+    if up_to_response_id is not None:
+        reasons.append("up_to_response_id set")
+    if not carry_history_into_native:
+        reasons.append("carry_history_into_native false")
+    target_norm = _normalized_fork_harness(target_harness)
+    if target_norm not in native:
+        reasons.append(f"target harness resolved to {target_norm}")
+    source_norm = _normalized_fork_harness(source_harness)
+    if source_harness_checked and source_norm not in native:
+        reasons.append(f"source harness resolved to {source_norm}")
+    return reasons
+
+
 def _fork_context_renderer(
     harness: str | None,
     *,
@@ -2345,19 +2378,15 @@ def register_core_routes(
             body.up_to_response_id,
         )
         replacement_items = None
-        target_is_native_clone = _normalized_fork_harness(target_harness) in {
-            "claude-native",
-            "codex-native",
-        }
-        native_clone_passthrough = (
-            not fork_native_guard_enabled()
-            and isinstance(source.external_session_id, str)
-            and bool(source.external_session_id)
-            and resume_source_native_session
-            and body.up_to_response_id is None
-            and carry_history_into_native
-            and target_is_native_clone
+        skip_reasons = _native_clone_passthrough_skip_reasons(
+            guard_enabled=fork_native_guard_enabled(),
+            external_session_id=source.external_session_id,
+            resume_source_native_session=resume_source_native_session,
+            up_to_response_id=body.up_to_response_id,
+            carry_history_into_native=carry_history_into_native,
+            target_harness=target_harness,
         )
+        native_clone_passthrough = not skip_reasons
         if native_clone_passthrough:
             source_harness = await _resolve_fork_target_harness(
                 source,
@@ -2365,10 +2394,22 @@ def register_core_routes(
                 copy_model_settings=True,
                 agent_cache=agent_cache,
             )
-            native_clone_passthrough = _normalized_fork_harness(source_harness) in {
-                "claude-native",
-                "codex-native",
-            }
+            skip_reasons = _native_clone_passthrough_skip_reasons(
+                guard_enabled=False,
+                external_session_id=source.external_session_id,
+                resume_source_native_session=True,
+                up_to_response_id=None,
+                carry_history_into_native=True,
+                target_harness=target_harness,
+                source_harness=source_harness,
+                source_harness_checked=True,
+            )
+            native_clone_passthrough = not skip_reasons
+        if skip_reasons:
+            _logger.info(
+                "fork passthrough skipped: %s",
+                ", ".join(skip_reasons),
+            )
         if context_items is not None and not native_clone_passthrough:
             payload = [item.to_api_dict() for item in context_items]
             compacted_payload = summary_only_items(payload)

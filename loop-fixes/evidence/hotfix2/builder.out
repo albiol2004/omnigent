@@ -1,0 +1,18 @@
+🤖 Implemented the native clone fallback.
+
+Changed:
+- `omnigent/runner/native/orchestration.py`
+  - Claude and Codex oversize clones now rebuild from compacted items.
+  - Guarded rebuilds still propagate `ForkContextTooLarge`/413.
+- `tests/runner/test_fork_clone_fallback.py`
+  - Covers successful `--resume` and rebuild-over-limit failure.
+- Evidence saved under `loop-fixes/evidence/hotfix2/`.
+
+Verification:
+- Focused fallback tests: 2 passed.
+- Required suite: 253 passed, 1 existing deprecation warning.
+- Trio compatibility: 5 passed, 250 deselected.
+- Pre-commit: all checks passed.
+
+`OMNIGENT_SKIP_WEB_UI=true` was required because `pnpm` is unavailable. No commit or push was performed.🤖 Required regression suite succeeded: 253 passed with one existing deprecation warning. No follow-up actions are needed.
+exit=0

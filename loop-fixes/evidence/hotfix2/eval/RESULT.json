@@ -1,0 +1,156 @@
+{
+  "scratch": "/tmp/hotfix2-eval-00nvkgkz",
+  "threshold": 600000,
+  "real_claude_projects": "/tmp/hotfix2-eval-00nvkgkz/alex/.claude/projects",
+  "live_claude_projects": "/home/alex/.claude/projects",
+  "live_claude_projects_mtime": 1787856490.6088989,
+  "fork_oversize_clone_compact_items": {
+    "raised": false,
+    "resume": true,
+    "resume_id": "7b316fa4-b572-44f6-b5c8-3ff1c90d1b30",
+    "args_head": [
+      "--resume",
+      "7b316fa4-b572-44f6-b5c8-3ff1c90d1b30",
+      "--mcp-config"
+    ],
+    "clone_calls": [
+      {
+        "source": "02857840-6362-408f-b41f-309e396ed7c6",
+        "target": "2a88689a-f0e8-4524-bb9d-ee0aebc3ed7a",
+        "raised": "ForkContextTooLarge",
+        "actual_bytes": 782422
+      }
+    ],
+    "rebuild_calls": [
+      {
+        "session_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "guard": true,
+        "external_session_id": "7b316fa4-b572-44f6-b5c8-3ff1c90d1b30"
+      }
+    ],
+    "source_bytes": 782396,
+    "dest_bytes": 701,
+    "dest_is_clone_size": false,
+    "logs": [
+      "Claude terminal auto-create starting: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb workspace=/tmp/hotfix2-eval-00nvkgkz/fork-ok/workspace bundle_dir=None agent_name=None skills_filter=all",
+      "Claude terminal bridge prepared: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb bridge_dir=/tmp/hotfix2-eval-00nvkgkz/fork-ok/bridges/bdb339768bc5e4fecbe55a442056919b",
+      "source transcript 782422 bytes > threshold; rebuilding from compacted items",
+      "Claude terminal fork-resume decision: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb source_ext=02857840-6362-408f-b41f-309e396ed7c6 our_uuid=2a88689a-f0e8-4524-bb9d-ee0aebc3ed7a clone_workspace=/tmp/hotfix2-eval-00nvkgkz/fork-ok/workspace cloned_transcript=None",
+      "Claude terminal fork-rebuild decision: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb our_uuid=7b316fa4-b572-44f6-b5c8-3ff1c90d1b30 clone_workspace=/tmp/hotfix2-eval-00nvkgkz/fork-ok/workspace built_transcript=/tmp/hotfix2-eval-00nvkgkz/fork-ok/claude-projects/-tmp-hotfix2-eval-00nvkgkz-fork-ok-workspace/7b316fa4-b572-44f6-b5c8-3ff1c90d1b30.jsonl",
+      "Claude terminal cold-resume decision: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb external_session_id_set=False fork_source_set=True resume_enabled=True",
+      "Claude terminal tmux launch requested: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb command=claude args_count=6 env_keys=['CLAUDE_CODE_DISABLE_AGENT_VIEW', 'CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY', 'ENABLE_TOOL_SEARCH'] cwd=/tmp/hotfix2-eval-00nvkgkz/fork-ok/workspace scrollback=50000"
+    ]
+  },
+  "fork_oversize_clone_oversize_items": {
+    "raised": true,
+    "type": "ForkContextTooLarge",
+    "http_status": 413,
+    "actual_bytes": 1100687,
+    "threshold_bytes": 600000,
+    "message": "Fork context too large: 1100687 bytes exceeds threshold 600000 bytes (OMNIGENT_FORK_MAX_CONTEXT_BYTES).",
+    "clone_calls": [
+      {
+        "source": "02857840-6362-408f-b41f-309e396ed7c6",
+        "target": "13e2b15b-f152-4b21-8eda-6a2d59a4ab25",
+        "raised": "ForkContextTooLarge",
+        "actual_bytes": 782423
+      }
+    ],
+    "rebuild_calls": [
+      {
+        "session_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "guard": true,
+        "external_session_id": "a23d326b-5f6a-429f-963f-b602ba6e5106"
+      }
+    ],
+    "logs": [
+      "Claude terminal auto-create starting: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb workspace=/tmp/hotfix2-eval-00nvkgkz/fork-413/workspace bundle_dir=None agent_name=None skills_filter=all",
+      "Claude terminal bridge prepared: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb bridge_dir=/tmp/hotfix2-eval-00nvkgkz/fork-413/bridges/bdb339768bc5e4fecbe55a442056919b",
+      "source transcript 782423 bytes > threshold; rebuilding from compacted items",
+      "Claude terminal fork-resume decision: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb source_ext=02857840-6362-408f-b41f-309e396ed7c6 our_uuid=13e2b15b-f152-4b21-8eda-6a2d59a4ab25 clone_workspace=/tmp/hotfix2-eval-00nvkgkz/fork-413/workspace cloned_transcript=None"
+    ]
+  },
+  "fork_generic_clone_error": {
+    "raised": false,
+    "resume": false,
+    "resume_id": null,
+    "args_head": [
+      "--mcp-config",
+      "{\"mcpServers\":{\"omnigent\":{\"command\":\"/home/alex/omnigent-fixes/.venv/bin/python3\",\"args\":[\"-I\",\"-m\",\"omnigent.claude_native_bridge\",\"serve-mcp\",\"--bridge-dir\",\"/tmp/hotfix2-eval-00nvkgkz/fork-generic/bridges/bdb339768bc5e4fecbe55a442056919b\"],\"env\":{\"PYTHONUNBUFFERED\":\"1\"}}}}",
+      "--settings"
+    ],
+    "clone_calls": [
+      {
+        "source": "02857840-6362-408f-b41f-309e396ed7c6",
+        "target": "51d33ce0-cf42-446f-9971-c03ef31e2201",
+        "forced_error": "RuntimeError"
+      }
+    ],
+    "rebuild_calls": [],
+    "source_bytes": 782396,
+    "dest_bytes": null,
+    "dest_is_clone_size": false,
+    "logs": [
+      "Claude terminal auto-create starting: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb workspace=/tmp/hotfix2-eval-00nvkgkz/fork-generic/workspace bundle_dir=None agent_name=None skills_filter=all",
+      "Claude terminal bridge prepared: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb bridge_dir=/tmp/hotfix2-eval-00nvkgkz/fork-generic/bridges/bdb339768bc5e4fecbe55a442056919b",
+      "Could not clone source transcript for forked clone bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; launching fresh",
+      "Claude terminal fork-resume decision: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb source_ext=02857840-6362-408f-b41f-309e396ed7c6 our_uuid=51d33ce0-cf42-446f-9971-c03ef31e2201 clone_workspace=/tmp/hotfix2-eval-00nvkgkz/fork-generic/workspace cloned_transcript=None",
+      "Claude terminal cold-resume decision: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb external_session_id_set=False fork_source_set=True resume_enabled=False",
+      "Claude terminal tmux launch requested: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb command=claude args_count=4 env_keys=['CLAUDE_CODE_DISABLE_AGENT_VIEW', 'CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY', 'ENABLE_TOOL_SEARCH'] cwd=/tmp/hotfix2-eval-00nvkgkz/fork-generic/workspace scrollback=50000"
+    ]
+  },
+  "fork_small_clone": {
+    "raised": false,
+    "resume": true,
+    "resume_id": "545cdd99-3107-4751-8fa8-e1cfe660aaa6",
+    "args_head": [
+      "--resume",
+      "545cdd99-3107-4751-8fa8-e1cfe660aaa6",
+      "--mcp-config"
+    ],
+    "clone_calls": [
+      {
+        "source": "02857840-6362-408f-b41f-309e396ed7c6",
+        "target": "545cdd99-3107-4751-8fa8-e1cfe660aaa6",
+        "written": "/tmp/hotfix2-eval-00nvkgkz/fork-small/claude-projects/-tmp-hotfix2-eval-00nvkgkz-fork-small-workspace/545cdd99-3107-4751-8fa8-e1cfe660aaa6.jsonl",
+        "written_bytes": 1268
+      }
+    ],
+    "rebuild_calls": [],
+    "source_bytes": 1239,
+    "dest_bytes": 1268,
+    "dest_is_clone_size": false,
+    "logs": [
+      "Claude terminal auto-create starting: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb workspace=/tmp/hotfix2-eval-00nvkgkz/fork-small/workspace bundle_dir=None agent_name=None skills_filter=all",
+      "Claude terminal bridge prepared: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb bridge_dir=/tmp/hotfix2-eval-00nvkgkz/fork-small/bridges/bdb339768bc5e4fecbe55a442056919b",
+      "Claude terminal fork-resume decision: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb source_ext=02857840-6362-408f-b41f-309e396ed7c6 our_uuid=545cdd99-3107-4751-8fa8-e1cfe660aaa6 clone_workspace=/tmp/hotfix2-eval-00nvkgkz/fork-small/workspace cloned_transcript=/tmp/hotfix2-eval-00nvkgkz/fork-small/claude-projects/-tmp-hotfix2-eval-00nvkgkz-fork-small-workspace/545cdd99-3107-4751-8fa8-e1cfe660aaa6.jsonl",
+      "Claude terminal cold-resume decision: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb external_session_id_set=False fork_source_set=True resume_enabled=True",
+      "Claude terminal tmux launch requested: session=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb command=claude args_count=6 env_keys=['CLAUDE_CODE_DISABLE_AGENT_VIEW', 'CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY', 'ENABLE_TOOL_SEARCH'] cwd=/tmp/hotfix2-eval-00nvkgkz/fork-small/workspace scrollback=50000"
+    ]
+  },
+  "non_fork_oversize_resume": {
+    "raised": false,
+    "resume": true,
+    "resume_id": "02857840-6362-408f-b41f-309e396ed7c6",
+    "args_head": [
+      "--resume",
+      "02857840-6362-408f-b41f-309e396ed7c6",
+      "--mcp-config"
+    ],
+    "clone_calls": [],
+    "rebuild_calls": [
+      {
+        "session_id": "cccccccccccccccccccccccccccccccc",
+        "guard": false,
+        "external_session_id": "02857840-6362-408f-b41f-309e396ed7c6"
+      }
+    ],
+    "source_bytes": null,
+    "dest_bytes": 1100683,
+    "dest_is_clone_size": true,
+    "logs": [
+      "Claude terminal cold-resume decision: session=cccccccccccccccccccccccccccccccc external_session_id_set=True fork_source_set=False resume_enabled=True"
+    ]
+  },
+  "live_claude_projects_mtime_after": 1787856490.6088989
+}

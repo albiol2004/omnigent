@@ -1,0 +1,28 @@
+2026-08-28T15:49:47.194480Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 253 items in this shard
+........................................................................ [ 28%]
+........................................................................ [ 56%]
+........................................................................ [ 85%]
+.....................................                                    [100%]
+=============================== warnings summary ===============================
+tests/server/routes/test_fork_compact.py:9
+  /home/alex/omnigent-fixes/tests/server/routes/test_fork_compact.py:9: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================= Top tests by peak-RSS delta ==========================
++  145.3 MB  (now    145.3 MB)  tests/runner/test_fork_context_guard.py::test_oversized_context_names_actual_size_and_threshold
++   44.7 MB  (now    190.2 MB)  tests/server/routes/test_fork_compact.py::test_oversized_fork_uses_compacted_replacement_items
++    2.6 MB  (now    193.9 MB)  tests/server/routes/test_fork_compact.py::test_running_source_rejects_fork_compaction
++    2.4 MB  (now    196.4 MB)  tests/server/routes/test_fork_oversize_guard.py::test_fork_refuses_oversized_history_before_store_fork
++    2.4 MB  (now    198.8 MB)  tests/server/routes/test_fork_oversize_guard.py::test_fork_allows_summary_only_compaction
++    1.9 MB  (now    201.1 MB)  tests/test_claude_native_bridge.py::test_channel_server_relays_active_omnigent_tools
++    1.1 MB  (now    191.3 MB)  tests/server/routes/test_fork_compact.py::test_summary_failure_keeps_original_413_and_source
++    0.2 MB  (now    145.5 MB)  tests/runner/test_fork_context_guard.py::test_claude_history_fetch_drains_all_pages
++    0.2 MB  (now    199.0 MB)  tests/server/routes/test_fork_oversize_guard.py::test_fork_paginates_source_history_before_measurement
++    0.2 MB  (now    199.2 MB)  tests/test_claude_native_bridge.py::test_read_transcript_items_since_keeps_interrupt_marker[[Request interrupted by user for tool use]]
+================================== slow tests ==================================
+[slow] 25.94s tests/test_claude_native_bridge.py::test_curl_evaluate_policy_command_round_trips
+[slow] 1.80s tests/test_claude_native_bridge.py::test_hook_evaluate_endpoint_fails_closed_on_unreachable_upstream
+[slow] 1.00s tests/test_claude_native_bridge.py::test_relay_close_keeps_advertisement_owned_by_newer_relay
+253 passed, 1 warning in 38.84s

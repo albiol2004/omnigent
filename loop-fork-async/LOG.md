@@ -1,0 +1,1 @@
+- iter 0 | coordinator | fork-async mailbox initialized (base c48533487; live fork took 56s + blocking modal; passthrough missed on same-family native)

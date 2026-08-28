@@ -4249,6 +4249,17 @@ function isLiveProvisionalBlock(b: AnyBlock): boolean {
   return b.ctx.itemId?.startsWith(LIVE_ITEM_PREFIX) ?? false;
 }
 
+/**
+ * Cursor pane deltas keep one stable ``cursor-live-<session>-<epoch>`` id
+ * for the whole generation. Insertion completes the web turn in
+ * milliseconds, so that id must not be stale-blacklisted.
+ */
+const CURSOR_LIVE_MESSAGE_PREFIX = "cursor-live-";
+
+function isCursorLiveMessageId(messageId: string): boolean {
+  return messageId.startsWith(CURSOR_LIVE_MESSAGE_PREFIX);
+}
+
 /** Extract the vendor message id from a provisional live block. */
 function liveMessageIdFromBlock(b: AnyBlock): string | null {
   const itemId = b.ctx.itemId;
@@ -4426,7 +4437,9 @@ async function* tapLiveDeltas(
         // group — killing its fold and inflating its worked-for span):
         // ignore the rest of the message so its text renders only via the
         // authoritative item, which lands in the new turn's bubble.
-        if (isStaleCompletedResponse(get())) {
+        // Cursor-native pane deltas reuse one cursor-live-* id for minutes
+        // after injection already flipped activeResponse to completed.
+        if (isStaleCompletedResponse(get()) && !isCursorLiveMessageId(ev.messageId)) {
           ignored.add(ev.messageId);
           continue;
         }

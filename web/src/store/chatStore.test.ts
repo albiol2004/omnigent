@@ -8593,6 +8593,74 @@ describe("chatStore — startStreamPump reconnect loop", () => {
       );
   }
 
+  it("keeps cursor-native live deltas after a stale completed response", async () => {
+    const sessionId = "conv_cursor_live_delta";
+    const { set, get } = bindConversationForTest(sessionId, {
+      blocks: [],
+      activeResponse: {
+        responseId: "resp_injected",
+        state: "completed",
+        error: null,
+        completedAt: Date.now() - 16_000,
+      },
+    });
+    const sink = pushableStream();
+    const controller = new AbortController();
+    const done = pumpStreamEvents(
+      sessionId,
+      sink.stream,
+      controller,
+      set,
+      get,
+      { schedule: (cb) => cb(), cancel: () => {} },
+    );
+
+    // Injection completes before Cursor emits its first pane delta.
+    sink.push(nativeDeltaFrame("cursor-live-sess-1", 0, "still working"));
+    await drainAsync(2);
+
+    expect(livePreviews().map((b) => b.fullText)).toEqual(["still working"]);
+    expect(livePreviews()[0]?.ctx.itemId).toBe("live:cursor-live-sess-1");
+
+    sink.push("data: [DONE]\n\n");
+    sink.close();
+    await drainAsync(2);
+    expect(await done).toBe("server_closed");
+  });
+
+  it("still ignores stale scheduled-wake live deltas", async () => {
+    const sessionId = "conv_scheduled_wake_delta";
+    const { set, get } = bindConversationForTest(sessionId, {
+      blocks: [],
+      activeResponse: {
+        responseId: "resp_finished",
+        state: "completed",
+        error: null,
+        completedAt: Date.now() - 16_000,
+      },
+    });
+    const sink = pushableStream();
+    const controller = new AbortController();
+    const done = pumpStreamEvents(
+      sessionId,
+      sink.stream,
+      controller,
+      set,
+      get,
+      { schedule: (cb) => cb(), cancel: () => {} },
+    );
+
+    sink.push(nativeDeltaFrame("wake-msg-1", 0, "scheduled wake"));
+    await drainAsync(2);
+
+    expect(livePreviews()).toEqual([]);
+
+    sink.push("data: [DONE]\n\n");
+    sink.close();
+    await drainAsync(2);
+    expect(await done).toBe("server_closed");
+  });
+
   it("rebuilds a native live preview from the cumulative replay instead of appending", async () => {
     seedSession("conv_native_replay", []);
     const sinks = routeStreamOpens();

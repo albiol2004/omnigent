@@ -914,6 +914,41 @@ async def _persist_native_compaction_item(
     resp.raise_for_status()
 
 
+async def _forward_cursor_pane_delta(
+    client: httpx.AsyncClient,
+    *,
+    session_id: str,
+    bridge_dir: Path,
+    live_stream: CursorNativeStream,
+) -> bool:
+    """Publish a pane suffix as a live delta. True if the pane is active."""
+    pane = await asyncio.to_thread(capture_cursor_pane_for_stream, bridge_dir)
+    if not pane:
+        return False
+    delta = live_stream.observe(pane)
+    if delta is not None:
+        try:
+            await _post_external_output_text_delta(
+                client,
+                session_id=session_id,
+                delta=delta.delta,
+                message_id=delta.message_id,
+                index=delta.index,
+                final=delta.final,
+            )
+        except httpx.HTTPError:
+            live_stream.rewind(delta)
+            _logger.debug(
+                "Retrying cursor streamed delta after HTTP failure; "
+                "session=%s message_id=%s index=%s",
+                session_id,
+                delta.message_id,
+                delta.index,
+                exc_info=True,
+            )
+    return delta is not None or pane_is_working(pane)
+
+
 async def forward_cursor_store_to_session(
     *,
     base_url: str,
@@ -978,6 +1013,13 @@ async def forward_cursor_store_to_session(
         while True:
             has_new_output = False
             try:
+                if _cursor_stream_enabled():
+                    has_new_output = await _forward_cursor_pane_delta(
+                        client,
+                        session_id=session_id,
+                        bridge_dir=bridge_dir,
+                        live_stream=live_stream,
+                    )
                 if store_path is None or not store_path.exists():
                     # On cold resume the runner pre-seeds the bridge state with
                     # the known store path (see ``preseed_resume_state``), so we
@@ -1055,37 +1097,6 @@ async def forward_cursor_store_to_session(
                         )
                         store_path = None
                     else:
-                        if _cursor_stream_enabled():
-                            pane = await asyncio.to_thread(
-                                capture_cursor_pane_for_stream,
-                                bridge_dir,
-                            )
-                            # Stay on the fast cadence while Cursor is
-                            # generating, even between suffix-less frames.
-                            if pane and pane_is_working(pane):
-                                has_new_output = True
-                                delta = live_stream.observe(pane)
-                                if delta is not None:
-                                    try:
-                                        await _post_external_output_text_delta(
-                                            client,
-                                            session_id=session_id,
-                                            delta=delta.delta,
-                                            message_id=delta.message_id,
-                                            index=delta.index,
-                                            final=delta.final,
-                                        )
-                                    except httpx.HTTPError:
-                                        live_stream.rewind(delta)
-                                        _logger.debug(
-                                            "Retrying cursor streamed delta after "
-                                            "HTTP failure; session=%s message_id=%s "
-                                            "index=%s",
-                                            session_id,
-                                            delta.message_id,
-                                            delta.index,
-                                            exc_info=True,
-                                        )
                         items = await asyncio.to_thread(
                             _read_new_items, store_path, last_rowid, agent_name
                         )

@@ -11,7 +11,7 @@ def test_first_viewport_emits_the_first_assistant_delta() -> None:
     delta = stream.observe("  🤖 A mechanical clock is\n\n ⠼ Working 1 token")
 
     assert delta is not None
-    assert delta.delta == "A mechanical clock is"
+    assert delta.delta == "🤖 A mechanical clock is"
     assert delta.message_id == "cursor-live-session-1"
     assert delta.index == 0
     assert delta.final is False
@@ -53,7 +53,15 @@ def test_ansi_is_removed_before_extracting_assistant_text() -> None:
     delta = CursorNativeStream("session-5").observe(pane)
 
     assert delta is not None
-    assert delta.delta == "Hello"
+    assert delta.delta == "🤖 Hello"
+
+
+def test_wrapped_viewport_lines_become_spaces() -> None:
+    stream = CursorNativeStream("session-wrap")
+    pane = "  🤖 Hello\n  world\n\n ⠼ Working"
+    delta = stream.observe(pane)
+    assert delta is not None
+    assert delta.delta == "🤖 Hello world"
 
 
 def test_rewind_allows_the_same_suffix_to_be_retried() -> None:
@@ -63,5 +71,5 @@ def test_rewind_allows_the_same_suffix_to_be_retried() -> None:
     stream.rewind(first)
     again = stream.observe("  🤖 Hello\n\n ⠼ Working")
     assert again is not None
-    assert again.delta == "Hello"
+    assert again.delta == "🤖 Hello"
     assert again.index == 0

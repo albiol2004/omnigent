@@ -56,7 +56,7 @@ def extract_assistant_region(viewport: str, *, has_emitted: bool = False) -> str
     clean = strip_ansi(viewport)
     marker = clean.find("🤖")
     if marker >= 0:
-        body = clean[marker + len("🤖") :]
+        body = clean[marker:]
     elif has_emitted:
         # Once the response scrolls, its marker can leave the viewport.
         body = clean
@@ -68,7 +68,12 @@ def extract_assistant_region(viewport: str, *, has_emitted: bool = False) -> str
         if _is_chrome_line(line):
             lines = lines[:index]
             break
-    return _normalize_region(lines)
+    return _unwrap_wrapped_lines(_normalize_region(lines))
+
+
+def _unwrap_wrapped_lines(text: str) -> str:
+    """Turn terminal wrap breaks into spaces; keep paragraph blanks."""
+    return re.sub(r"(?<!\n)\n(?!\n)", " ", text).strip()
 
 
 def suffix_after(emitted: str, viewport: str) -> str:

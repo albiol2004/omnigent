@@ -1448,7 +1448,7 @@ async def test_cursor_stream_posts_deltas_before_complete_item(
 
     assert delta_posts == [
         {
-            "delta": "Hello",
+            "delta": "🤖 Hello",
             "message_id": "cursor-live-conv_stream",
             "index": 0,
             "final": False,

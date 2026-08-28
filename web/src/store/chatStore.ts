@@ -4151,33 +4151,50 @@ export interface FrameScheduler {
 
 /**
  * Default `FrameScheduler` backed by `requestAnimationFrame`, so block
- * appends paint at most once per browser frame. Falls back to a 0 ms
- * timer where rAF is absent (SSR / non-DOM); each pump owns its own
- * instance so cancelling one stream's frame can't drop another's.
+ * appends paint at most once per browser frame. A deadline timer races the
+ * frame so backgrounded browsers still flush. Each pump owns its own instance
+ * so cancelling one stream's frame can't drop another's.
  */
+export const LIVE_FLUSH_DEADLINE_MS = 100;
+
 function createRafScheduler(): FrameScheduler {
-  const raf: (cb: () => void) => number =
-    typeof requestAnimationFrame === "function"
-      ? (cb) => requestAnimationFrame(() => cb())
-      : (cb) => setTimeout(cb, 0) as unknown as number;
+  const hasRaf = typeof requestAnimationFrame === "function";
+  const raf: (cb: () => void) => number = hasRaf
+    ? (cb) => requestAnimationFrame(() => cb())
+    : (cb) => setTimeout(cb, 0) as unknown as number;
   const caf: (handle: number) => void =
-    typeof cancelAnimationFrame === "function"
+    hasRaf && typeof cancelAnimationFrame === "function"
       ? (handle) => cancelAnimationFrame(handle)
       : (handle) => clearTimeout(handle);
-  let handle: number | null = null;
+  let rafHandle: number | null = null;
+  let deadlineHandle: ReturnType<typeof setTimeout> | null = null;
+  let pendingCallback: (() => void) | null = null;
+  const cancelPending = (): void => {
+    if (rafHandle !== null) {
+      caf(rafHandle);
+      rafHandle = null;
+    }
+    if (deadlineHandle !== null) {
+      clearTimeout(deadlineHandle);
+      deadlineHandle = null;
+    }
+    pendingCallback = null;
+  };
+  const run = (): void => {
+    const cb = pendingCallback;
+    if (cb === null) return;
+    cancelPending();
+    cb();
+  };
   return {
     schedule(cb) {
-      if (handle !== null) return;
-      handle = raf(() => {
-        handle = null;
-        cb();
-      });
+      if (pendingCallback !== null) return;
+      pendingCallback = cb;
+      rafHandle = raf(run);
+      deadlineHandle = setTimeout(run, LIVE_FLUSH_DEADLINE_MS);
     },
     cancel() {
-      if (handle !== null) {
-        caf(handle);
-        handle = null;
-      }
+      cancelPending();
     },
   };
 }
@@ -4204,7 +4221,7 @@ export type StreamEndReason = "aborted" | "switched" | "server_closed" | "droppe
  * flushes synchronously so first-token paint isn't delayed by a frame,
  * and the buffer is force-flushed before `response_end` side effects so
  * the terminal bubble state is never a frame behind. A pending frame is
- * cancelled (and its buffer dropped) when the pump unwinds — switchTo /
+ * cancelled and its buffers are drained when the pump unwinds — switchTo /
  * abort — so a queued flush can't apply this stream's blocks onto a
  * different session.
  *
@@ -4230,6 +4247,12 @@ export type StreamEndReason = "aborted" | "switched" | "server_closed" | "droppe
 /** Whether a block is a provisional live-streaming text preview. */
 function isLiveProvisionalBlock(b: AnyBlock): boolean {
   return b.ctx.itemId?.startsWith(LIVE_ITEM_PREFIX) ?? false;
+}
+
+/** Extract the vendor message id from a provisional live block. */
+function liveMessageIdFromBlock(b: AnyBlock): string | null {
+  const itemId = b.ctx.itemId;
+  return itemId?.startsWith(LIVE_ITEM_PREFIX) ? itemId.slice(LIVE_ITEM_PREFIX.length) : null;
 }
 
 /**
@@ -4293,11 +4316,16 @@ interface LiveDeltaUpdate {
   delta: string;
 }
 
-function applyLiveDelta(set: Setter, deltas: readonly LiveDeltaUpdate[]): void {
+function applyLiveDelta(
+  set: Setter,
+  deltas: readonly LiveDeltaUpdate[],
+  finalizedLiveMessageIds: ReadonlySet<string>,
+): void {
   if (deltas.length === 0) return;
   set((s) => {
     let blocks = s.blocks;
     for (const { messageId, delta } of deltas) {
+      if (finalizedLiveMessageIds.has(messageId)) continue;
       const itemId = LIVE_ITEM_PREFIX + messageId;
       const at = blocks.findIndex((b) => b.ctx.itemId === itemId);
       if (at === -1) {
@@ -4523,16 +4551,25 @@ export async function pumpStreamEvents(
   const buffer: AnyBlock[] = [];
   const seenItemIds = new Set<string>();
   const liveBuffer: LiveDeltaUpdate[] = [];
-  let frameScheduled = false;
-  const cancelFrame = (): void => {
-    frameScheduled = false;
-    scheduler.cancel();
+  const finalizedLiveMessageIds = new Set<string>();
+  const rememberFinalizedLiveBlock = (block: AnyBlock): void => {
+    const messageId = liveMessageIdFromBlock(block);
+    if (messageId !== null) finalizedLiveMessageIds.add(messageId);
+  };
+  const rememberFinalizedLiveBlocks = (blocks: readonly AnyBlock[]): void => {
+    for (const block of blocks) rememberFinalizedLiveBlock(block);
   };
   const flushLiveDeltas = (): void => {
     if (liveBuffer.length === 0) return;
     const batch = liveBuffer.splice(0);
     if (isConversationDisposed(id)) return;
-    applyLiveDelta(set, batch);
+    applyLiveDelta(set, batch, finalizedLiveMessageIds);
+  };
+  let frameScheduled = false;
+  const cancelFrame = (): void => {
+    frameScheduled = false;
+    scheduler.cancel();
+    flushLiveDeltas();
   };
   // First content block of each response flushes synchronously (snappy
   // first-token paint); the rest batch.
@@ -4582,12 +4619,28 @@ export async function pumpStreamEvents(
       return { ...(extra ?? {}), blocks: [...s.blocks, ...fresh] };
     });
   };
+  let removeWakeListeners = (): void => {};
+  if (typeof document !== "undefined") {
+    const onVisible = (): void => {
+      if (!document.hidden && document.visibilityState === "visible") flush();
+    };
+    const onPageShow = (): void => {
+      flush();
+    };
+    const remove = (): void => {
+      document.removeEventListener("visibilitychange", onVisible);
+      if (typeof window !== "undefined") window.removeEventListener("pageshow", onPageShow);
+    };
+    removeWakeListeners = remove;
+    document.addEventListener("visibilitychange", onVisible);
+    if (typeof window !== "undefined") window.addEventListener("pageshow", onPageShow);
+    controller.signal.addEventListener("abort", remove, { once: true });
+  }
   const scheduleFrame = (): void => {
     if (frameScheduled) return;
     frameScheduled = true;
     scheduler.schedule(() => {
       frameScheduled = false;
-      flushLiveDeltas();
       flush();
     });
   };
@@ -4638,6 +4691,8 @@ export async function pumpStreamEvents(
         const provIdx = get().blocks.findIndex(isLiveProvisionalBlock);
         if (provIdx !== -1) {
           flush();
+          const preview = get().blocks.find(isLiveProvisionalBlock);
+          if (preview !== undefined) rememberFinalizedLiveBlock(preview);
           set((s) => {
             const at = s.blocks.findIndex(isLiveProvisionalBlock);
             if (at === -1) return {};
@@ -4724,6 +4779,8 @@ export async function pumpStreamEvents(
           // so remove the oldest preview and let the committed item follow
           // the normal reducer path.
           flush();
+          const preview = get().blocks.find(isLiveProvisionalBlock);
+          if (preview !== undefined) rememberFinalizedLiveBlock(preview);
           set((s) => {
             const at = s.blocks.findIndex(isLiveProvisionalBlock);
             if (at === -1) return {};
@@ -4764,6 +4821,7 @@ export async function pumpStreamEvents(
         // after this event, or a stream drop). Normal messages already
         // had their preview replaced when their `text_done` committed, so
         // this is usually a no-op.
+        rememberFinalizedLiveBlocks(get().blocks);
         set((s) => ({
           status: "idle",
           blocks: s.blocks.some(isLiveProvisionalBlock)
@@ -4798,7 +4856,6 @@ export async function pumpStreamEvents(
     // `response_end`, which already drained the buffer). Whether this was
     // a deliberate server close (`[DONE]`) or a transport drop without it
     // (idle proxy disconnect / the Apps ~5-min cap) decides reconnection.
-    flushLiveDeltas();
     flush();
     return sseResult.sawDone ? "server_closed" : "dropped";
   } catch (err) {
@@ -4808,17 +4865,17 @@ export async function pumpStreamEvents(
     // ingress resetting the stream). Commit the tail and report a drop;
     // the reconnect loop re-subscribes rather than marking the turn
     // failed, so a routine recycle stays invisible.
-    flushLiveDeltas();
     flush();
     return "dropped";
   } finally {
-    // Drop any pending frame + its buffered blocks so a queued flush
-    // can't apply this stream's blocks after switchTo bound another.
+    // Cancel pending work; its buffers are drained or discarded before the
+    // stream-local guards are cleared.
     // `abortController` lifecycle is owned by `startStreamPump`'s loop,
     // not here — it must survive across reconnect attempts.
+    removeWakeListeners();
     cancelFrame();
     buffer.length = 0;
-    liveBuffer.length = 0;
+    finalizedLiveMessageIds.clear();
   }
 }
 

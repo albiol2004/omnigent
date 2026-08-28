@@ -54,6 +54,7 @@ import {
   handleSessionEvent,
   isStaleCompletedResponse,
   initChatStore,
+  LIVE_FLUSH_DEADLINE_MS,
   pumpStreamEvents,
   SSE_STALE_RECYCLE_MS,
   setPendingInitialPrompt,
@@ -8919,6 +8920,112 @@ describe("chatStore — live delta streaming (claude-native)", () => {
           b.type === "text_done" && b.ctx.itemId?.startsWith("live:") === true,
       );
   }
+
+  it("flushes queued deltas by deadline when rAF never fires", async () => {
+    vi.useFakeTimers();
+    const raf = vi.fn(() => 1);
+    const cancelRaf = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", raf);
+    vi.stubGlobal("cancelAnimationFrame", cancelRaf);
+    useChatStore.setState({
+      conversationId: "conv_live_deadline",
+      blocks: [],
+      isNativeTerminalSession: true,
+    });
+    const sink = pushableStream();
+    const controller = new AbortController();
+    void pumpStreamEvents("conv_live_deadline", sink.stream, controller, setState, getState);
+
+    sink.push(nativeDelta("m_deadline", 0, "Still live", false));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(raf).toHaveBeenCalledTimes(1);
+    expect(provisional()).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(LIVE_FLUSH_DEADLINE_MS);
+    expect(provisional()?.fullText).toBe("Still live");
+    expect(cancelRaf).toHaveBeenCalledWith(1);
+
+    controller.abort();
+  });
+
+  it("flushes pending deltas when the document becomes visible", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn(() => 1),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    useChatStore.setState({
+      conversationId: "conv_live_visible",
+      blocks: [],
+      isNativeTerminalSession: true,
+    });
+    const sink = pushableStream();
+    const controller = new AbortController();
+    void pumpStreamEvents("conv_live_visible", sink.stream, controller, setState, getState);
+
+    sink.push(nativeDelta("m_visible", 0, "visible", false));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(provisional()).toBeUndefined();
+
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(provisional()?.fullText).toBe("visible");
+
+    sink.push(nativeDelta("m_visible", 1, " again", false));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(provisional()?.fullText).toBe("visible");
+    window.dispatchEvent(new Event("pageshow"));
+    expect(provisional()?.fullText).toBe("visible again");
+
+    controller.abort();
+  });
+
+  it("drains the live delta buffer when a pending frame flushes", async () => {
+    useChatStore.setState({
+      conversationId: "conv_live_flush",
+      blocks: [],
+      isNativeTerminalSession: true,
+    });
+    const { sink, controller, manual } = startPump("conv_live_flush");
+
+    sink.push(nativeDelta("m_flush", 0, "tail", false));
+    await tick();
+    expect(manual.pending()).toBe(true);
+    expect(provisional()).toBeUndefined();
+
+    manual.fire();
+    expect(provisional()?.fullText).toBe("tail");
+
+    controller.abort();
+  });
+
+  it("does not recreate a preview after its message was cleaned up", async () => {
+    useChatStore.setState({
+      conversationId: "conv_live_cleanup",
+      blocks: [],
+      isNativeTerminalSession: true,
+    });
+    const { sink, controller, manual } = startPump("conv_live_cleanup");
+
+    sink.push(nativeDelta("m_cleanup", 0, "finished", false));
+    await tick();
+    manual.fire();
+    expect(provisional()?.ctx.itemId).toBe("live:m_cleanup");
+
+    sink.push(sse("response.completed", { id: "resp_cleanup", status: "completed", output: [] }));
+    await tick();
+    expect(provisional()).toBeUndefined();
+
+    sink.push(nativeDelta("m_cleanup", 1, " late", false));
+    await tick();
+    manual.fire();
+    expect(provisional()).toBeUndefined();
+    expect(useChatStore.getState().blocks.some((b) => b.ctx.itemId === "live:m_cleanup")).toBe(
+      false,
+    );
+
+    controller.abort();
+  });
 
   it("coalesces native deltas into one store update per frame", async () => {
     useChatStore.setState({

@@ -1154,6 +1154,7 @@ async def _prepare_codex_terminal(
                 model_provider=codex_session_meta_model_provider(_codex_launch),
                 codex_path=command,
                 terminal_launch_args=codex_args,
+                guard=False,
             )
         # Listen on a loopback WebSocket, mirroring the host-spawned
         # runner (``runner/app.py`` ``_auto_create_codex_terminal``).
@@ -1842,6 +1843,7 @@ async def _ensure_local_codex_resume_rollout(
     model_provider: str,
     codex_path: str | None,
     terminal_launch_args: Sequence[str] | None = None,
+    guard: bool = False,
 ) -> Path:
     """
     Ensure Codex has a local rollout JSONL for cold resume.
@@ -1876,6 +1878,8 @@ async def _ensure_local_codex_resume_rollout(
         rollout, but treats the value as informational, so a flaky probe
         must not cost the carried history.
     :param terminal_launch_args: Persisted Codex approval/sandbox launch args.
+    :param guard: Whether this rebuild belongs to a fork. Plain resume
+        rebuilds log oversized history and continue; fork rebuilds reject it.
     :returns: Path to the existing or written rollout.
     :raises click.ClickException: If Omnigent history cannot be fetched or the
         rollout cannot be written, or if the persisted Codex thread id is
@@ -1913,7 +1917,7 @@ async def _ensure_local_codex_resume_rollout(
         with tmp.open("w", encoding="utf-8") as handle:
             for record in records:
                 handle.write(json.dumps(record, separators=(",", ":")) + "\n")
-        guard_fork_context_bytes(tmp.stat().st_size)
+        guard_fork_context_bytes(tmp.stat().st_size, guard=guard)
         os.replace(tmp, target)
     except OSError as exc:
         raise click.ClickException(

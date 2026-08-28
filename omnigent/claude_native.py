@@ -4162,6 +4162,7 @@ async def _resolve_cold_resume_args(
         session_id=session_id,
         external_session_id=external_session_id,
         workspace=Path.cwd().resolve(),
+        guard=False,
     )
     if transcript is None:
         # No resumable records: ``claude --resume`` against an empty (or
@@ -4183,6 +4184,7 @@ async def _ensure_local_claude_resume_transcript(
     session_id: str,
     external_session_id: str,
     workspace: Path,
+    guard: bool = False,
 ) -> Path | None:
     """
     Refresh Claude Code's local JSONL transcript for cold resume.
@@ -4207,6 +4209,8 @@ async def _ensure_local_claude_resume_transcript(
         ``OMNIGENT_RUNNER_WORKSPACE``. Pass an already-resolved
         path (symlinks collapsed) so the project-dir encoding matches
         what Claude computes.
+    :param guard: Whether this rebuild belongs to a fork. Plain resume
+        rebuilds log oversized history and continue; fork rebuilds reject it.
     :returns: Path to the local transcript that was written; ``None`` if
         *external_session_id* is not a safe transcript stem, or if the AP
         history yields no resumable records (an empty transcript would make
@@ -4247,7 +4251,7 @@ async def _ensure_local_claude_resume_transcript(
         with tmp.open("w", encoding="utf-8") as handle:
             for record in records:
                 handle.write(json.dumps(record, separators=(",", ":")) + "\n")
-        guard_fork_context_bytes(tmp.stat().st_size)
+        guard_fork_context_bytes(tmp.stat().st_size, guard=guard)
         os.replace(tmp, target)
     except OSError as exc:
         raise click.ClickException(

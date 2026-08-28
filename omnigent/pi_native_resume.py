@@ -576,6 +576,7 @@ async def ensure_local_pi_resume_session(
     workspace: Path,
     provider: str = "omnigent",
     model: str = "",
+    guard: bool = False,
 ) -> Path | None:
     """Ensure Pi has a local session JSONL to resume with prior history.
 
@@ -599,6 +600,8 @@ async def ensure_local_pi_resume_session(
     :param workspace: Resolved cwd Pi will run in (written into the header).
     :param provider: Provider id for synthesized assistant messages.
     :param model: Default model id for synthesized assistant messages.
+    :param guard: Whether this rebuild belongs to a fork. Plain resume
+        rebuilds log oversized history and continue; fork rebuilds reject it.
     :returns: Path to the existing or written session file, or ``None`` when
         nothing resumable was produced.
     :raises RuntimeError: If Omnigent history cannot be fetched or the session
@@ -623,6 +626,6 @@ async def ensure_local_pi_resume_session(
     if len(records) <= 1:
         return None
     target = pi_resume_session_path(session_dir, external_session_id)
-    guard_fork_context_bytes(jsonl_context_bytes(records))
+    guard_fork_context_bytes(jsonl_context_bytes(records), guard=guard)
     write_pi_session_records(target, records)
     return target

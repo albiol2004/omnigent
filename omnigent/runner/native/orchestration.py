@@ -1385,6 +1385,7 @@ async def _auto_create_opencode_terminal(
                         omnigent_session_id=session_id,
                         server_client=server_client,
                         model_override=model_override,
+                        guard=launch_config.fork_carry_history,
                     )
                 # Persist the OpenCode session id so a later relaunch resumes
                 # it (best effort, like codex-native).
@@ -1764,6 +1765,7 @@ async def _rehydrate_opencode_session_from_transcript(
     omnigent_session_id: str,
     server_client: httpx.AsyncClient | None,
     model_override: str | None,
+    guard: bool = False,
 ) -> bool:
     """
     Seed a fresh opencode session with prior context (text-prefix replay).
@@ -1774,6 +1776,8 @@ async def _rehydrate_opencode_session_from_transcript(
     context instead of silent amnesia. Best-effort: returns ``False`` when the
     transcript can't be fetched or is empty.
 
+    :param guard: Whether the replay belongs to a fork. Plain resume
+        replays log oversized history and continue; fork replays reject it.
     :returns: ``True`` when prior context was seeded.
     """
     if server_client is None:
@@ -1823,7 +1827,7 @@ async def _rehydrate_opencode_session_from_transcript(
         "host, so the earlier conversation is included below for context. Treat "
         "it as history; do not re-run prior actions.]\n\n" + transcript
     )
-    guard_fork_context(text)
+    guard_fork_context(text, guard=guard)
     try:
         await opencode_client.seed_context(
             opencode_session_id, text, provider_id=provider_id, model_id=model_id
@@ -1981,6 +1985,7 @@ async def _resolve_pi_resume_session(
                 session_dir=session_dir,
                 workspace=workspace,
                 model=model,
+                guard=False,
             )
         except ForkContextTooLarge:
             raise
@@ -2023,6 +2028,7 @@ async def _resolve_pi_resume_session(
                 session_dir=session_dir,
                 workspace=workspace,
                 model=model,
+                guard=True,
             )
         except ForkContextTooLarge:
             raise
@@ -3254,7 +3260,7 @@ async def _build_qwen_fork_recording(
                 session_id,
             )
             return None
-        guard_fork_context_bytes(jsonl_context_bytes(records))
+        guard_fork_context_bytes(jsonl_context_bytes(records), guard=True)
         recording = await asyncio.to_thread(
             write_qwen_session_recording, qwen_session_id, workspace, records
         )
@@ -3913,6 +3919,7 @@ async def _auto_create_codex_terminal(
                 model_provider=_session_meta_provider,
                 codex_path=_codex_cli_path,
                 terminal_launch_args=launch_config.terminal_launch_args,
+                guard=True,
             )
         except ForkContextTooLarge:
             raise
@@ -3963,6 +3970,7 @@ async def _auto_create_codex_terminal(
             model_provider=_session_meta_provider,
             codex_path=_codex_cli_path,
             terminal_launch_args=launch_config.terminal_launch_args,
+            guard=False,
         )
     # Link the bundle's skills into the per-bridge CODEX_HOME before the
     # app-server boots — Codex discovers ``$CODEX_HOME/skills/<name>/``
@@ -6314,6 +6322,7 @@ async def _auto_create_claude_terminal(
                 session_id=session_id,
                 external_session_id=session_external_id,
                 workspace=Path(workspace).resolve(),
+                guard=False,
             )
             if _transcript is not None:
                 resume_external_session_id = session_external_id
@@ -6412,6 +6421,7 @@ async def _auto_create_claude_terminal(
                 session_id=session_id,
                 external_session_id=our_uuid,
                 workspace=_clone_workspace,
+                guard=True,
             )
         except ForkContextTooLarge:
             raise

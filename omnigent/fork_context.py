@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -11,6 +12,8 @@ from omnigent.errors import ErrorCode
 
 FORK_MAX_CONTEXT_BYTES_ENV = "OMNIGENT_FORK_MAX_CONTEXT_BYTES"
 DEFAULT_FORK_MAX_CONTEXT_BYTES = 600_000
+
+_logger = logging.getLogger(__name__)
 
 
 class ForkContextTooLarge(ValueError):
@@ -70,9 +73,23 @@ def guard_fork_context_bytes(
     *,
     compacted_bytes: int | None = None,
     threshold: int | None = None,
+    guard: bool = True,
 ) -> int:
-    """Allow context at the limit, or raise with the final measured size."""
+    """Allow context at the limit, or raise with the final measured size.
+
+    Non-fork resume paths pass ``guard=False`` so oversized history is logged
+    and retained instead of being rejected.
+    """
     limit = max_fork_context_bytes() if threshold is None else threshold
+    if not guard:
+        if actual_bytes > limit:
+            _logger.info(
+                "Skipping fork context size guard for non-fork context: "
+                "%d bytes exceeds threshold %d bytes",
+                actual_bytes,
+                limit,
+            )
+        return actual_bytes
     if actual_bytes <= limit:
         return actual_bytes
     if compacted_bytes is not None and compacted_bytes <= limit:
@@ -86,6 +103,7 @@ def guard_fork_context(
     *,
     compacted_value: object | None = None,
     threshold: int | None = None,
+    guard: bool = True,
 ) -> int:
     """Measure a payload, retrying once with an optional compacted payload."""
     actual_bytes = serialized_context_bytes(value)
@@ -96,6 +114,7 @@ def guard_fork_context(
         actual_bytes,
         compacted_bytes=compacted_bytes,
         threshold=threshold,
+        guard=guard,
     )
 
 

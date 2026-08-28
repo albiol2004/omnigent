@@ -1,0 +1,18 @@
+🤖 Implemented the `honest-failure` slice without modifying routing or mailbox
+control files.
+
+Progress events are callback-gated, failures log with traceback and model/provider
+context, and 413 responses retain the original reason plus the compaction error.
+
+Files changed:
+- `omnigent/server/routes/sessions/routes_core.py`
+- `tests/server/routes/test_fork_compact.py`
+- Evidence: `loop-fork-real/evidence/iter1/honest-failure/`
+
+Verification:
+- Tests: `12 passed, 1 warning`
+- Pre-commit: all applicable checks passed
+- No commit, push, stash, or reset performed
+
+Concern: the current `compact_fork_items` implementation does not yet expose
+`on_llm_ready`; the route supports it when slice 1 lands.

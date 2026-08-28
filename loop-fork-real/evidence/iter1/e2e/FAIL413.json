@@ -1,0 +1,7 @@
+{
+  "status": 413,
+  "body": "{\"error\":{\"code\":\"fork_context_too_large\",\"message\":\"Fork context too large: 940884 bytes exceeds threshold 600000 bytes (OMNIGENT_FORK_MAX_CONTEXT_BYTES).; compaction failed: No callable model is configured for fork compaction; tried: env model=<unset> -> skipped (empty); source_override model=fable -> skipped provider/model=anthropic/claude-fable-5 (no key); target_spec model=<unset> -> skipped (empty); source_spec model=<unset> -> skipped (empty); openai_fallback model=gpt-4o-mini -> skipped provider/model=openai/gpt-4o-mini (no key)\"}}",
+  "has_compaction_failed_text": true,
+  "in_progress_in_new_log": false,
+  "warning_traceback": true
+}

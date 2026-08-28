@@ -1,0 +1,25 @@
+INFO  08-28 20:37:56.930 uvicorn.error                    _serve             | Started server process [71203]
+INFO  08-28 20:37:56.931 uvicorn.error                    startup            | Waiting for application startup.
+INFO  08-28 20:37:56.934 ...ime.harnesses.process_manager start              | HarnessProcessManager started; instance_dir=/tmp/omnigent-1000/ap-1a1b89970e6649c2b792d2e51c6178e6
+INFO  08-28 20:37:57.212 policies.registry                load_registry      | Policy registry loaded: 31 entries from 12 modules
+INFO  08-28 20:37:57.215 server.scheduled.scheduler       start              | ScheduledTaskScheduler started with 0 job(s)
+INFO  08-28 20:37:57.215 uvicorn.error                    startup            | Application startup complete.
+INFO  08-28 20:37:57.216 uvicorn.error                    ...started_message | Uvicorn running on http://127.0.0.1:17701 (Press CTRL+C to quit)
+INFO  08-28 20:37:57.313 uvicorn.access                   send               | 127.0.0.1:32784 - "GET /health HTTP/1.1" 200 OK 1.2ms rid=251fe3fe54cb49a9861e632b311036a1 ua="python-httpx/0.28.1"
+INFO  08-28 20:37:57.320 uvicorn.access                   send               | 127.0.0.1:32786 - "GET /v1/sessions/e34847899b7d47b3ad322948d4ea6002/history HTTP/1.1" 404 Not Found 0.4ms rid=6e0c1bdb7f394d7f941a1595e76df64a ua="python-httpx/0.28.1" sid=e34847899b7d47b3ad322948d4ea6002
+INFO  08-28 20:37:57.361 uvicorn.access                   send               | 127.0.0.1:32800 - "GET /v1/sessions/e34847899b7d47b3ad322948d4ea6002 HTTP/1.1" 200 OK 37.2ms rid=180aff448caf43f9ae7777daff3932c2 ua="python-httpx/0.28.1" sid=e34847899b7d47b3ad322948d4ea6002
+INFO  08-28 20:37:57.392 uvicorn.access                   send               | 127.0.0.1:32802 - "GET /v1/sessions/e34847899b7d47b3ad322948d4ea6002/items?limit=1000 HTTP/1.1" 200 OK 24.8ms rid=ac420261ae74467692bc5d4b9afcbd64 ua="python-httpx/0.28.1" sid=e34847899b7d47b3ad322948d4ea6002
+ERROR 08-28 20:37:58.085 inner.native_attachments         ...lize_attachment | Native executor received unresolved file_id 0d1a58e3abff412a9b5b87442879335d — content resolver may not have run
+ERROR 08-28 20:37:58.095 inner.native_attachments         ...lize_attachment | Native executor received unresolved file_id 0d1a58e3abff412a9b5b87442879335d — content resolver may not have run
+INFO  08-28 20:37:58.100 fork_compact_routing             ...pact_candidates | Fork compaction model resolution: chain=env model=<unset> -> skipped (empty); source_override model=fable -> tried provider/model=anthropic/claude-fable-5; target_spec model=<unset> -> skipped (empty); source_spec model=<unset> -> skipped (empty); openai_fallback model=gpt-4o-mini -> tried provider/model=openai/gpt-4o-mini; source=source_override provider/model=anthropic/claude-fable-5
+INFO  08-28 20:37:58.100 fork_compact                     ...t_with_resolved | Fork compaction model resolved: source=source_override model=anthropic/claude-fable-5
+ERROR 08-28 20:37:58.433 runtime.compaction               _run_layer2        | Compaction Layer 2 summarisation is UNAUTHORIZED for task resp_da36e26beef04bbf9c1f03c049eac158 (Client error '401 Unauthorized' for url 'https://api.anthropic.com/v1/messages'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401) — the summarizer's credentials are missing or invalid, so compaction is degrading to lossy Layer-3 truncation. Fix the summarizer auth/config to restore summary-quality compaction.
+WARN  08-28 20:37:58.433 fork_compact                     compact_fork_items | Fork compaction auth failed for anthropic/claude-fable-5; trying next candidate
+INFO  08-28 20:37:58.433 fork_compact                     ...t_with_resolved | Fork compaction model resolved: source=openai_fallback model=openai/gpt-4o-mini
+INFO  08-28 20:38:08.543 uvicorn.access                   send               | 127.0.0.1:32804 - "POST /v1/sessions/e34847899b7d47b3ad322948d4ea6002/fork HTTP/1.1" 201 Created 10473.9ms rid=821691f388f24f209debd40f4e6cfb34 ua="python-httpx/0.28.1" sid=e34847899b7d47b3ad322948d4ea6002
+INFO  08-28 20:38:08.555 uvicorn.access                   send               | 127.0.0.1:42432 - "GET /v1/sessions/f8167b6aee254a59b1d2156ea3ef8d8c/items HTTP/1.1" 200 OK 6.4ms rid=78ce35a7a2b1445e9680d1a924d7d345 ua="python-httpx/0.28.1" sid=f8167b6aee254a59b1d2156ea3ef8d8c
+INFO  08-28 20:38:08.579 uvicorn.error                    shutdown           | Shutting down
+INFO  08-28 20:38:08.679 uvicorn.error                    shutdown           | Waiting for application shutdown.
+INFO  08-28 20:38:08.680 uvicorn.error                    shutdown           | Application shutdown complete.
+INFO  08-28 20:38:08.680 uvicorn.error                    _serve             | Finished server process [71203]

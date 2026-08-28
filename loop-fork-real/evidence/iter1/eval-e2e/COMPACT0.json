@@ -1,0 +1,5 @@
+{
+  "status": 413,
+  "body": "{\"error\":{\"code\":\"fork_context_too_large\",\"message\":\"Fork context too large: 951537 bytes exceeds threshold 600000 bytes (OMNIGENT_FORK_MAX_CONTEXT_BYTES).\"}}",
+  "has_compaction_failed": false
+}

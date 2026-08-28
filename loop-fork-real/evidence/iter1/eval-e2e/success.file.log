@@ -1,0 +1,26 @@
+INFO  08-28 20:45:14.039 uvicorn.error                    _serve             | Started server process [94384]
+INFO  08-28 20:45:14.039 uvicorn.error                    startup            | Waiting for application startup.
+INFO  08-28 20:45:14.042 ...ime.harnesses.process_manager start              | HarnessProcessManager started; instance_dir=/tmp/omnigent-1000/ap-dd244cb1baec4d168e30f1c15db94368
+INFO  08-28 20:45:14.279 policies.registry                load_registry      | Policy registry loaded: 31 entries from 12 modules
+INFO  08-28 20:45:14.282 server.scheduled.scheduler       start              | ScheduledTaskScheduler started with 0 job(s)
+INFO  08-28 20:45:14.283 uvicorn.error                    startup            | Application startup complete.
+INFO  08-28 20:45:14.283 uvicorn.error                    ...started_message | Uvicorn running on http://127.0.0.1:17801 (Press CTRL+C to quit)
+INFO  08-28 20:45:14.473 uvicorn.access                   send               | 127.0.0.1:35814 - "GET /health HTTP/1.1" 200 OK 1.4ms rid=4fcb4647ebd34cb1836df745a78431c4 ua="python-httpx/0.28.1"
+INFO  08-28 20:45:14.478 uvicorn.access                   send               | 127.0.0.1:35824 - "GET /v1/sessions/e34847899b7d47b3ad322948d4ea6002/history HTTP/1.1" 404 Not Found 0.4ms rid=0d88f66da8ce4d33a7f2de4a5c2335b7 ua="python-httpx/0.28.1" sid=e34847899b7d47b3ad322948d4ea6002
+INFO  08-28 20:45:14.510 uvicorn.access                   send               | 127.0.0.1:35840 - "GET /v1/sessions/e34847899b7d47b3ad322948d4ea6002/items?limit=1000 HTTP/1.1" 200 OK 28.9ms rid=f8fce1c009ee421b876fec58fc0f79ed ua="python-httpx/0.28.1" sid=e34847899b7d47b3ad322948d4ea6002
+ERROR 08-28 20:45:15.084 inner.native_attachments         ...lize_attachment | Native executor received unresolved file_id 0d1a58e3abff412a9b5b87442879335d — content resolver may not have run
+ERROR 08-28 20:45:15.094 inner.native_attachments         ...lize_attachment | Native executor received unresolved file_id 0d1a58e3abff412a9b5b87442879335d — content resolver may not have run
+INFO  08-28 20:45:15.099 fork_compact_routing             ...pact_candidates | Fork compaction model resolution: chain=env model=<unset> -> skipped (empty); source_override model=fable -> tried provider/model=anthropic/claude-fable-5; target_spec model=<unset> -> skipped (empty); source_spec model=<unset> -> skipped (empty); openai_fallback model=gpt-4o-mini -> tried provider/model=openai/gpt-4o-mini; source=source_override provider/model=anthropic/claude-fable-5
+INFO  08-28 20:45:15.099 fork_compact                     ...t_with_resolved | Fork compaction model resolved: source=source_override model=anthropic/claude-fable-5
+ERROR 08-28 20:45:15.416 runtime.compaction               _run_layer2        | Compaction Layer 2 summarisation is UNAUTHORIZED for task resp_5262491f3dd3434684dac24d47eba6ee (Client error '401 Unauthorized' for url 'https://api.anthropic.com/v1/messages'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401) — the summarizer's credentials are missing or invalid, so compaction is degrading to lossy Layer-3 truncation. Fix the summarizer auth/config to restore summary-quality compaction.
+WARN  08-28 20:45:15.416 fork_compact                     compact_fork_items | Fork compaction auth failed for anthropic/claude-fable-5; trying next candidate
+INFO  08-28 20:45:15.416 fork_compact                     ...t_with_resolved | Fork compaction model resolved: source=openai_fallback model=openai/gpt-4o-mini
+INFO  08-28 20:45:28.244 uvicorn.access                   send               | 127.0.0.1:35856 - "POST /v1/sessions/e34847899b7d47b3ad322948d4ea6002/fork HTTP/1.1" 201 Created 13188.9ms rid=85fbc1ae24094296a3c5afed64576e51 ua="python-httpx/0.28.1" sid=e34847899b7d47b3ad322948d4ea6002
+INFO  08-28 20:45:28.252 uvicorn.access                   send               | 127.0.0.1:42560 - "GET /v1/sessions/08c6c9c0b6d24ca39d5f0128f70b7857/items?limit=1000 HTTP/1.1" 200 OK 4.0ms rid=617d3318cfae4a11ad1e25e849040ba0 ua="python-httpx/0.28.1" sid=08c6c9c0b6d24ca39d5f0128f70b7857
+INFO  08-28 20:45:28.269 uvicorn.access                   send               | 127.0.0.1:42572 - "POST /v1/sessions/08c6c9c0b6d24ca39d5f0128f70b7857/fork HTTP/1.1" 201 Created 13.1ms rid=6bd0c16f4aac4062a56f9c87e25a1305 ua="python-httpx/0.28.1" sid=08c6c9c0b6d24ca39d5f0128f70b7857
+INFO  08-28 20:45:28.275 uvicorn.access                   send               | 127.0.0.1:42576 - "GET /v1/sessions/05f04edaa65643dda893b75e3e2420ab/items?limit=1000 HTTP/1.1" 200 OK 2.8ms rid=607a827a61d044aca6ad85a510afef96 ua="python-httpx/0.28.1" sid=05f04edaa65643dda893b75e3e2420ab
+INFO  08-28 20:45:28.349 uvicorn.error                    shutdown           | Shutting down
+INFO  08-28 20:45:28.450 uvicorn.error                    shutdown           | Waiting for application shutdown.
+INFO  08-28 20:45:28.451 uvicorn.error                    shutdown           | Application shutdown complete.
+INFO  08-28 20:45:28.451 uvicorn.error                    _serve             | Finished server process [94384]

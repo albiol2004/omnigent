@@ -1,0 +1,44 @@
+{
+  "port": 17701,
+  "scratch": "/tmp/fork-compact-real-e2e",
+  "copy_counts": {
+    "users": 1,
+    "agents": 1,
+    "conversations": 1,
+    "metadata": 1,
+    "labels": 10,
+    "items": 576,
+    "permissions": 1,
+    "files": 1,
+    "file_blobs": 1
+  },
+  "fork_status": 201,
+  "fork_id": "f8167b6aee254a59b1d2156ea3ef8d8c",
+  "bytes_before": 939189,
+  "source_item_http": 200,
+  "source_item_count": 576,
+  "fork_item_count": 13,
+  "bytes_after": 16581,
+  "has_compaction_item": true,
+  "summary_len": 2379,
+  "resolved_model": "openai/gpt-4o-mini",
+  "fake_claude": {
+    "argv": [
+      "claude",
+      "--resume",
+      "f8167b6aee254a59b1d2156ea3ef8d8c"
+    ],
+    "transcript_bytes": 16895,
+    "transcript_path": "/home/alex/omnigent-fixes/loop-fork-real/evidence/iter1/e2e/fork.jsonl",
+    "has_resume": true,
+    "under_600k": true
+  },
+  "log_model_line": [
+    "Fork compaction model resolved: source=source_override model=anthropic/claude-fable-5",
+    "Fork compaction auth failed for anthropic/claude-fable-5; trying next candidate",
+    "Fork compaction model resolved: source=openai_fallback model=openai/gpt-4o-mini"
+  ],
+  "log_resolution_line": [
+    "Fork compaction model resolution: chain=env model=<unset> -> skipped (empty); source_override model=fable -> tried provider/model=anthropic/claude-fable-5; target_spec model=<unset> -> skipped (empty); source_spec model=<unset> -> skipped (empty); openai_fallback model=gpt-4o-mini -> tried provider/model=openai/gpt-4o-mini; source=source_override provider/model=anthropic/claude-fable-5"
+  ]
+}

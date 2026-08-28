@@ -1,0 +1,48 @@
+{
+  "port": 17801,
+  "scratch": "/tmp/fork-compact-eval-iter1",
+  "copy_counts": {
+    "users": 1,
+    "agents": 1,
+    "conversations": 1,
+    "metadata": 1,
+    "labels": 10,
+    "items": 583,
+    "permissions": 1,
+    "files": 1,
+    "file_blobs": 1
+  },
+  "fork_status": 201,
+  "fork_id": "08c6c9c0b6d24ca39d5f0128f70b7857",
+  "bytes_before": 950393,
+  "source_item_http": 200,
+  "source_item_count": 583,
+  "source_digest_before": "583:a26f7e764ea569de1892e3f308d0793caf839edcf707dc920009fb14c3b10633",
+  "fork_item_count": 9,
+  "bytes_after": 16997,
+  "has_compaction_item": true,
+  "summary_len": 3311,
+  "resolved_model": "openai/gpt-4o-mini",
+  "fake_claude": {
+    "argv": [
+      "claude",
+      "--resume",
+      "08c6c9c0b6d24ca39d5f0128f70b7857"
+    ],
+    "transcript_bytes": 17170,
+    "transcript_path": "/home/alex/omnigent-fixes/loop-fork-real/evidence/iter1/eval-e2e/fork.jsonl",
+    "has_resume": true,
+    "under_600k": true
+  },
+  "small_fork_status": 201,
+  "small_fork_id": "05f04edaa65643dda893b75e3e2420ab",
+  "small_fork_item_count": 9,
+  "small_fork_bytes": 16997,
+  "small_has_new_compaction": true,
+  "source_digest_after": "583:a26f7e764ea569de1892e3f308d0793caf839edcf707dc920009fb14c3b10633",
+  "source_rows_byte_identical": true,
+  "log_model_line": [],
+  "log_resolution_line": [],
+  "auth_retry_lines": [],
+  "bare_fable_to_openai": false
+}

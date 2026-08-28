@@ -1,0 +1,106 @@
+{
+  "config_path": "/tmp/fork-compact-repro-iter1/config.yaml",
+  "config_path_is_scratch": true,
+  "anthropic_env_set": true,
+  "openai_env_set": true,
+  "provider_names": [
+    "anthropic",
+    "claude",
+    "codex",
+    "openai"
+  ],
+  "providers": {
+    "anthropic": {
+      "kind": "key",
+      "cli": null,
+      "families": {
+        "anthropic": {
+          "has_api_key": true,
+          "api_key_len": 108,
+          "has_base_url": true,
+          "default_model": null
+        }
+      }
+    },
+    "claude": {
+      "kind": "subscription",
+      "cli": "claude",
+      "families": {}
+    },
+    "codex": {
+      "kind": "subscription",
+      "cli": "codex",
+      "families": {}
+    },
+    "openai": {
+      "kind": "key",
+      "cli": null,
+      "families": {
+        "openai": {
+          "has_api_key": true,
+          "api_key_len": 164,
+          "has_base_url": true,
+          "default_model": null
+        }
+      }
+    }
+  },
+  "resolve_fork_compact_model": {
+    "model": "fable",
+    "source": "source_override"
+  },
+  "route_bare_model_for_compaction": "fable",
+  "parse_model_string_after_route": {
+    "provider": "openai",
+    "model": "fable"
+  },
+  "parse_model_string_raw_fable": {
+    "provider": "openai",
+    "model": "fable"
+  },
+  "context_window_fable": 128000,
+  "has_anthropic_connection": true,
+  "has_openai_connection": true,
+  "calls": [
+    {
+      "label": "client.responses.create model=fable connection=None",
+      "ok": false,
+      "ms": 296.36,
+      "exc_type": "HTTPStatusError",
+      "exc_module": "httpx",
+      "exc_str": "Client error '401 Unauthorized' for url 'https://api.openai.com/v1/responses'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401",
+      "cause_type": null,
+      "cause_str": null
+    },
+    {
+      "label": "client.responses.create model=fable connection=openai-key-from-config",
+      "ok": false,
+      "ms": 1368.87,
+      "exc_type": "HTTPStatusError",
+      "exc_module": "httpx",
+      "exc_str": "Client error '400 Bad Request' for url 'https://api.openai.com/v1/responses'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400",
+      "cause_type": null,
+      "cause_str": null
+    },
+    {
+      "label": "client.responses.create model=fable connection=anthropic-key-from-config",
+      "ok": false,
+      "ms": 411.45,
+      "exc_type": "HTTPStatusError",
+      "exc_module": "httpx",
+      "exc_str": "Client error '401 Unauthorized' for url 'https://api.openai.com/v1/responses'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401",
+      "cause_type": null,
+      "cause_str": null
+    },
+    {
+      "label": "compact() model=fable connection=None fail_on_summary_error",
+      "ok": false,
+      "ms": 296.82,
+      "exc_type": "HTTPStatusError",
+      "exc_module": "httpx",
+      "exc_str": "Client error '401 Unauthorized' for url 'https://api.openai.com/v1/responses'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401",
+      "cause_type": null,
+      "cause_str": null
+    }
+  ]
+}

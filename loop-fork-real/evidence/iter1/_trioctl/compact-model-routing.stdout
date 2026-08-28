@@ -1,0 +1,16 @@
+🤖 Implemented compact model routing with explicit provider/model resolution,
+API-key connections, alias fallback, readiness callback, and
+`conversation_id=None`.
+
+Files changed:
+- `omnigent/fork_compact.py`
+- `omnigent/fork_compact_routing.py`
+- `tests/fork_context/test_fork_compact_model.py`
+- Verification artifacts under `loop-fork-real/evidence/iter1/compact-model-routing/`
+
+Verification:
+- Pytest: 8 passed.
+- Pre-commit: all hooks passed.
+- `git diff --check`: passed.
+
+No commit or push performed. Concurrent edits in route files were left untouched.

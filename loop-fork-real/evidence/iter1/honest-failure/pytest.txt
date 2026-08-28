@@ -1,0 +1,16 @@
+2026-08-28T18:17:50.451697Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 12 items in this shard
+............                                                             [100%]
+=============================== warnings summary ===============================
+tests/server/routes/test_fork_compact.py:11
+  /home/alex/omnigent-fixes/tests/server/routes/test_fork_compact.py:11: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================= Top tests by peak-RSS delta ==========================
++  190.3 MB  (now    190.3 MB)  tests/server/routes/test_fork_compact.py::test_oversized_fork_uses_compacted_replacement_items
++    7.1 MB  (now    200.7 MB)  tests/server/routes/test_fork_compact.py::test_summary_failure_keeps_original_413_and_source
++    2.1 MB  (now    193.6 MB)  tests/server/routes/test_fork_compact.py::test_oversized_fork_keeps_recent_assistant_tail_verbatim
++    0.9 MB  (now    191.3 MB)  tests/server/routes/test_fork_compact.py::test_rendered_claude_size_triggers_compaction
++    0.3 MB  (now    191.5 MB)  tests/server/routes/test_fork_compact.py::test_rendered_claude_size_still_rejects_when_compaction_disabled
+12 passed, 1 warning in 1.87s

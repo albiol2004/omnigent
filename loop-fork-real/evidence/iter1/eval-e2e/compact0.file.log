@@ -1,0 +1,15 @@
+INFO  08-28 20:45:29.613 uvicorn.error                    _serve             | Started server process [95252]
+INFO  08-28 20:45:29.613 uvicorn.error                    startup            | Waiting for application startup.
+INFO  08-28 20:45:29.616 ...ime.harnesses.process_manager start              | HarnessProcessManager started; instance_dir=/tmp/omnigent-1000/ap-465af99bdf834b8c9f54e0804f4738ce
+INFO  08-28 20:45:29.862 policies.registry                load_registry      | Policy registry loaded: 31 entries from 12 modules
+INFO  08-28 20:45:29.865 server.scheduled.scheduler       start              | ScheduledTaskScheduler started with 0 job(s)
+INFO  08-28 20:45:29.865 uvicorn.error                    startup            | Application startup complete.
+INFO  08-28 20:45:29.865 uvicorn.error                    ...started_message | Uvicorn running on http://127.0.0.1:17801 (Press CTRL+C to quit)
+INFO  08-28 20:45:30.024 uvicorn.access                   send               | 127.0.0.1:60912 - "GET /health HTTP/1.1" 200 OK 1.3ms rid=1ca8c860d32042348d50d25ba5d36a91 ua="python-httpx/0.28.1"
+ERROR 08-28 20:45:30.075 inner.native_attachments         ...lize_attachment | Native executor received unresolved file_id 0d1a58e3abff412a9b5b87442879335d — content resolver may not have run
+ERROR 08-28 20:45:30.089 inner.native_attachments         ...lize_attachment | Native executor received unresolved file_id 0d1a58e3abff412a9b5b87442879335d — content resolver may not have run
+INFO  08-28 20:45:30.094 uvicorn.access                   send               | 127.0.0.1:60914 - "POST /v1/sessions/e34847899b7d47b3ad322948d4ea6002/fork HTTP/1.1" 413 Request Entity Too Large 65.4ms rid=3c9046a77a84400d9e902987f4a575d6 ua="python-httpx/0.28.1" sid=e34847899b7d47b3ad322948d4ea6002
+INFO  08-28 20:45:30.166 uvicorn.error                    shutdown           | Shutting down
+INFO  08-28 20:45:30.267 uvicorn.error                    shutdown           | Waiting for application shutdown.
+INFO  08-28 20:45:30.267 uvicorn.error                    shutdown           | Application shutdown complete.
+INFO  08-28 20:45:30.267 uvicorn.error                    _serve             | Finished server process [95252]

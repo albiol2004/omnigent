@@ -1,0 +1,5 @@
+Starting omnigent server on 127.0.0.1:17801
+  database:  sqlite:////tmp/fork-compact-eval-iter1/data/chat.db
+  artifacts: /tmp/fork-compact-eval-iter1/data/artifacts
+  log:       /tmp/fork-compact-eval-iter1/data/logs/server/server-20260828-204513-906467.log
+  ⚠ web UI not built — serving API only. Run `pnpm install --frozen-lockfile --filter web && pnpm --filter web run build`, then restart (or install a release wheel/image).

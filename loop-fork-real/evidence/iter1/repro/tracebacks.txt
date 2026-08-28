@@ -1,0 +1,126 @@
+client.responses.create model=fable connection=None
+Traceback (most recent call last):
+  File "/home/alex/omnigent-fixes/loop-fork-real/evidence/iter1/repro/repro.py", line 28, in time_call
+    result = await factory()
+             ^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent-fixes/loop-fork-real/evidence/iter1/repro/repro.py", line 134, in call_fable_no_conn
+    return await client.responses.create(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/client.py", line 145, in create
+    result = await call_fn()
+             ^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/client.py", line 132, in call_fn
+    return await self._do_create(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/client.py", line 194, in _do_create
+    return await adapter.responses_create(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/adapters/openai.py", line 534, in responses_create
+    resp_data = await self._send_request(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/adapters/openai.py", line 214, in _send_request
+    resp.raise_for_status()
+  File "/home/alex/omnigent/.venv/lib/python3.12/site-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '401 Unauthorized' for url 'https://api.openai.com/v1/responses'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+
+
+=====
+client.responses.create model=fable connection=openai-key-from-config
+Traceback (most recent call last):
+  File "/home/alex/omnigent-fixes/loop-fork-real/evidence/iter1/repro/repro.py", line 28, in time_call
+    result = await factory()
+             ^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent-fixes/loop-fork-real/evidence/iter1/repro/repro.py", line 144, in call_fable_openai_conn
+    return await client.responses.create(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/client.py", line 145, in create
+    result = await call_fn()
+             ^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/client.py", line 132, in call_fn
+    return await self._do_create(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/client.py", line 194, in _do_create
+    return await adapter.responses_create(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/adapters/openai.py", line 534, in responses_create
+    resp_data = await self._send_request(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/adapters/openai.py", line 214, in _send_request
+    resp.raise_for_status()
+  File "/home/alex/omnigent/.venv/lib/python3.12/site-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '400 Bad Request' for url 'https://api.openai.com/v1/responses'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
+
+
+=====
+client.responses.create model=fable connection=anthropic-key-from-config
+Traceback (most recent call last):
+  File "/home/alex/omnigent-fixes/loop-fork-real/evidence/iter1/repro/repro.py", line 28, in time_call
+    result = await factory()
+             ^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent-fixes/loop-fork-real/evidence/iter1/repro/repro.py", line 154, in call_fable_anthropic_conn
+    return await client.responses.create(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/client.py", line 145, in create
+    result = await call_fn()
+             ^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/client.py", line 132, in call_fn
+    return await self._do_create(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/client.py", line 194, in _do_create
+    return await adapter.responses_create(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/adapters/openai.py", line 534, in responses_create
+    resp_data = await self._send_request(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/adapters/openai.py", line 214, in _send_request
+    resp.raise_for_status()
+  File "/home/alex/omnigent/.venv/lib/python3.12/site-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '401 Unauthorized' for url 'https://api.openai.com/v1/responses'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+
+
+=====
+compact() model=fable connection=None fail_on_summary_error
+Traceback (most recent call last):
+  File "/home/alex/omnigent-fixes/loop-fork-real/evidence/iter1/repro/repro.py", line 28, in time_call
+    result = await factory()
+             ^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent-fixes/loop-fork-real/evidence/iter1/repro/repro.py", line 192, in call_compact_fable
+    return await compact(
+           ^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/runtime/compaction.py", line 666, in compact
+    summary_metadata = await _run_layer2(
+                       ^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/runtime/compaction.py", line 853, in _run_layer2
+    result = await summarize_history(
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/runtime/compaction.py", line 394, in summarize_history
+    return await _summarize_history_uncached(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/runtime/compaction.py", line 419, in _summarize_history_uncached
+    resp = await llm_client.responses.create(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/client.py", line 145, in create
+    result = await call_fn()
+             ^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/client.py", line 132, in call_fn
+    return await self._do_create(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/client.py", line 194, in _do_create
+    return await adapter.responses_create(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/adapters/openai.py", line 534, in responses_create
+    resp_data = await self._send_request(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent/omnigent/llms/adapters/openai.py", line 214, in _send_request
+    resp.raise_for_status()
+  File "/home/alex/omnigent/.venv/lib/python3.12/site-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '401 Unauthorized' for url 'https://api.openai.com/v1/responses'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+

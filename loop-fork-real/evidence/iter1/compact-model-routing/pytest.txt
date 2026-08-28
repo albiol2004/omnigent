@@ -1,0 +1,10 @@
+Command:
+PYTHONPATH=/home/alex/omnigent-fixes \
+PATH=/home/alex/omnigent/.venv/bin:$PATH \
+uv run pytest -q tests/fork_context/test_fork_compact_model.py
+
+Output:
+2026-08-28T18:19:13.061651Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 8 items in this shard
+........                                                                 [100%]
+8 passed in 0.05s

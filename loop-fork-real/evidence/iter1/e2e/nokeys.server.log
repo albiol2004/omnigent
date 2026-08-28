@@ -1,0 +1,36 @@
+INFO  08-28 20:38:09.917 uvicorn.error                    _serve             | Started server process [71725]
+INFO  08-28 20:38:09.917 uvicorn.error                    startup            | Waiting for application startup.
+INFO  08-28 20:38:09.921 ...ime.harnesses.process_manager start              | HarnessProcessManager started; instance_dir=/tmp/omnigent-1000/ap-ecc7a5ecf4f445a4ae0f06ba2fa82d74
+INFO  08-28 20:38:10.166 policies.registry                load_registry      | Policy registry loaded: 31 entries from 12 modules
+INFO  08-28 20:38:10.168 server.scheduled.scheduler       start              | ScheduledTaskScheduler started with 0 job(s)
+INFO  08-28 20:38:10.169 uvicorn.error                    startup            | Application startup complete.
+INFO  08-28 20:38:10.169 uvicorn.error                    ...started_message | Uvicorn running on http://127.0.0.1:17701 (Press CTRL+C to quit)
+INFO  08-28 20:38:10.256 uvicorn.access                   send               | 127.0.0.1:50252 - "GET /health HTTP/1.1" 200 OK 1.1ms rid=5372ea87438340dd854d1e58d477c2d1 ua="python-httpx/0.28.1"
+ERROR 08-28 20:38:10.310 inner.native_attachments         ...lize_attachment | Native executor received unresolved file_id 0d1a58e3abff412a9b5b87442879335d — content resolver may not have run
+ERROR 08-28 20:38:10.320 inner.native_attachments         ...lize_attachment | Native executor received unresolved file_id 0d1a58e3abff412a9b5b87442879335d — content resolver may not have run
+INFO  08-28 20:38:10.328 fork_compact_routing             ...pact_candidates | Fork compaction model resolution: chain=env model=<unset> -> skipped (empty); source_override model=fable -> skipped provider/model=anthropic/claude-fable-5 (no key); target_spec model=<unset> -> skipped (empty); source_spec model=<unset> -> skipped (empty); openai_fallback model=gpt-4o-mini -> skipped provider/model=openai/gpt-4o-mini (no key)
+WARN  08-28 20:38:10.328 server.routes.sessions           fork_session       | Fork compaction failed for session e34847899b7d47b3ad322948d4ea6002 (model=unknown, provider=unknown): No callable model is configured for fork compaction; tried: env model=<unset> -> skipped (empty); source_override model=fable -> skipped provider/model=anthropic/claude-fable-5 (no key); target_spec model=<unset> -> skipped (empty); source_spec model=<unset> -> skipped (empty); openai_fallback model=gpt-4o-mini -> skipped provider/model=openai/gpt-4o-mini (no key)
+Traceback (most recent call last):
+  File "/home/alex/omnigent-fixes/omnigent/server/routes/sessions/routes_core.py", line 2364, in fork_session
+    guard_fork_context_bytes(
+  File "/home/alex/omnigent-fixes/omnigent/fork_context.py", line 149, in guard_fork_context_bytes
+    raise ForkContextTooLarge(final_bytes, limit)
+omnigent.fork_context.ForkContextTooLarge: Fork context too large: 940884 bytes exceeds threshold 600000 bytes (OMNIGENT_FORK_MAX_CONTEXT_BYTES).
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/alex/omnigent-fixes/omnigent/server/routes/sessions/routes_core.py", line 2390, in fork_session
+    replacement_items = await compact_fork_items(
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent-fixes/omnigent/fork_compact.py", line 206, in compact_fork_items
+    resolved_list = list_fork_compact_candidates(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent-fixes/omnigent/fork_compact_routing.py", line 161, in list_fork_compact_candidates
+    raise ValueError(f"No callable model is configured for fork compaction; tried: {chain}")
+ValueError: No callable model is configured for fork compaction; tried: env model=<unset> -> skipped (empty); source_override model=fable -> skipped provider/model=anthropic/claude-fable-5 (no key); target_spec model=<unset> -> skipped (empty); source_spec model=<unset> -> skipped (empty); openai_fallback model=gpt-4o-mini -> skipped provider/model=openai/gpt-4o-mini (no key)
+INFO  08-28 20:38:10.329 uvicorn.access                   send               | 127.0.0.1:50266 - "POST /v1/sessions/e34847899b7d47b3ad322948d4ea6002/fork HTTP/1.1" 413 Request Entity Too Large 67.9ms rid=d0832bf989e647a6829acffc4637a107 ua="python-httpx/0.28.1" sid=e34847899b7d47b3ad322948d4ea6002
+INFO  08-28 20:38:10.369 uvicorn.error                    shutdown           | Shutting down
+INFO  08-28 20:38:10.470 uvicorn.error                    shutdown           | Waiting for application shutdown.
+INFO  08-28 20:38:10.470 uvicorn.error                    shutdown           | Application shutdown complete.
+INFO  08-28 20:38:10.470 uvicorn.error                    _serve             | Finished server process [71725]

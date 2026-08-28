@@ -1,0 +1,21 @@
+Command:
+PATH=/home/alex/omnigent/.venv/bin:$PATH \
+pre-commit run --files \
+  omnigent/fork_compact.py \
+  omnigent/fork_compact_routing.py \
+  tests/fork_context/test_fork_compact_model.py
+
+Result:
+PASS ruff format
+PASS ruff check
+PASS pyrefly
+PASS no globally-clobbering asyncio monkeypatch
+PASS no unconditional pytest.skip
+PASS no hardcoded model ids
+PASS trailing whitespace
+PASS end-of-file fixer
+PASS yaml syntax
+PASS merge-conflict check
+PASS large-file check
+PASS case-conflict check
+PASS line-ending check

@@ -4274,36 +4274,46 @@ function makeLiveTextBlock(itemId: string, text: string, responseId: string): Te
 }
 
 /**
- * Fold one streamed chunk into its in-flight preview block in `blocks`.
+ * Fold one frame of streamed chunks into in-flight preview blocks in `blocks`.
  *
  * The streamed text lives in `blocks` (not a separate lane) as a
  * provisional `text_done` block keyed `live:<messageId>`, inserted at the
  * position the first chunk arrived. The authoritative `text_done` removes
  * this provisional block before following the normal committed-item path.
  *
- * The server reconciles and deduplicates chunks, so each received delta is
- * appended directly.
+ * The server reconciles and deduplicates chunks, so received deltas are
+ * appended in arrival order.
  *
  * :param set: store setter.
- * :param messageId: vendor's stable per-message id.
- * :param delta: incremental text for this chunk, e.g. ``"Hello "``.
+ * :param deltas: incremental text chunks grouped for one animation frame.
  * :returns: nothing; mutates `blocks` in the store.
  */
-function applyLiveDelta(set: Setter, messageId: string, delta: string): void {
-  const itemId = LIVE_ITEM_PREFIX + messageId;
+interface LiveDeltaUpdate {
+  messageId: string;
+  delta: string;
+}
+
+function applyLiveDelta(set: Setter, deltas: readonly LiveDeltaUpdate[]): void {
+  if (deltas.length === 0) return;
   set((s) => {
-    const at = s.blocks.findIndex((b) => b.ctx.itemId === itemId);
-    if (at === -1) {
-      const live = s.activeResponse;
-      const responseId = live?.state === "streaming" ? live.responseId : itemId;
-      return { blocks: [...s.blocks, makeLiveTextBlock(itemId, delta, responseId)] };
+    let blocks = s.blocks;
+    for (const { messageId, delta } of deltas) {
+      const itemId = LIVE_ITEM_PREFIX + messageId;
+      const at = blocks.findIndex((b) => b.ctx.itemId === itemId);
+      if (at === -1) {
+        const live = s.activeResponse;
+        const responseId = live?.state === "streaming" ? live.responseId : itemId;
+        blocks = [...blocks, makeLiveTextBlock(itemId, delta, responseId)];
+        continue;
+      }
+      const existing = blocks[at]!;
+      if (existing.type !== "text_done") continue;
+      const fullText = existing.fullText + delta;
+      const next = blocks.slice();
+      next[at] = { ...existing, fullText, hasCodeBlocks: fullText.includes("```") };
+      blocks = next;
     }
-    const existing = s.blocks[at]!;
-    if (existing.type !== "text_done") return {};
-    const fullText = existing.fullText + delta;
-    const next = s.blocks.slice();
-    next[at] = { ...existing, fullText, hasCodeBlocks: fullText.includes("```") };
-    return { blocks: next };
+    return blocks === s.blocks ? {} : { blocks };
   });
 }
 
@@ -4366,6 +4376,8 @@ export function reviveStrayCompletedResponse(set: Setter): void {
  *     deltas arrived before the new turn was named.
  * :param set: store setter.
  * :param get: store getter.
+ * :param queueLiveDelta: append an accepted delta to the current frame.
+ * :param flushLiveDeltas: apply queued deltas before another event is handled.
  * :returns: events with native live deltas removed.
  */
 async function* tapLiveDeltas(
@@ -4374,6 +4386,8 @@ async function* tapLiveDeltas(
   ignored: Set<string>,
   set: Setter,
   get: Getter,
+  queueLiveDelta: (update: LiveDeltaUpdate) => void,
+  flushLiveDeltas: () => void,
 ): AsyncIterable<StreamEvent> {
   for await (const ev of events) {
     if (ev.type === "text_delta" && ev.messageId !== undefined) {
@@ -4388,10 +4402,13 @@ async function* tapLiveDeltas(
           ignored.add(ev.messageId);
           continue;
         }
-        applyLiveDelta(set, ev.messageId, ev.delta);
+        queueLiveDelta({ messageId: ev.messageId, delta: ev.delta });
       }
       continue;
     }
+    // Keep a live preview ahead of any following lifecycle, tool, or
+    // authoritative item event even when its frame has not fired yet.
+    flushLiveDeltas();
     if (ev.type === "tool_output_delta") {
       if (!isConversationDisposed(id) && !isStaleCompletedResponse(get())) {
         reviveStrayCompletedResponse(set);
@@ -4499,13 +4516,24 @@ export async function pumpStreamEvents(
   // A scheduled wake can stream before its new turn id arrives. Ignore the
   // rest of that message so it cannot attach to the completed prior turn.
   const ignoredWakeMessages = new Set<string>();
-  const events = tapLiveDeltas(tapSessionEvents(rawEvents, id), id, ignoredWakeMessages, set, get);
 
   // Blocks awaiting their coalesced flush; `seenItemIds` dedupes against
   // both committed and still-buffered blocks. Lives for the whole stream
   // (one SSE connection); bounded by item count like `blocks` itself.
   const buffer: AnyBlock[] = [];
   const seenItemIds = new Set<string>();
+  const liveBuffer: LiveDeltaUpdate[] = [];
+  let frameScheduled = false;
+  const cancelFrame = (): void => {
+    frameScheduled = false;
+    scheduler.cancel();
+  };
+  const flushLiveDeltas = (): void => {
+    if (liveBuffer.length === 0) return;
+    const batch = liveBuffer.splice(0);
+    if (isConversationDisposed(id)) return;
+    applyLiveDelta(set, batch);
+  };
   // First content block of each response flushes synchronously (snappy
   // first-token paint); the rest batch.
   let paintedFirstContent = false;
@@ -4513,7 +4541,7 @@ export async function pumpStreamEvents(
   // Drain the buffer (+ optional trailing block) into one `blocks` append,
   // applying any sidecar state in the same commit. No-ops if switched away.
   const flush = (trailing?: AnyBlock, extra?: Partial<ChatState>): void => {
-    scheduler.cancel();
+    cancelFrame();
     if (isConversationDisposed(id)) {
       buffer.length = 0;
       return;
@@ -4554,6 +4582,28 @@ export async function pumpStreamEvents(
       return { ...(extra ?? {}), blocks: [...s.blocks, ...fresh] };
     });
   };
+  const scheduleFrame = (): void => {
+    if (frameScheduled) return;
+    frameScheduled = true;
+    scheduler.schedule(() => {
+      frameScheduled = false;
+      flushLiveDeltas();
+      flush();
+    });
+  };
+  const queueLiveDelta = (update: LiveDeltaUpdate): void => {
+    liveBuffer.push(update);
+    scheduleFrame();
+  };
+  const events = tapLiveDeltas(
+    tapSessionEvents(rawEvents, id),
+    id,
+    ignoredWakeMessages,
+    set,
+    get,
+    queueLiveDelta,
+    flushLiveDeltas,
+  );
 
   try {
     for await (const block of stream.reduce(events)) {
@@ -4740,7 +4790,7 @@ export async function pumpStreamEvents(
         paintedFirstContent = true;
         flush();
       } else {
-        scheduler.schedule(() => flush());
+        scheduleFrame();
       }
     }
     // The byte stream ended. Commit the buffered tail before `finally`
@@ -4748,6 +4798,7 @@ export async function pumpStreamEvents(
     // `response_end`, which already drained the buffer). Whether this was
     // a deliberate server close (`[DONE]`) or a transport drop without it
     // (idle proxy disconnect / the Apps ~5-min cap) decides reconnection.
+    flushLiveDeltas();
     flush();
     return sseResult.sawDone ? "server_closed" : "dropped";
   } catch (err) {
@@ -4757,6 +4808,7 @@ export async function pumpStreamEvents(
     // ingress resetting the stream). Commit the tail and report a drop;
     // the reconnect loop re-subscribes rather than marking the turn
     // failed, so a routine recycle stays invisible.
+    flushLiveDeltas();
     flush();
     return "dropped";
   } finally {
@@ -4764,8 +4816,9 @@ export async function pumpStreamEvents(
     // can't apply this stream's blocks after switchTo bound another.
     // `abortController` lifecycle is owned by `startStreamPump`'s loop,
     // not here — it must survive across reconnect attempts.
-    scheduler.cancel();
+    cancelFrame();
     buffer.length = 0;
+    liveBuffer.length = 0;
   }
 }
 

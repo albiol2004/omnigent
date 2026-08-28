@@ -8835,7 +8835,11 @@ describe("chatStore — live delta streaming (claude-native)", () => {
   const getState = useChatStore.getState as unknown as Parameters<typeof pumpStreamEvents>[4];
 
   /** A FrameScheduler whose pending flush the test fires by hand. */
-  function manualScheduler(): { scheduler: FrameScheduler; fire: () => void } {
+  function manualScheduler(): {
+    scheduler: FrameScheduler;
+    fire: () => void;
+    pending: () => boolean;
+  } {
     let cb: (() => void) | null = null;
     return {
       scheduler: {
@@ -8851,6 +8855,7 @@ describe("chatStore — live delta streaming (claude-native)", () => {
         cb = null;
         if (c) c();
       },
+      pending: () => cb !== null,
     };
   }
 
@@ -8915,18 +8920,57 @@ describe("chatStore — live delta streaming (claude-native)", () => {
       );
   }
 
+  it("coalesces native deltas into one store update per frame", async () => {
+    useChatStore.setState({
+      conversationId: "conv_live_batch",
+      blocks: [],
+      isNativeTerminalSession: true,
+    });
+    const sink = pushableStream();
+    const controller = new AbortController();
+    const manual = manualScheduler();
+    let setterCalls = 0;
+    const trackedSet = ((...args: Parameters<typeof setState>) => {
+      setterCalls += 1;
+      return setState(...args);
+    }) as typeof setState;
+    void pumpStreamEvents(
+      "conv_live_batch",
+      sink.stream,
+      controller,
+      trackedSet,
+      getState,
+      manual.scheduler,
+    );
+
+    sink.push(nativeDelta("m_batch", 0, "Hello ", false));
+    sink.push(nativeDelta("m_batch", 1, "world", true));
+    await tick();
+
+    expect(manual.pending()).toBe(true);
+    expect(provisional()).toBeUndefined();
+    expect(setterCalls).toBe(0);
+
+    manual.fire();
+    expect(setterCalls).toBe(1);
+    expect(provisional()?.fullText).toBe("Hello world");
+
+    controller.abort();
+  });
+
   it("streams into a provisional block in `blocks`, not a separate lane", async () => {
     useChatStore.setState({
       conversationId: "conv_live",
       blocks: [],
       isNativeTerminalSession: true,
     });
-    const { sink, controller } = startPump("conv_live");
+    const { sink, controller, manual } = startPump("conv_live");
 
     sink.push(sse("response.created", { id: "resp_l", status: "in_progress", output: [] }));
     sink.push(nativeDelta("m1", 0, "Hello ", false));
     sink.push(nativeDelta("m1", 1, "world", true));
     await tick();
+    manual.fire();
 
     // The streamed text lands as ONE provisional text block in `blocks`
     // (keyed live:m1), accumulating the chunks — so it renders in-order
@@ -8953,10 +8997,11 @@ describe("chatStore — live delta streaming (claude-native)", () => {
       isNativeTerminalSession: true,
       activeResponse: { responseId: "codex_turn_1", state: "streaming", error: null },
     });
-    const { sink, controller } = startPump("conv_live_rid");
+    const { sink, controller, manual } = startPump("conv_live_rid");
 
     sink.push(nativeDelta("m1", 0, "Checking the CLI", true));
     await tick();
+    manual.fire();
 
     const prov = provisional();
     expect(prov?.ctx.itemId).toBe("live:m1");
@@ -8974,10 +9019,11 @@ describe("chatStore — live delta streaming (claude-native)", () => {
       isNativeTerminalSession: true,
       activeResponse: null,
     });
-    const { sink, controller } = startPump("conv_live_norid");
+    const { sink, controller, manual } = startPump("conv_live_norid");
 
     sink.push(nativeDelta("m9", 0, "early chunk", true));
     await tick();
+    manual.fire();
 
     const prov = provisional();
     expect(prov?.ctx.itemId).toBe("live:m9");
@@ -8992,11 +9038,12 @@ describe("chatStore — live delta streaming (claude-native)", () => {
       blocks: [],
       isNativeTerminalSession: true,
     });
-    const { sink, controller } = startPump("conv_live2");
+    const { sink, controller, manual } = startPump("conv_live2");
 
     sink.push(sse("response.created", { id: "resp_l", status: "in_progress", output: [] }));
     sink.push(nativeDelta("m1", 0, "Hello world", true));
     await tick();
+    manual.fire();
     expect(provisional()?.ctx.itemId).toBe("live:m1");
 
     sink.push(messageDone("ci_1", "resp_l", "Hello world"));
@@ -9028,11 +9075,12 @@ describe("chatStore — live delta streaming (claude-native)", () => {
       blocks: [],
       isNativeTerminalSession: true,
     });
-    const { sink, controller } = startPump("conv_live3");
+    const { sink, controller, manual } = startPump("conv_live3");
 
     sink.push(sse("response.created", { id: "resp_l", status: "in_progress", output: [] }));
     sink.push(nativeDelta("m1", 0, "Hello world", true));
     await tick();
+    manual.fire();
     expect(provisional()?.ctx.itemId).toBe("live:m1");
 
     // Snapshot merge lands the committed copy while the preview renders.
@@ -9232,11 +9280,12 @@ describe("chatStore — live delta streaming (claude-native)", () => {
       blocks: [],
       isNativeTerminalSession: true,
     });
-    const { sink, controller } = startPump("conv_live4");
+    const { sink, controller, manual } = startPump("conv_live4");
 
     sink.push(sse("response.created", { id: "resp_l", status: "in_progress", output: [] }));
     sink.push(nativeDelta("m1", 0, "first", true));
     await tick();
+    manual.fire();
     sink.push(messageDone("ci_1", "resp_l", "first"));
     await tick();
     // m1 committed, no provisional left.
@@ -9244,6 +9293,7 @@ describe("chatStore — live delta streaming (claude-native)", () => {
     // Second message streams after a tool/gap.
     sink.push(nativeDelta("m2", 0, "second", false));
     await tick();
+    manual.fire();
 
     // m2 is the only in-flight preview (FIFO cleanup took m1, not m2).
     expect(provisional()?.ctx.itemId).toBe("live:m2");
@@ -9263,11 +9313,12 @@ describe("chatStore — live delta streaming (claude-native)", () => {
       blocks: [],
       isNativeTerminalSession: true,
     });
-    const { sink, controller } = startPump("conv_live5");
+    const { sink, controller, manual } = startPump("conv_live5");
 
     sink.push(sse("response.created", { id: "resp_l", status: "in_progress", output: [] }));
     sink.push(nativeDelta("m1", 0, "partial answer", false));
     await tick();
+    manual.fire();
     expect(provisional()?.ctx.itemId).toBe("live:m1");
 
     // Turn ends with no committed item for m1 (interrupt before the

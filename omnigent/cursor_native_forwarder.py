@@ -38,6 +38,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -55,11 +56,41 @@ from omnigent.inner.native_attachments import ATTACHMENT_MARKER_STRIP_PATTERN
 
 _logger = logging.getLogger(__name__)
 
-#: Seconds between store polls. Cursor turns run for many seconds/minutes in the
-#: TUI, so a sub-second cadence would add load without improving perceived
-#: latency; ~0.7s keeps the chat view feeling live.
-_DEFAULT_POLL_INTERVAL_S = 0.7
+#: Adaptive store-poll cadence: stay responsive while rows arrive, then reduce
+#: load once the chat is quiet.
+_DEFAULT_FAST_POLL_INTERVAL_S = 0.15
+_DEFAULT_IDLE_POLL_INTERVAL_S = 0.7
+# Keep the old name available for callers that imported this private constant.
+_DEFAULT_POLL_INTERVAL_S = _DEFAULT_IDLE_POLL_INTERVAL_S
 _POST_TIMEOUT_S = 30.0
+
+
+def _poll_interval_from_env(name: str, default: float) -> float:
+    """Read a finite, non-negative poll interval from the environment."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if math.isfinite(value) and value >= 0.0 else default
+
+
+def _configured_poll_intervals(poll_interval_s: float | None) -> tuple[float, float]:
+    """Return the fast/idle cadence, honoring a fixed caller override."""
+    if poll_interval_s is not None:
+        return poll_interval_s, poll_interval_s
+    return (
+        _poll_interval_from_env("OMNIGENT_CURSOR_POLL_FAST_S", _DEFAULT_FAST_POLL_INTERVAL_S),
+        _poll_interval_from_env("OMNIGENT_CURSOR_POLL_IDLE_S", _DEFAULT_IDLE_POLL_INTERVAL_S),
+    )
+
+
+def _select_poll_interval(*, has_new_output: bool, fast_s: float, idle_s: float) -> float:
+    """Select the next delay based on whether this poll found new output."""
+    return fast_s if has_new_output else idle_s
+
 
 #: Max length of a mirrored item's ``response_id``. The server stores it in
 #: ``conversation_items.response_id``, a ``VARCHAR(64)`` (see
@@ -879,7 +910,7 @@ async def forward_cursor_store_to_session(
     agent_name: str,
     workspace: str,
     launch_epoch_ms: int,
-    poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+    poll_interval_s: float | None = None,
     auth: httpx.Auth | None = None,
 ) -> None:
     """Tail the cursor chat store and mirror new messages into the AP session.
@@ -907,7 +938,9 @@ async def forward_cursor_store_to_session(
     :param agent_name: Agent label stamped on mirrored assistant items.
     :param workspace: The session's working directory (cursor's chat-dir key).
     :param launch_epoch_ms: Wall-clock ms when this terminal launched.
-    :param poll_interval_s: Seconds between store polls.
+    :param poll_interval_s: Optional fixed cadence override. When omitted,
+        ``OMNIGENT_CURSOR_POLL_FAST_S`` and ``OMNIGENT_CURSOR_POLL_IDLE_S``
+        control adaptive polling.
     :param auth: Optional refresh-capable httpx Auth for remote deployments.
     :returns: Never normally returns; cancel the task to stop it.
     """
@@ -923,11 +956,13 @@ async def forward_cursor_store_to_session(
     # so the cold-resume path can pass ``--resume <chatId>`` to cursor-agent.
     chat_id_patched = False
     model_state = _ModelMirrorState()
+    fast_poll_interval_s, idle_poll_interval_s = _configured_poll_intervals(poll_interval_s)
     timeout = httpx.Timeout(_POST_TIMEOUT_S)
     async with httpx.AsyncClient(
         base_url=base_url, headers=headers, auth=auth, timeout=timeout
     ) as client:
         while True:
+            has_new_output = False
             try:
                 if store_path is None or not store_path.exists():
                     # On cold resume the runner pre-seeds the bridge state with
@@ -1009,6 +1044,7 @@ async def forward_cursor_store_to_session(
                         items = await asyncio.to_thread(
                             _read_new_items, store_path, last_rowid, agent_name
                         )
+                        has_new_output = bool(items)
                         for item in items:
                             if item.item_type == "compaction_completed":
                                 # cursor finished /summarize: tell the web UI so
@@ -1177,6 +1213,7 @@ async def forward_cursor_store_to_session(
                 if total_turn_ends > await asyncio.to_thread(
                     cursor_native_status.read_posted_count, bridge_dir
                 ):
+                    has_new_output = True
                     await _post_external_session_status(
                         client, session_id=session_id, status="idle"
                     )
@@ -1191,7 +1228,13 @@ async def forward_cursor_store_to_session(
                     session_id,
                     store_path,
                 )
-            await asyncio.sleep(poll_interval_s)
+            await asyncio.sleep(
+                _select_poll_interval(
+                    has_new_output=has_new_output,
+                    fast_s=fast_poll_interval_s,
+                    idle_s=idle_poll_interval_s,
+                )
+            )
 
 
 def _supervisor_monotonic() -> float:
@@ -1213,7 +1256,7 @@ async def supervise_cursor_forwarder(
     agent_name: str,
     workspace: str,
     launch_epoch_ms: int,
-    poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+    poll_interval_s: float | None = None,
     auth: httpx.Auth | None = None,
 ) -> None:
     """Run :func:`forward_cursor_store_to_session` under a restart supervisor.
@@ -1232,7 +1275,8 @@ async def supervise_cursor_forwarder(
     :param agent_name: Agent label stamped on mirrored assistant items.
     :param workspace: The session's working directory.
     :param launch_epoch_ms: Wall-clock ms when this terminal launched.
-    :param poll_interval_s: Seconds between store polls.
+    :param poll_interval_s: Optional fixed cadence override forwarded to the
+        adaptive store poller.
     :param auth: Optional refresh-capable httpx Auth.
     :returns: Never normally returns; cancel the task to stop it.
     """

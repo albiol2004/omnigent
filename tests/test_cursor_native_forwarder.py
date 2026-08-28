@@ -33,6 +33,40 @@ _CHAT_ID_2 = "1a2b3c4d-5e6f-4a8b-9c0d-1e2f3a4b5c6d"
 _CHAT_ID_ABSENT = "ffffffff-ffff-4fff-8fff-ffffffffffff"
 
 
+def test_cursor_poll_intervals_are_adaptive_and_env_overridable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use a fast cadence for output and an idle cadence for quiet stores."""
+    monkeypatch.delenv("OMNIGENT_CURSOR_POLL_FAST_S", raising=False)
+    monkeypatch.delenv("OMNIGENT_CURSOR_POLL_IDLE_S", raising=False)
+    assert fwd._configured_poll_intervals(None) == (
+        fwd._DEFAULT_FAST_POLL_INTERVAL_S,
+        fwd._DEFAULT_IDLE_POLL_INTERVAL_S,
+    )
+    assert (
+        fwd._select_poll_interval(
+            has_new_output=True,
+            fast_s=0.15,
+            idle_s=0.7,
+        )
+        == 0.15
+    )
+    assert (
+        fwd._select_poll_interval(
+            has_new_output=False,
+            fast_s=0.15,
+            idle_s=0.7,
+        )
+        == 0.7
+    )
+
+    monkeypatch.setenv("OMNIGENT_CURSOR_POLL_FAST_S", "0.02")
+    monkeypatch.setenv("OMNIGENT_CURSOR_POLL_IDLE_S", "1.2")
+    assert fwd._configured_poll_intervals(None) == (0.02, 1.2)
+    # Existing explicit test/caller cadences remain fixed rather than adaptive.
+    assert fwd._configured_poll_intervals(0.001) == (0.001, 0.001)
+
+
 def _make_store(
     path: Path, rows: list[tuple[str, object]], *, wal: bool = False
 ) -> sqlite3.Connection:
@@ -640,6 +674,12 @@ async def _drive_forwarder(
     bridge_dir.mkdir(parents=True)
     monkeypatch.setattr(fwd, "_discover_store", lambda workspace, launch_ms: store)
     monkeypatch.setattr(fwd, "_chat_claimed_by_other", lambda *a, **k: False)
+    # These loop tests replace item delivery but do not exercise session-id
+    # mirroring; keep the fake server fully in-process.
+    monkeypatch.setattr(fwd, "_patch_external_session_id", AsyncMock())
+    # Compaction persistence has its own wire-shape tests; do not let these
+    # cursor-loop tests reach a real HTTP endpoint.
+    monkeypatch.setattr(fwd, "_persist_native_compaction_item", AsyncMock())
     monkeypatch.setattr(fwd, "_post_conversation_item", poster)
     task = asyncio.create_task(
         fwd.forward_cursor_store_to_session(

@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import tempfile
 import time
@@ -81,7 +82,12 @@ _SUBAGENT_IDLE_QUIESCENCE_S = 5.0
 # One per Claude Task-tool subagent; appears alongside the matching
 # ``agent-<id>.jsonl`` transcript.
 _SUBAGENT_META_GLOB = "agent-*.meta.json"
-_DEFAULT_POLL_INTERVAL_S = 0.25
+#: Adaptive transcript-poll cadence: use a short interval while files grow,
+#: then back off when the native terminal is quiet.
+_DEFAULT_FAST_POLL_INTERVAL_S = 0.1
+_DEFAULT_IDLE_POLL_INTERVAL_S = 0.25
+# Keep the old name available for callers that imported this private constant.
+_DEFAULT_POLL_INTERVAL_S = _DEFAULT_IDLE_POLL_INTERVAL_S
 # Hard ceiling on one poll iteration of the forward loop. A silently stalled
 # await anywhere in the pipeline used to stop mirroring, status and the busy
 # signal forever; the deadline cancels the stall (the traceback names it) and
@@ -107,6 +113,34 @@ _SUBAGENT_DELIVERY_NOT_CONFIRMED_MAX_ATTEMPTS = 12
 _SUPERVISOR_INITIAL_BACKOFF_S = 1.0
 _SUPERVISOR_MAX_BACKOFF_S = 30.0
 _SUPERVISOR_HEALTHY_UPTIME_S = 60.0
+
+
+def _poll_interval_from_env(name: str, default: float) -> float:
+    """Read a finite, non-negative poll interval from the environment."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if math.isfinite(value) and value >= 0.0 else default
+
+
+def _configured_poll_intervals(poll_interval_s: float | None) -> tuple[float, float]:
+    """Return the fast/idle cadence, honoring a fixed caller override."""
+    if poll_interval_s is not None:
+        return poll_interval_s, poll_interval_s
+    return (
+        _poll_interval_from_env("OMNIGENT_CLAUDE_POLL_FAST_S", _DEFAULT_FAST_POLL_INTERVAL_S),
+        _poll_interval_from_env("OMNIGENT_CLAUDE_POLL_IDLE_S", _DEFAULT_IDLE_POLL_INTERVAL_S),
+    )
+
+
+def _select_poll_interval(*, has_new_output: bool, fast_s: float, idle_s: float) -> float:
+    """Select the next delay based on whether this poll found new output."""
+    return fast_s if has_new_output else idle_s
+
 
 # Claude Code hook event names → Omnigent session-status values
 # published on the per-conversation SSE stream. Unmapped events emit
@@ -720,7 +754,7 @@ async def forward_claude_transcript_to_session(
     bridge_dir: Path,
     agent_name: str,
     start_at_end: bool,
-    poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+    poll_interval_s: float | None = None,
     auth: httpx.Auth | None = None,
     skip_user_messages: bool = False,
     start_at_offset: int | None = None,
@@ -751,7 +785,9 @@ async def forward_claude_transcript_to_session(
         cold-resume path: the exact prefix is known before launch, where a
         live end-offset measured after Claude boots can skip a prompt the
         executor injected in the meantime.
-    :param poll_interval_s: Seconds between transcript polls.
+    :param poll_interval_s: Optional fixed cadence override. When omitted,
+        ``OMNIGENT_CLAUDE_POLL_FAST_S`` and ``OMNIGENT_CLAUDE_POLL_IDLE_S``
+        control adaptive polling.
     :param auth: Optional httpx Auth that mints a fresh bearer token
         per request, e.g. ``_server_auth(profile)`` for a Databricks
         Apps deployment. ``None`` for local servers that don't need
@@ -797,11 +833,13 @@ async def forward_claude_transcript_to_session(
     task_subjects: dict[str, str] = {}
     task_statuses: dict[str, str] = {}
     task_order: list[str] = []
+    fast_poll_interval_s, idle_poll_interval_s = _configured_poll_intervals(poll_interval_s)
     timeout = httpx.Timeout(_POST_TIMEOUT_S)
     from omnigent.cli_auth import open_server_client
 
     async with open_server_client(base_url, headers=headers, auth=auth, timeout=timeout) as client:
         while True:
+            has_new_output = False
             try:
                 async with asyncio.timeout(_FORWARD_LOOP_STALL_DEADLINE_S):
                     current_session_id = read_active_session_id(bridge_dir) or session_id
@@ -861,7 +899,7 @@ async def forward_claude_transcript_to_session(
                         # subagents/ dir, so prior cost entries are dead; drop
                         # them so cost is recomputed fresh for the new session.
                         cost_cache = {}
-                        await asyncio.sleep(poll_interval_s)
+                        await asyncio.sleep(idle_poll_interval_s)
                         continue
                     rotation = await _maybe_rotate_session_on_fork(
                         client=client,
@@ -897,7 +935,7 @@ async def forward_claude_transcript_to_session(
                         # subagents/ dir, so prior cost entries are dead; drop
                         # them so cost is recomputed fresh for the new session.
                         cost_cache = {}
-                        await asyncio.sleep(poll_interval_s)
+                        await asyncio.sleep(idle_poll_interval_s)
                         continue
                     if not external_session_id_mirrored:
                         external_session_id_mirrored = await _maybe_mirror_external_session_id(
@@ -920,6 +958,7 @@ async def forward_claude_transcript_to_session(
                         )
                         # Read deltas first for the lowest-latency preview. The
                         # runtime reconciler handles either delta/item order.
+                        previous_delta_offset = delta_state.byte_offset
                         delta_state = await _forward_available_deltas(
                             client=client,
                             session_id=current_session_id,
@@ -927,6 +966,7 @@ async def forward_claude_transcript_to_session(
                             state=delta_state,
                             seen_keys=seen_delta_keys,
                         )
+                        has_new_output = delta_state.byte_offset != previous_delta_offset
                         # Mint a pending token for any PreCompact that first
                         # became visible THIS poll, before the transcript items
                         # phase (which consumes the isCompactSummary completion
@@ -934,6 +974,7 @@ async def forward_claude_transcript_to_session(
                         # the same poll would lose the boundary. Cursor-keyed, so
                         # the main hook phase below does not re-mint.
                         await _prescan_precompact_edges(bridge_dir, hook_state)
+                        previous_item_position = (state.line_cursor, state.byte_offset)
                         state = await _forward_available_items(
                             client=client,
                             session_id=current_session_id,
@@ -944,6 +985,10 @@ async def forward_claude_transcript_to_session(
                             skip_user_messages=skip_user_messages,
                             dedupe=dedupe,
                         )
+                        has_new_output |= (
+                            state.line_cursor,
+                            state.byte_offset,
+                        ) != previous_item_position
                         hook_state = await _forward_available_status_events(
                             client=client,
                             session_id=current_session_id,
@@ -1022,7 +1067,13 @@ async def forward_claude_transcript_to_session(
                     session_id,
                     bridge_dir,
                 )
-            await asyncio.sleep(poll_interval_s)
+            await asyncio.sleep(
+                _select_poll_interval(
+                    has_new_output=has_new_output,
+                    fast_s=fast_poll_interval_s,
+                    idle_s=idle_poll_interval_s,
+                )
+            )
 
 
 def _subagents_dir_for_transcript(transcript_path: Path) -> Path:
@@ -1931,7 +1982,7 @@ async def supervise_forwarder(
     bridge_dir: Path,
     agent_name: str,
     start_at_end: bool,
-    poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+    poll_interval_s: float | None = None,
     auth: httpx.Auth | None = None,
     skip_user_messages: bool = False,
     start_at_offset: int | None = None,
@@ -1974,8 +2025,8 @@ async def supervise_forwarder(
     :param start_at_offset: Byte length of a resume prefix this launch
         synthesized. Forwarded verbatim; see
         :func:`forward_claude_transcript_to_session`.
-    :param poll_interval_s: Seconds between transcript polls inside
-        the forwarder loop. Forwarded verbatim.
+    :param poll_interval_s: Optional fixed cadence override forwarded to the
+        adaptive transcript poller.
     :param auth: Optional httpx Auth that mints a fresh bearer token
         per request, e.g. ``_server_auth(profile)``. Forwarded verbatim
         to :func:`forward_claude_transcript_to_session`.
@@ -3995,6 +4046,23 @@ async def _post_external_output_text_delta(
     resp.raise_for_status()
 
 
+def _coalesce_deltas(deltas: list[ClaudeMessageDelta]) -> list[ClaudeMessageDelta]:
+    """Merge each message's chunks into one transient event per poll."""
+    batches: dict[str, ClaudeMessageDelta] = {}
+    for delta in deltas:
+        first = batches.get(delta.message_id)
+        if first is None:
+            batches[delta.message_id] = delta
+        else:
+            batches[delta.message_id] = ClaudeMessageDelta(
+                message_id=first.message_id,
+                index=first.index,
+                final=delta.final,
+                delta=first.delta + delta.delta,
+            )
+    return list(batches.values())
+
+
 async def _forward_available_deltas(
     *,
     client: httpx.AsyncClient,
@@ -4007,9 +4075,9 @@ async def _forward_available_deltas(
     Forward newly appended assistant-text deltas to the active session.
 
     Reads complete records appended to ``message_deltas.jsonl`` after
-    the current byte offset and publishes each as a transient
-    ``external_output_text_delta``. Deltas are best-effort live preview:
-    a per-chunk POST failure is logged and dropped (the authoritative
+    the current byte offset and publishes each message's chunks as one
+    transient ``external_output_text_delta`` per poll. Deltas are
+    best-effort live preview: a per-batch POST failure is logged and dropped (the authoritative
     final message still arrives via ``external_conversation_item``)
     rather than retried, so a transient blip can never wedge the tail.
 
@@ -4037,6 +4105,7 @@ async def _forward_available_deltas(
     )
     if result.byte_offset == state.byte_offset and not result.deltas:
         return state
+    new_deltas: list[ClaudeMessageDelta] = []
     for delta in result.deltas:
         key = (delta.message_id, delta.index)
         if key in seen_keys:
@@ -4047,6 +4116,8 @@ async def _forward_available_deltas(
         # limit.
         while len(seen_keys) > _MAX_SEEN_DELTA_KEYS:
             del seen_keys[next(iter(seen_keys))]
+        new_deltas.append(delta)
+    for delta in _coalesce_deltas(new_deltas):
         try:
             await _post_external_output_text_delta(client, session_id=session_id, delta=delta)
         except httpx.HTTPError as exc:

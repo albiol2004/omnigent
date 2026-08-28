@@ -5499,15 +5499,65 @@ def _delta_capture_client(
     return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://ap")
 
 
-async def test_forward_available_deltas_posts_each_and_advances_offset(tmp_path: Path) -> None:
+def test_claude_poll_intervals_are_adaptive_and_env_overridable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use a fast cadence for output and an idle cadence for quiet files."""
+    monkeypatch.delenv("OMNIGENT_CLAUDE_POLL_FAST_S", raising=False)
+    monkeypatch.delenv("OMNIGENT_CLAUDE_POLL_IDLE_S", raising=False)
+    assert forwarder._configured_poll_intervals(None) == (
+        forwarder._DEFAULT_FAST_POLL_INTERVAL_S,
+        forwarder._DEFAULT_IDLE_POLL_INTERVAL_S,
+    )
+    assert (
+        forwarder._select_poll_interval(
+            has_new_output=True,
+            fast_s=0.1,
+            idle_s=0.25,
+        )
+        == 0.1
+    )
+    assert (
+        forwarder._select_poll_interval(
+            has_new_output=False,
+            fast_s=0.1,
+            idle_s=0.25,
+        )
+        == 0.25
+    )
+
+    monkeypatch.setenv("OMNIGENT_CLAUDE_POLL_FAST_S", "0.03")
+    monkeypatch.setenv("OMNIGENT_CLAUDE_POLL_IDLE_S", "0.8")
+    assert forwarder._configured_poll_intervals(None) == (0.03, 0.8)
+    # Existing explicit test/caller cadences remain fixed rather than adaptive.
+    assert forwarder._configured_poll_intervals(0.01) == (0.01, 0.01)
+
+
+def test_coalesce_deltas_preserves_each_message_in_first_seen_order() -> None:
+    """Merge a message's chunks even when another message is interleaved."""
+    batches = forwarder._coalesce_deltas(
+        [
+            ClaudeMessageDelta(message_id="m1", index=0, final=False, delta="a"),
+            ClaudeMessageDelta(message_id="m2", index=0, final=True, delta="b"),
+            ClaudeMessageDelta(message_id="m1", index=1, final=True, delta="c"),
+        ]
+    )
+
+    assert [(item.message_id, item.index, item.final, item.delta) for item in batches] == [
+        ("m1", 0, True, "ac"),
+        ("m2", 0, True, "b"),
+    ]
+
+
+async def test_forward_available_deltas_batches_and_advances_offset(tmp_path: Path) -> None:
     """
-    Each appended chunk is POSTed as an ``external_output_text_delta``.
+    Contiguous chunks for one message share one
+    ``external_output_text_delta`` POST.
 
     Proves the forwarder turns deltas-file lines into the exact event
-    shape the Omnigent route expects (delta + message_id + index + final) and
-    advances+persists the byte offset so the next poll resumes after
-    them. Fails if a field is dropped (UI can't scope/order the buffer)
-    or the offset doesn't persist (chunks re-POST on restart).
+    shape the Omnigent route expects, preserves their text order, and
+    advances+persists the byte offset so the next poll resumes after them.
+    Fails if batching drops a field or the offset doesn't persist.
     """
     bridge_dir = prepare_bridge_dir("conv_x", bridge_id="b1", workspace=tmp_path)
     _write_deltas_file(
@@ -5528,19 +5578,12 @@ async def test_forward_available_deltas_posts_each_and_advances_offset(tmp_path:
             seen_keys=seen,
         )
 
-    assert [c.url_path for c in captured] == [
-        "/v1/sessions/conv_x/events",
-        "/v1/sessions/conv_x/events",
-    ]
+    assert [c.url_path for c in captured] == ["/v1/sessions/conv_x/events"]
     # Full event shape proves every field survived hook → file → POST.
     assert [c.body for c in captured] == [
         {
             "type": "external_output_text_delta",
-            "data": {"delta": "Hello ", "message_id": "m1", "index": 0, "final": False},
-        },
-        {
-            "type": "external_output_text_delta",
-            "data": {"delta": "world", "message_id": "m1", "index": 1, "final": True},
+            "data": {"delta": "Hello world", "message_id": "m1", "index": 0, "final": True},
         },
     ]
     # Offset advanced to EOF and was persisted, so a reload resumes past
@@ -5577,12 +5620,12 @@ async def test_forward_available_deltas_dedupes_by_message_id_and_index(tmp_path
             state=forwarder.DeltaForwardState(),
             seen_keys=seen,
         )
-    # The duplicate (m1, 0) is collapsed: only the first (m1,0) and the
-    # distinct (m1,1) are POSTed — 2 requests, not 3.
+    # The duplicate (m1, 0) is collapsed before the remaining chunks are
+    # batched, so one request carries only the distinct text.
     assert [(c.body["data"]["message_id"], c.body["data"]["index"]) for c in captured] == [
         ("m1", 0),
-        ("m1", 1),
     ]
+    assert captured[0].body["data"]["delta"] == "dupnext"
 
 
 async def test_forward_available_deltas_drops_on_http_error(tmp_path: Path) -> None:

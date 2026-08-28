@@ -1302,6 +1302,7 @@ async def _run_cursor_stream_loop(
     read_items,
     delta_posts: list[dict],
     item_posts: list[fwd._MirrorItem],
+    stop_when=None,
 ) -> None:
     """Run the cursor loop with fake pane and store sources."""
     store = tmp_path / "store.db"
@@ -1353,10 +1354,10 @@ async def _run_cursor_stream_loop(
     )
     try:
         for _ in range(2000):
-            if item_posts:
+            if item_posts and (stop_when is None or stop_when()):
                 return
             await asyncio.sleep(0.001)
-        raise AssertionError("cursor stream loop never posted the complete item")
+        raise AssertionError("cursor stream loop did not reach its stop condition")
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -1461,3 +1462,70 @@ async def test_cursor_stream_posts_deltas_before_complete_item(
         },
     ]
     assert item_posts == [complete]
+
+
+@pytest.mark.asyncio
+async def test_cursor_stream_starts_a_new_epoch_for_the_next_user_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-completion user item unlocks fresh pane deltas."""
+    monkeypatch.setenv("OMNIGENT_CURSOR_STREAM", "1")
+    complete = fwd._MirrorItem(
+        rowid=1,
+        item_type="message",
+        item_data={
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "First answer"}],
+        },
+        response_id="cursor:first",
+    )
+    next_user = fwd._MirrorItem(
+        rowid=2,
+        item_type="message",
+        item_data={
+            "role": "user",
+            "content": [{"type": "input_text", "text": "next"}],
+        },
+        response_id="cursor:next",
+    )
+    frames = iter(
+        [
+            "  🤖 First answer\n\n ⠼ Working",
+            "  🤖 First answer\n\n",
+            "  🤖 First answer\n\n",
+            "  🤖 First answer\n\n",
+            "  🤖 Second answer\n\n ⠼ Working",
+        ]
+    )
+    delta_posts: list[dict] = []
+    item_posts: list[fwd._MirrorItem] = []
+    read_calls = 0
+
+    def _capture(_bridge: Path) -> str:
+        return next(frames, "  🤖 Second answer\n\n ⠼ Working")
+
+    def _read(*args) -> list[fwd._MirrorItem]:
+        nonlocal read_calls
+        read_calls += 1
+        if read_calls == 2:
+            return [complete]
+        if read_calls == 4:
+            return [next_user]
+        return []
+
+    monkeypatch.setattr(fwd, "capture_cursor_pane_for_stream", _capture)
+    await _run_cursor_stream_loop(
+        monkeypatch,
+        tmp_path,
+        read_items=_read,
+        delta_posts=delta_posts,
+        item_posts=item_posts,
+        stop_when=lambda: len(delta_posts) == 2,
+    )
+
+    assert delta_posts[0]["message_id"] != delta_posts[1]["message_id"]
+    assert [post["delta"] for post in delta_posts] == [
+        "🤖 First answer",
+        "🤖 Second answer",
+    ]
+    assert item_posts == [complete, next_user]

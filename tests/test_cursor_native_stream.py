@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from omnigent.cursor_native_stream import CursorNativeStream, strip_ansi
+from omnigent.cursor_native_stream import (
+    CursorNativeStream,
+    extract_assistant_region,
+    strip_ansi,
+)
 
 
 def test_first_viewport_emits_the_first_assistant_delta() -> None:
@@ -73,3 +77,40 @@ def test_rewind_allows_the_same_suffix_to_be_retried() -> None:
     assert again is not None
     assert again.delta == "🤖 Hello"
     assert again.index == 0
+
+
+def test_reset_does_not_replay_the_completed_pane_region() -> None:
+    stream = CursorNativeStream("session-replay")
+    first = stream.observe("  🤖 Old answer\n\n ⠼ Working")
+    assert first is not None
+
+    stream.reset()
+
+    assert stream.observe("  🤖 Old answer\n\n") is None
+
+
+def test_new_turn_uses_a_fresh_message_id_after_reset() -> None:
+    stream = CursorNativeStream("session-epochs")
+    first = stream.observe("  🤖 First answer\n\n ⠼ Working")
+    assert first is not None
+    stream.reset()
+
+    assert stream.observe("  🤖 First answer\n\n") is None
+    second = stream.observe("  🤖 Second answer\n\n ⠼ Working")
+
+    assert second is not None
+    assert second.delta == "🤖 Second answer"
+    assert second.message_id != first.message_id
+    assert second.index == 0
+
+
+def test_last_assistant_marker_ignores_prompt_emoji() -> None:
+    pane = "  Ask about 🤖 in this prompt\n  🤖 Assistant answer\n\n ⠼ Working"
+
+    assert extract_assistant_region(pane) == "🤖 Assistant answer"
+
+
+def test_tool_chrome_is_skipped_without_truncating_later_prose() -> None:
+    pane = "  🤖 First paragraph\n\n  → Run a tool\n  second paragraph\n\n ⠼ Working"
+
+    assert extract_assistant_region(pane) == "🤖 First paragraph\n\nsecond paragraph"

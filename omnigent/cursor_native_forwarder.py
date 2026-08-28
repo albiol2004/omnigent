@@ -1218,7 +1218,13 @@ async def forward_cursor_store_to_session(
                                             exc_info=True,
                                         )
                                         break
-                                if item.item_data.get("role") == "assistant":
+                                role = item.item_data.get("role")
+                                if role == "user":
+                                    # The store row is the forwarder's reliable
+                                    # signal that the next pane output belongs
+                                    # to a newly injected user turn.
+                                    live_stream.start_new_turn()
+                                elif role == "assistant":
                                     live_stream.reset()
                             # Reached on a successful post, an ambiguous-delivery
                             # skip, a quarantine, or a non-posted sentinel row:

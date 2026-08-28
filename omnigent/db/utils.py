@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Engine, create_engine, event, inspect, text
+from sqlalchemy.pool import QueuePool
 
 if TYPE_CHECKING:
     from alembic.config import Config
@@ -60,6 +61,15 @@ _LAKEBASE_INSTANCE_ENV = "OMNIGENT_LAKEBASE_INSTANCE"
 # for connections that sit idle in the pool across a rotation.
 _SERVER_POOL_RECYCLE_SECONDS = 1800
 _LAKEBASE_POOL_RECYCLE_SECONDS = 600
+
+# SQLite permits many readers but serializes writes, so keep its pool smaller
+# than the server-database pool while still covering normal thread bursts.
+_SQLITE_POOL_SIZE_ENV = "OMNIGENT_SQLITE_POOL_SIZE"
+_SQLITE_MAX_OVERFLOW_ENV = "OMNIGENT_SQLITE_MAX_OVERFLOW"
+_SQLITE_POOL_TIMEOUT_ENV = "OMNIGENT_SQLITE_POOL_TIMEOUT_S"
+_SQLITE_POOL_SIZE = 32
+_SQLITE_MAX_OVERFLOW = 20
+_SQLITE_POOL_TIMEOUT = 10
 
 # Process-wide override, primarily for tests and for callers that want to plug
 # in their own token source (e.g. a non-default Databricks auth flow) without
@@ -199,6 +209,26 @@ _engine_cache: dict[str, Engine] = {}
 _engine_lock = threading.Lock()
 
 
+def _sqlite_pool_setting(
+    env_name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int | None = None,
+) -> int:
+    """Read one validated integer SQLite pool setting from the environment."""
+    raw_value = os.environ.get(env_name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return default
+    if value < minimum or (maximum is not None and value > maximum):
+        return default
+    return value
+
+
 def _create_engine(db_uri: str) -> Engine:
     """
     Create a SQLAlchemy engine with connection pool configuration.
@@ -213,12 +243,14 @@ def _create_engine(db_uri: str) -> Engine:
     a time and synchronous-write contention propagates immediately.
     WAL also lets readers proceed concurrently with a writer.
 
-    Non-SQLite databases use connection pooling with
-    ``pool_pre_ping`` to verify connections before use. When a Lakebase
-    token provider is active (see :func:`_resolve_lakebase_token_provider`),
-    the engine additionally re-mints its OAuth token per new connection and
-    uses a shorter ``pool_recycle`` window; otherwise the static URI (and its
-    baked-in password, if any) is used unchanged.
+    All engines use connection pooling with ``pool_pre_ping`` to verify
+    connections before use. SQLite's pool size, overflow, and checkout
+    timeout are configurable through ``OMNIGENT_SQLITE_*`` environment
+    variables. When a Lakebase token provider is active (see
+    :func:`_resolve_lakebase_token_provider`), the engine additionally
+    re-mints its OAuth token per new connection and uses a shorter
+    ``pool_recycle`` window; otherwise the static URI (and its baked-in
+    password, if any) is used unchanged.
 
     :param db_uri: SQLAlchemy database connection string, e.g.
         ``"sqlite:///mydb.db"`` or
@@ -232,8 +264,29 @@ def _create_engine(db_uri: str) -> Engine:
         # asyncio.to_thread). The library still serializes access via
         # the pool, so this isn't a footgun — it just removes the
         # legacy single-thread restriction.
+        # SQLite's dialect default is SingletonThreadPool, which
+        # rejects overflow/timeout kwargs. QueuePool is the same
+        # checkout model as the server-database engine.
         engine = create_engine(
             db_uri,
+            poolclass=QueuePool,
+            pool_pre_ping=True,
+            pool_size=_sqlite_pool_setting(
+                _SQLITE_POOL_SIZE_ENV,
+                _SQLITE_POOL_SIZE,
+                minimum=1,
+            ),
+            max_overflow=_sqlite_pool_setting(
+                _SQLITE_MAX_OVERFLOW_ENV,
+                _SQLITE_MAX_OVERFLOW,
+                minimum=0,
+            ),
+            pool_timeout=_sqlite_pool_setting(
+                _SQLITE_POOL_TIMEOUT_ENV,
+                _SQLITE_POOL_TIMEOUT,
+                minimum=1,
+                maximum=10,
+            ),
             connect_args={"check_same_thread": False, "timeout": 20.0},
         )
 

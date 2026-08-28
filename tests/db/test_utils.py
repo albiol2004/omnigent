@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 from alembic import command
 from sqlalchemy import create_engine
+from sqlalchemy.pool import QueuePool
 
 from omnigent.db.utils import (
     _LAKEBASE_POOL_RECYCLE_SECONDS,
@@ -35,6 +36,12 @@ from omnigent.entities.conversation import (
     NewConversationItem,
     ResourceEventData,
     SlashCommandData,
+)
+
+_SQLITE_POOL_ENV_VARS = (
+    "OMNIGENT_SQLITE_POOL_SIZE",
+    "OMNIGENT_SQLITE_MAX_OVERFLOW",
+    "OMNIGENT_SQLITE_POOL_TIMEOUT_S",
 )
 
 
@@ -84,19 +91,15 @@ def test_non_sqlite_engine_has_pool_settings(
     assert captured_kwargs.get("pool_recycle") == 1800
 
 
-def test_sqlite_engine_skips_server_pool_settings_and_enables_wal(
+def test_sqlite_engine_uses_pool_settings_and_enables_wal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    SQLite engines must NOT receive server-DB pool settings
-    (``pool_pre_ping`` / ``pool_recycle``) — those are meaningful
-    only for multi-connection server databases. They must, however,
-    enable WAL journal mode and a 20s ``busy_timeout`` on every
-    connection so multi-process workloads (REPL + Omnigent server +
-    runner subprocess + DBOS scheduler all hitting the same
-    ``chat.db``) don't surface as ``disk I/O error`` /
-    ``database is locked`` under default ``journal_mode=DELETE``.
+    SQLite engines use an explicit, modest pool and enable WAL journal mode
+    plus a 20s ``busy_timeout`` on every connection. This lets multi-process
+    workloads share ``chat.db`` without inheriting SQLAlchemy's smaller
+    default pool or surfacing ``database is locked`` errors.
 
     Uses a real SQLite engine on a tempfile (rather than a
     ``MagicMock``) because the connect-listener that applies the
@@ -108,14 +111,18 @@ def test_sqlite_engine_skips_server_pool_settings_and_enables_wal(
         "omnigent.db.utils._run_migrations",
         lambda engine, db_uri: None,
     )
+    for variable in _SQLITE_POOL_ENV_VARS:
+        monkeypatch.delenv(variable, raising=False)
 
     db_path = tmp_path / "test.db"
     engine = get_or_create_engine(f"sqlite:///{db_path}")
 
-    # Server-DB pool settings are not relevant to a single-file
-    # SQLite engine. Failure here means SQLite engines started
-    # carrying options meant for postgres/mysql.
     assert engine.url.get_backend_name() == "sqlite"
+    assert isinstance(engine.pool, QueuePool)
+    assert engine.pool.size() == 32
+    assert engine.pool._max_overflow == 20
+    assert engine.pool._timeout == 10
+    assert engine.pool._pre_ping is True
 
     with engine.connect() as conn:
         # WAL is the entire point of this fix: it allows readers
@@ -133,6 +140,59 @@ def test_sqlite_engine_skips_server_pool_settings_and_enables_wal(
         # synchronous=NORMAL is the WAL-recommended mode — durable
         # at commit, much faster than FULL.
         assert conn.exec_driver_sql("PRAGMA synchronous").scalar() == 1
+
+
+def test_sqlite_engine_honors_pool_environment_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SQLite pool sizes and timeout are configurable without changing WAL."""
+    monkeypatch.setenv("OMNIGENT_SQLITE_POOL_SIZE", "7")
+    monkeypatch.setenv("OMNIGENT_SQLITE_MAX_OVERFLOW", "4")
+    monkeypatch.setenv("OMNIGENT_SQLITE_POOL_TIMEOUT_S", "3")
+    monkeypatch.setattr(
+        "omnigent.db.utils._run_migrations",
+        lambda engine, db_uri: None,
+    )
+
+    db_path = tmp_path / "overrides.db"
+    engine = get_or_create_engine(f"sqlite:///{db_path}")
+
+    assert engine.pool.size() == 7
+    assert engine.pool._max_overflow == 4
+    assert engine.pool._timeout == 3
+    assert engine.pool._pre_ping is True
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("OMNIGENT_SQLITE_POOL_SIZE", ""),
+        ("OMNIGENT_SQLITE_MAX_OVERFLOW", "not-an-int"),
+        ("OMNIGENT_SQLITE_POOL_TIMEOUT_S", "11"),
+    ],
+)
+def test_sqlite_engine_invalid_pool_environment_uses_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+    value: str,
+) -> None:
+    """Invalid values, including timeouts over ten seconds, use safe defaults."""
+    for env_var in _SQLITE_POOL_ENV_VARS:
+        monkeypatch.delenv(env_var, raising=False)
+    monkeypatch.setenv(variable, value)
+    monkeypatch.setattr(
+        "omnigent.db.utils._run_migrations",
+        lambda engine, db_uri: None,
+    )
+
+    db_path = tmp_path / "invalid.db"
+    engine = get_or_create_engine(f"sqlite:///{db_path}")
+
+    assert engine.pool.size() == 32
+    assert engine.pool._max_overflow == 20
+    assert engine.pool._timeout == 10
 
 
 # ── Lakebase token-aware engine ─────────────────────────

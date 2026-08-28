@@ -1,0 +1,22 @@
+🤖 Implemented Hotfix 4 in the two requested web files.
+
+Changes:
+- Added rAF deadline fallback and visibility/pageshow flushing.
+- Drained live buffers during cancellation/flush.
+- Prevented finalized live blocks from being resurrected.
+- Added four regression tests.
+
+Verification:
+- Vitest: 356 passed.
+- TypeScript: passed.
+- Changed-file oxlint and Prettier: passed.
+- Pre-commit: blocked by unrelated repository-wide oxlint errors; output saved.
+
+Evidence: `loop-fixes/evidence/hotfix4/`
+
+No commit or push was performed.🤖 Final result: implementation checks pass—356 tests, TypeScript, formatting,
+and changed-file oxlint.
+
+The final pre-commit run exits 1 due unrelated repository-wide oxlint
+diagnostics. No further action, commit, or push was performed.
+exit=0

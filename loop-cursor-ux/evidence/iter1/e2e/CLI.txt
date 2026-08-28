@@ -1,0 +1,102 @@
+                                  
+[49m [48;2;21;21;21m [2m→ (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mGPT-5.6 Luna 272K Max(B[m                                         [35mRun Everything
+[39m  [2m/tmp/cursor-ux-e2e-40wblwkq/pwd
+(B[m[11A  Remote work is where tmux feels essential rather than merely convenient.[K
+  SSH connections can fail because of sleep, roaming networks, VPN changes,
+  or outages. Without a multiplexer, a running command may be lost or[K
+  require recovery. With tmux, the remote session remains alive on the[K
+  server. After reconnecting, a user runs an attach command and returns to
+  the same shells, processes, and screen arrangement. This reliability makes[K
+  administration and development safer, especially on unstable connections.[K
+[K
+  There
+[K
+ [K[32m⠠⠜[39m[1;23r[1;1H[3S[19;4H [1mWorking(B[m [2m 3.47k tokens
+(B[m  [38;5;245m  Tip: Hit shift+tab to enable Plan Mode for large or complex changes.[39m
+[K
+ [48;2;21;21;21m                                                                              [49m[K
+ [48;2;21;21;21m [49m[K[48;2;21;21;21m[2m→(B[m[5S[18;4H[48;2;21;21;21m[2m (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [49m[K
+[K
+  [2mGPT-5.6 Luna 272K Max(B[m                                         [35mRun Everything[39m[K
+  [2m/tmp/cursor-ux-e2e-40wblwkq/pwd(B[m[K
+[K[1;24r[23;1H[9A [K
+[K[2B[K
+[K
+[K[2B[K
+[K[14;2H[32m⠰⠰[39m [1mWorking(B[m [2m 3.47k tokens
+(B[m  [38;5;245m  Tip: Hit shift+tab to enable Plan Mode for large or complex changes.[17;1H[39m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→ (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mGPT-5.6 Luna 272K Max(B[m                                         [35mRun Everything
+[39m  [2m/tmp/cursor-ux-e2e-40wblwkq/pwd
+(B[m[9A [K
+[K[2B[K
+[K
+[K[2B[K
+[K[14;2H[32m⠰⠰[39m [1mWorking(B[m [2m 3.58k tokens
+(B[m  [38;5;245m  Tip: Hit shift+tab to enable Plan Mode for large or complex changes.[17;1H[39m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→ (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mGPT-5.6 Luna 272K Max(B[m                                         [35mRun Everything
+[39m  [2m/tmp/cursor-ux-e2e-40wblwkq/pwd
+(B[m[11A  There are tradeoffs. Tmux adds a layer of keyboard commands, and beginners[K
+  may initially confuse shell shortcuts with tmux shortcuts. Copying text
+  can also require learning its copy mode, terminal integration, or[K
+  clipboard settings. Nested tmux sessions are possible but can make[K
+  prefixes confusing. Some modern terminal applications provide tabs,
+  splits, and restoration features, so not every user needs tmux. Still,[K
+  those features usually[K
+[K
+ 
+[K
+[K[20;2H[32m⠰⠰[39m[1;23r[23;1H
+[19;4H [1mWorking(B[m [2m 3.58k tokens
+(B[m  [38;5;245m  Tip: Hit shift+tab to enable Plan Mode for large or complex changes.[22;1H[39m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [49m[K[48;2;21;21;21m[2m→(B[m[5S[18;4H[48;2;21;21;21m[2m (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [49m[K
+[K
+  [2mGPT-5.6 Luna 272K Max(B[m                                         [35mRun Everything[39m[K
+  [2m/tmp/cursor-ux-e2e-40wblwkq/pwd(B[m[K
+[K[1;24r[23;1H[9A [K
+[K[2B[K
+[K
+[K[2B[K
+[K[14;2H[32m⠰⠰[39m [1mWorking(B[m [2m 3.68k tokens
+(B[m  [38;5;245m  Tip: Hit shift+tab to enable Plan Mode for large or complex changes.[17;1H[39m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→ (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mGPT-5.6 Luna 272K Max(B[m                                         [35mRun Everything
+[39m  [2m/tmp/cursor-ux-e2e-40wblwkq/pwd
+(B[m[9A [K
+[K[2B[K
+[K
+[K[2B[K
+[K[14;2H[32m⠘⠤[39m [1mWorking(B[m [2m 3.68k tokens
+(B[m  [38;5;245m  Tip: Hit shift+tab to enable Plan Mode for large or complex changes.[17;1H[39m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→ (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mGPT-5.6 Luna 272K Max(B[m                                         [35mRun Everything
+[39m  [2m/tmp/cursor-ux-e2e-40wblwkq/pwd
+(B[m[11A  those features usually do not replace its server-side persistence,[K
+  portability, and scriptable behavior entirely.
+[K
+ [K[17;1H[K
+[K
+[K[2B[K
+[K[15;2H[32m⠘⠤[39m [1mWorking(B[m [2m 3.68k tokens
+(B[m  [38;5;245m  Tip: Hit shift+tab to enable Plan Mode for large or complex changes.[18;1H[39m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→(B[m[1;23r[23;1H
+[18;4H[48;2;21;21;21m[2m (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mGPT-5.6 Luna 272K Max(B[m                                         [35mRun Everything
+[39m  [2m/tmp/cursor-ux-e2e-40wblwkq/pwd(B[m
+[K[1;24r[23;1H[9A[K
+[K
+ [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [49m[K
+[K
+[K[2B[K
+[K[17;3H[48;2;21;21;21m[2m→ (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                                            
+[49m [48;2;21;21;21m                                                                              [20;1H[49m  [2mGPT-5.6 Luna 272K Max(B[m                                         [35mRun Everything
+[39m  [2m/tmp/cursor-ux-e2e-40wblwkq/pwd
+(B[m[2A  [2mGPT-5.6 Luna 272K Max(B[m [K
+[K[20;25H[2m·(B[m [2m9.3%(B[m                                  [35mRun Everything
+[39m  [2m/tmp/cursor-ux-e2e-40wblwkq/pwd
+(B[m

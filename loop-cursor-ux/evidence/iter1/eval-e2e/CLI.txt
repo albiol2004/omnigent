@@ -1,0 +1,92 @@
+ens[17;1H(B[m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→ (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mCursor Grok 4.6 Medium(B[m                                        [35mRun Everything
+[39m  [2m/tmp/cursor-ux-eval-e2e-hyzv01g6/pwd
+(B[m[10A  and it turns a blank terminal into a workspace you can leave and return[K
+  to. Six
+[K
+ 
+[K
+[K
+[K[2B[K
+[K[16;2H[32m⠠⠛[39m [1mWorking(B[m [2m 1.21k tokens[18;1H(B[m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→(B[m[1;23r[23;1H
+[18;4H[48;2;21;21;21m[2m (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mCursor Grok 4.6 Medium(B[m                                        [35mRun Everything
+[39m  [2m/tmp/cursor-ux-eval-e2e-hyzv01g6/pwd(B[m
+[K[1;24r[23;1H[8A [K[17;1H[K
+[K
+[K[2B[K
+[K[15;2H[32m⠀⠞[39m [1mWorking(B[m [2m 1.22k tokens[17;1H(B[m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→ (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mCursor Grok 4.6 Medium(B[m                                        [35mRun Everything
+[39m  [2m/tmp/cursor-ux-eval-e2e-hyzv01g6/pwd
+(B[m[10A  to. Six hundred words is enough to say the rest is practice: attach[K[15;1H [K[17;1H[K
+[K
+[K[2B[K
+[K[15;2H[32m⠀⠞[39m [1mWorking(B[m [2m 1.22k tokens[17;1H(B[m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→ (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mCursor Grok 4.6 Medium(B[m                                        [35mRun Everything
+[39m  [2m/tmp/cursor-ux-eval-e2e-hyzv01g6/pwd
+(B[m[8A [K[17;1H[K
+[K
+[K[2B[K
+[K[15;2H[32m⠠⠜[39m [1mWorking(B[m [2m 1.22k tokens[17;1H(B[m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→ (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mCursor Grok 4.6 Medium(B[m                                        [35mRun Everything
+[39m  [2m/tmp/cursor-ux-eval-e2e-hyzv01g6/pwd
+(B[m[8A [K[17;1H[K
+[K
+[K[2B[K
+[K[15;2H[32m⠠⠜[39m [1mWorking(B[m [2m 1.23k tokens[17;1H(B[m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→ (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mCursor Grok 4.6 Medium(B[m                                        [35mRun Everything
+[39m  [2m/tmp/cursor-ux-eval-e2e-hyzv01g6/pwd
+(B[m[10A  to. Six hundred words is enough to say the rest is practice: attach,[K
+  split, detach, attach again, until it
+[K
+ 
+[K
+[K
+[K[2B[K
+[K[16;2H[32m⠠⠜[39m [1mWorking(B[m [2m 1.23k tokens[18;1H(B[m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→(B[m[1;23r[23;1H
+[18;4H[48;2;21;21;21m[2m (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mCursor Grok 4.6 Medium(B[m                                        [35mRun Everything
+[39m  [2m/tmp/cursor-ux-eval-e2e-hyzv01g6/pwd(B[m
+[K[1;24r[23;1H[8A [K[17;1H[K
+[K
+[K[2B[K
+[K[15;2H[32m⠠⠜[39m [1mWorking(B[m [2m 1.25k tokens[17;1H(B[m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→ (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mCursor Grok 4.6 Medium(B[m                                        [35mRun Everything
+[39m  [2m/tmp/cursor-ux-eval-e2e-hyzv01g6/pwd
+(B[m[8A [K[17;1H[K
+[K
+[K[2B[K
+[K[15;2H[32m⠰⠰[39m [1mWorking(B[m [2m 1.25k tokens[17;1H(B[m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→ (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mCursor Grok 4.6 Medium(B[m                                        [35mRun Everything
+[39m  [2m/tmp/cursor-ux-eval-e2e-hyzv01g6/pwd
+(B[m[10A  split, detach, attach again, until it feels like the terminal you always[K
+  meant to have.
+[K
+ 
+[K
+[K
+[K[2B[K
+[K[16;2H[32m⠰⠰[39m [1mWorking(B[m [2m 1.25k tokens[18;1H(B[m [48;2;21;21;21m                                                                              
+[49m [48;2;21;21;21m [2m→(B[m[1;23r[23;1H
+[18;4H[48;2;21;21;21m[2m (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                             [2mctrl+c to stop(B[m[48;2;21;21;21m 
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mCursor Grok 4.6 Medium(B[m                                        [35mRun Everything
+[39m  [2m/tmp/cursor-ux-eval-e2e-hyzv01g6/pwd(B[m
+[K[1;24r[23;1H[8A[K[2B [48;2;21;21;21m                                                                              [49m[K
+ [48;2;21;21;21m [49m[K
+[K[2B[K
+[K[18;3H[48;2;21;21;21m[2m→ (B[m[48;2;21;21;21m[7mA(B[m[48;2;21;21;21m[2mdd a follow-up(B[m[48;2;21;21;21m                                                            
+[49m [48;2;21;21;21m                                                                              [21;1H[49m  [2mCursor Grok 4.6 Medium(B[m                                        [35mRun Everything
+[39m  [2m/tmp/cursor-ux-eval-e2e-hyzv01g6/pwd
+(B[m[2A  [2mCursor Grok 4.6 Medium(B[m [K
+[K[21;26H[2m·(B[m [2m7.5%(B[m                                 [35mRun Everything
+[39m  [2m/tmp/cursor-ux-eval-e2e-hyzv01g6/pwd
+(B[m

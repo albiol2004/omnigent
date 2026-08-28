@@ -1,0 +1,28 @@
+{
+  "port": 18400,
+  "scratch": "/tmp/cursor-ux-eval-e2e-hyzv01g6",
+  "server_pid": 291793,
+  "conversation_id": "700b024dab5a4032b629af6e3f17c286",
+  "view_open_error_codes": [],
+  "ttfd_s": 5.35135652200006,
+  "injection_completed_s": 0.5944554760008032,
+  "consumed_s": 27.33296288100064,
+  "assistant_item_done_s": 27.33296447400062,
+  "delta_count": 111,
+  "deltas_after_15s": 62,
+  "joined_len": 11877,
+  "complete_len": 4834,
+  "byte_equal": false,
+  "last_delta_len": 50,
+  "last_delta_in_complete": true,
+  "consumed_before_assistant_item": true,
+  "sse_event_count": 151,
+  "item_roles": [
+    null,
+    null,
+    "user",
+    "assistant"
+  ],
+  "user_before_assistant": true,
+  "elapsed_s": 30.34579057600058
+}

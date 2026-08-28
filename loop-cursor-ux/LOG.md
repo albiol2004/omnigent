@@ -1,1 +1,2 @@
 - iter 0 | coordinator | cursor-ux mailbox initialized (base a15b8c3e9; diagnosis: stale-completed delta drop, tail-append order race, model re-pin 503 on view open)
+- iter 1 | lead | cursor-live-deltas/order + model-repin; e2e TTFD 42.5s all deltas after 15s; no view-open error card

@@ -1,0 +1,22 @@
+{
+  "port": 18300,
+  "scratch": "/tmp/cursor-ux-e2e-40wblwkq",
+  "server_pid": 244365,
+  "conversation_id": "76b7c74cab464d11a25810ccb336ee46",
+  "view_open_error_codes": [],
+  "ttfd_s": 42.4556388029996,
+  "delta_count": 8,
+  "deltas_after_15s": 8,
+  "joined_len": 3193,
+  "complete_len": 4047,
+  "byte_equal": false,
+  "sse_event_count": 60,
+  "item_roles": [
+    null,
+    null,
+    "user",
+    "assistant"
+  ],
+  "user_before_assistant": true,
+  "elapsed_s": 43.60682419299974
+}

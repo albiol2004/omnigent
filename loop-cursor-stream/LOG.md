@@ -1,0 +1,1 @@
+- iter 0 | coordinator | cursor-native streaming mailbox initialized

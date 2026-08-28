@@ -147,6 +147,7 @@ async def test_claude_fork_clone_oversize_rebuilds_from_items(
                     server_client=NullServerClient(),  # type: ignore[arg-type]
                 )
             assert raised.value.http_status == 413
+            assert "server did not compact" in str(raised.value)
         else:
             await orchestration._auto_create_claude_terminal(
                 "forked-session",

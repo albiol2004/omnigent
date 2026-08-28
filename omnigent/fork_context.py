@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from omnigent.errors import ErrorCode
 
 FORK_MAX_CONTEXT_BYTES_ENV = "OMNIGENT_FORK_MAX_CONTEXT_BYTES"
 DEFAULT_FORK_MAX_CONTEXT_BYTES = 600_000
+FORK_JSONL_INFLATION_ENV = "OMNIGENT_FORK_JSONL_INFLATION"
+DEFAULT_FORK_JSONL_INFLATION = 1.8
+
+# When no pure renderer is available, multiply API JSON bytes by this factor.
+# Override with OMNIGENT_FORK_JSONL_INFLATION; 1.8 covers native envelopes.
 
 _logger = logging.getLogger(__name__)
 
@@ -22,14 +28,23 @@ class ForkContextTooLarge(ValueError):
     code = ErrorCode.FORK_CONTEXT_TOO_LARGE
     http_status = 413
 
-    def __init__(self, actual_bytes: int, threshold_bytes: int) -> None:
+    def __init__(
+        self,
+        actual_bytes: int,
+        threshold_bytes: int,
+        *,
+        message_suffix: str | None = None,
+    ) -> None:
         self.actual_bytes = actual_bytes
         self.threshold_bytes = threshold_bytes
-        super().__init__(
+        message = (
             "Fork context too large: "
             f"{actual_bytes} bytes exceeds threshold {threshold_bytes} bytes "
             f"({FORK_MAX_CONTEXT_BYTES_ENV})."
         )
+        if message_suffix:
+            message = f"{message} {message_suffix}"
+        super().__init__(message)
 
 
 def max_fork_context_bytes() -> int:
@@ -57,6 +72,19 @@ def serialized_context_bytes(value: object, *, ensure_ascii: bool = False) -> in
     return len(encoded.encode("utf-8"))
 
 
+def fork_jsonl_inflation() -> float:
+    """Return the positive finite multiplier for renderer fallback estimates."""
+    raw = os.environ.get(FORK_JSONL_INFLATION_ENV)
+    if raw is not None:
+        try:
+            configured = float(raw)
+        except ValueError:
+            configured = 0.0
+        if configured > 0 and math.isfinite(configured):
+            return configured
+    return DEFAULT_FORK_JSONL_INFLATION
+
+
 def jsonl_context_bytes(
     records: Sequence[Mapping[str, Any]],
     *,
@@ -66,6 +94,29 @@ def jsonl_context_bytes(
     return sum(
         serialized_context_bytes(record, ensure_ascii=ensure_ascii) + 1 for record in records
     )
+
+
+def estimate_fork_context_bytes(
+    value: object,
+    *,
+    renderer: Callable[[object], Sequence[Mapping[str, Any]]] | None = None,
+) -> int:
+    """Estimate the bytes the target harness will receive for fork history.
+
+    A pure renderer is preferred because native runners write its records
+    directly. If importing or invoking that renderer is unavailable, the
+    configured JSONL inflation factor keeps the guard conservative.
+    """
+    serialized_bytes = serialized_context_bytes(value)
+    if renderer is not None:
+        try:
+            return jsonl_context_bytes(renderer(value))
+        except Exception:  # noqa: BLE001 — renderer failure uses safe fallback
+            _logger.debug(
+                "Fork context renderer unavailable; using inflation fallback",
+                exc_info=True,
+            )
+    return math.ceil(serialized_bytes * fork_jsonl_inflation())
 
 
 def guard_fork_context_bytes(

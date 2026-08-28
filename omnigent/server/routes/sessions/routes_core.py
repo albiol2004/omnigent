@@ -7,8 +7,9 @@ import contextlib
 import json
 import secrets
 import time
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
+from typing import Any, cast
 
 import httpx
 from fastapi import (
@@ -45,9 +46,11 @@ from omnigent.fork_compact import (
 )
 from omnigent.fork_context import (
     ForkContextTooLarge,
-    guard_fork_context,
+    estimate_fork_context_bytes,
+    guard_fork_context_bytes,
     summary_only_items,
 )
+from omnigent.json_types import JsonObject
 from omnigent.model_override import validate_model_override
 from omnigent.reasoning_effort import (
     EFFORT_CLEAR_VALUES,
@@ -240,6 +243,131 @@ def _items_through_response(
     if not matching:
         return None
     return items[: matching[-1] + 1]
+
+
+_FORK_ESTIMATE_EXTERNAL_SESSION_ID = "00000000-0000-0000-0000-000000000000"
+_FORK_ESTIMATE_WORKSPACE = Path("/tmp/omnigent-fork-workspace")
+
+
+async def _resolve_fork_target_harness(
+    source: Conversation,
+    target_agent: Any,
+    *,
+    copy_model_settings: bool,
+    agent_cache: AgentCache | None,
+) -> str | None:
+    """Resolve the harness that the new fork will actually launch."""
+    if copy_model_settings and source.harness_override:
+        return source.harness_override
+    cache = agent_cache
+    if cache is None:
+        try:
+            from omnigent.server.routes import sessions as sessions_facade
+
+            cache = sessions_facade.get_agent_cache()
+        except Exception:
+            return None
+    if cache is None:
+        return None
+    try:
+        loaded = await asyncio.to_thread(
+            cache.load,
+            target_agent.id,
+            target_agent.bundle_location,
+            expand_env=target_agent.session_id is None,
+        )
+        return loaded.spec.executor.harness_kind
+    except Exception:
+        return None
+
+
+def _fork_estimate_items(value: object) -> list[JsonObject]:
+    """Keep only JSON objects before handing route data to a renderer."""
+    if not isinstance(value, list):
+        return []
+    return [cast(JsonObject, item) for item in value if isinstance(item, dict)]
+
+
+def _normalized_fork_harness(harness: str | None) -> str | None:
+    """Normalize executor spellings used by the native record builders."""
+    if not harness:
+        return None
+    from omnigent.harness_aliases import canonicalize_harness
+
+    normalized = (canonicalize_harness(harness) or harness).replace("_", "-")
+    if normalized.startswith("native-"):
+        normalized = f"{normalized.removeprefix('native-')}-native"
+    return normalized
+
+
+def _fork_context_renderer(
+    harness: str | None,
+    *,
+    session_id: str,
+    workspace: str | None,
+    terminal_launch_args: Sequence[str] | None,
+) -> Callable[[object], Sequence[Mapping[str, Any]]] | None:
+    """Return the target harness's pure item-to-JSONL renderer when available."""
+    normalized = _normalized_fork_harness(harness)
+    cwd = Path(workspace) if workspace else _FORK_ESTIMATE_WORKSPACE
+    external_session_id = _FORK_ESTIMATE_EXTERNAL_SESSION_ID
+
+    if normalized in {"claude-native", "claude-sdk"}:
+        try:
+            from omnigent.claude_native import _claude_transcript_records_from_session_items
+            from omnigent.claude_native_bridge import bridge_dir_for_conversation_id
+
+            bridge_dir = bridge_dir_for_conversation_id(session_id)
+        except Exception:
+            return None
+
+        def render_claude(value: object) -> Sequence[Mapping[str, Any]]:
+            return _claude_transcript_records_from_session_items(
+                _fork_estimate_items(value),
+                session_id=session_id,
+                external_session_id=external_session_id,
+                cwd=cwd,
+                bridge_dir=bridge_dir,
+            )
+
+        return render_claude
+
+    if normalized == "codex-native":
+        try:
+            from omnigent.codex_native import _codex_rollout_records_from_session_items
+        except Exception:
+            return None
+
+        def render_codex(value: object) -> Sequence[Mapping[str, Any]]:
+            return _codex_rollout_records_from_session_items(
+                _fork_estimate_items(value),
+                session_id=session_id,
+                external_session_id=external_session_id,
+                cwd=cwd,
+                model_provider="omnigent",
+                cli_version="0.0.0",
+                terminal_launch_args=terminal_launch_args,
+            )
+
+        return render_codex
+
+    if normalized == "pi-native":
+        try:
+            from omnigent.pi_native_resume import pi_session_records_from_session_items
+        except Exception:
+            return None
+
+        def render_pi(value: object) -> Sequence[Mapping[str, Any]]:
+            return pi_session_records_from_session_items(
+                _fork_estimate_items(value),
+                session_id=session_id,
+                external_session_id=external_session_id,
+                cwd=cwd,
+            )
+
+        return render_pi
+
+    return None
 
 
 def register_core_routes(
@@ -2143,6 +2271,12 @@ def register_core_routes(
             copy_model_settings = await asyncio.to_thread(
                 _same_provider_family, source_agent, base_agent
             )
+        target_harness = await _resolve_fork_target_harness(
+            source,
+            base_agent,
+            copy_model_settings=copy_model_settings,
+            agent_cache=agent_cache,
+        )
 
         # When the fork binds a NATIVE target, the native CLI won't replay
         # the copied Omnigent transcript on its own — mark the fork so the
@@ -2213,10 +2347,23 @@ def register_core_routes(
         if context_items is not None:
             payload = [item.to_api_dict() for item in context_items]
             compacted_payload = summary_only_items(payload)
+            renderer = _fork_context_renderer(
+                target_harness,
+                session_id=source_id,
+                workspace=source.workspace,
+                terminal_launch_args=(
+                    source.terminal_launch_args if not switching_agent else None
+                ),
+            )
+            actual_bytes = estimate_fork_context_bytes(payload, renderer=renderer)
+            compacted_bytes = estimate_fork_context_bytes(
+                compacted_payload,
+                renderer=renderer,
+            )
             try:
-                guard_fork_context(
-                    payload,
-                    compacted_value=compacted_payload,
+                guard_fork_context_bytes(
+                    actual_bytes,
+                    compacted_bytes=compacted_bytes,
                 )
             except ForkContextTooLarge as exc:
                 if not fork_compact_enabled():
@@ -2240,11 +2387,15 @@ def register_core_routes(
                         agent_cache=agent_cache,
                     )
                     compacted_payload = [item.to_api_dict() for item in replacement_items]
-                    guard_fork_context(
+                    compacted_bytes = estimate_fork_context_bytes(
                         compacted_payload,
+                        renderer=renderer,
+                    )
+                    guard_fork_context_bytes(
+                        compacted_bytes,
                         threshold=fork_compact_target_bytes(),
                     )
-                    guard_fork_context(compacted_payload)
+                    guard_fork_context_bytes(compacted_bytes)
                 except Exception as compact_exc:
                     _publish_compaction_failed(source_id)
                     raise OmnigentError(str(exc), code=exc.code) from compact_exc

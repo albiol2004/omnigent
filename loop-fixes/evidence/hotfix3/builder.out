@@ -1,0 +1,27 @@
+🤖 Hotfix 3 implemented.
+
+Changed:
+- Rendered Claude/Codex/Pi transcript sizing with 1.8× fallback.
+- Server compaction now guards rendered sizes before and after compaction.
+- Added clearer runner 413 diagnostics.
+- Added regression and fallback tests.
+
+Verification:
+- Fork suite: **31 passed**
+- Trio compatibility: **5 passed**
+- Pre-commit: **all passed**
+- Isolated e2e on port 17537: **201**, compaction item present,
+  rebuilt JSONL **1,024 bytes**
+- Synthetic estimate/raw ratio: **1.415×**
+- Renderer estimate/rebuild ratio: **1.000×**
+
+Evidence is in `loop-fixes/evidence/hotfix3/`.
+
+No commit or push performed, per the explicit isolation instruction.🤖 Final verification succeeded:
+
+- Fork regression suite: **31 passed**
+- Trio compatibility tests: **5 passed**
+- Scoped pre-commit: **passed** after installing optional tracing dependencies
+
+No further action is needed.
+exit=0

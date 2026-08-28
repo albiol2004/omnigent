@@ -1,0 +1,10 @@
+/home/alex/omnigent-fixes/tests/server/routes/test_fork_compact.py:9: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient
+PASS server=127.0.0.1:17537
+items=496 raw_api_bytes=471821
+rendered_estimate_bytes=667830
+estimate_raw_ratio=1.415
+estimate_real_ratio=1.000
+fork_status=201 fork_id=c538360473d41c84c1eee13918fbeca0
+compaction_items=1
+rebuilt_jsonl_bytes=1024 path=/tmp/omnigent-hotfix3-e2e.Dd60Rq/claude-projects/-tmp-omnigent-fork-workspace/00000000-0000-0000-0000-000000000000.jsonl

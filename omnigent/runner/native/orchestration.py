@@ -3925,8 +3925,12 @@ async def _auto_create_codex_terminal(
                 terminal_launch_args=launch_config.terminal_launch_args,
                 guard=True,
             )
-        except ForkContextTooLarge:
-            raise
+        except ForkContextTooLarge as exc:
+            raise ForkContextTooLarge(
+                exc.actual_bytes,
+                exc.threshold_bytes,
+                message_suffix="(server did not compact the fork context)",
+            ) from exc
         except Exception:  # noqa: BLE001 — best-effort; launch fresh on failure
             built_rollout = None
             _logger.warning(
@@ -6434,8 +6438,12 @@ async def _auto_create_claude_terminal(
                 workspace=_clone_workspace,
                 guard=True,
             )
-        except ForkContextTooLarge:
-            raise
+        except ForkContextTooLarge as exc:
+            raise ForkContextTooLarge(
+                exc.actual_bytes,
+                exc.threshold_bytes,
+                message_suffix="(server did not compact the fork context)",
+            ) from exc
         except Exception:  # noqa: BLE001 — best-effort; launch fresh on failure
             _built = None
             _logger.warning(

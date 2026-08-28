@@ -1,0 +1,35 @@
+2026-08-28T15:20:08.669776Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 443 items in this shard
+........................................................................ [ 16%]
+........................................................................ [ 32%]
+........................................................................ [ 48%]
+........................................................................ [ 65%]
+........................................................................ [ 81%]
+........................................................................ [ 97%]
+...........                                                              [100%]
+=============================== warnings summary ===============================
+tests/server/routes/test_fork_oversize_guard.py:5
+  /home/alex/omnigent-fixes/tests/server/routes/test_fork_oversize_guard.py:5: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================= Top tests by peak-RSS delta ==========================
++  147.7 MB  (now    147.7 MB)  tests/runner/test_fork_resume_oversize_guard.py::test_non_fork_guard_logs_and_allows_oversize
++   43.4 MB  (now    205.4 MB)  tests/server/routes/test_fork_compact.py::test_oversized_fork_uses_compacted_replacement_items
++    8.4 MB  (now    215.6 MB)  tests/runner/test_runner_dispatch.py::test_runner_resolves_harness_from_fallback_when_no_agent_id
++    5.7 MB  (now    153.4 MB)  tests/server/routes/test_fork_oversize_guard.py::test_fork_refuses_oversized_history_before_store_fork
++    3.8 MB  (now    157.2 MB)  tests/server/routes/test_fork_oversize_guard.py::test_fork_allows_summary_only_compaction
++    2.6 MB  (now    162.0 MB)  tests/server/routes/test_fork_oversize_guard.py::test_fork_paginates_source_history_before_measurement
++    2.2 MB  (now    159.4 MB)  tests/server/routes/test_fork_oversize_guard.py::test_fork_keeps_small_history_unchanged
++    1.8 MB  (now    217.4 MB)  tests/runner/test_runner_dispatch.py::test_runner_post_returns_503_when_spec_resolver_fails
++    1.5 MB  (now    218.9 MB)  tests/runner/test_runner_dispatch.py::test_runner_background_turn_emits_failed_when_spawn_env_build_raises
++    1.4 MB  (now    206.8 MB)  tests/test_claude_native_bridge.py::test_channel_server_relays_active_omnigent_tools
++    0.4 MB  (now    219.4 MB)  tests/runner/test_runner_dispatch.py::test_runner_failed_status_carries_setup_error_message
++    0.4 MB  (now    207.2 MB)  tests/runner/test_runner_dispatch.py::test_runner_post_without_manager_returns_501
+================================== slow tests ==================================
+[slow] 25.90s tests/test_claude_native_bridge.py::test_curl_evaluate_policy_command_round_trips
+[slow] 2.21s tests/runner/test_runner_dispatch.py::test_runner_dispatches_to_spawned_harness_with_real_llm
+[slow] 2.17s tests/runner/test_runner_dispatch.py::test_runner_resolves_harness_from_fallback_when_no_agent_id
+[slow] 1.81s tests/test_claude_native_bridge.py::test_hook_evaluate_endpoint_fails_closed_on_unreachable_upstream
+[slow] 1.00s tests/test_claude_native_bridge.py::test_relay_close_keeps_advertisement_owned_by_newer_relay
+443 passed, 1 warning in 79.91s (0:01:19)

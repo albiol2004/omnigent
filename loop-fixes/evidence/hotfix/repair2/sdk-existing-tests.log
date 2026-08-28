@@ -1,0 +1,24 @@
+2026-08-28T15:28:23.989687Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 126 items in this shard
+........................................................................ [ 57%]
+......................................................                   [100%]
+=============================== warnings summary ===============================
+tests/inner/test_claude_sdk_executor.py::TestSystemMessages::test_auth_retry_databricks_gateway_mentions_databrickscfg
+  /home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
+    warnings.warn(  # deprecated in 14.0 - 2024-11-09
+
+tests/inner/test_claude_sdk_executor.py::TestSystemMessages::test_auth_retry_databricks_gateway_mentions_databrickscfg
+  /home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages/uvicorn/protocols/websockets/websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated
+    from websockets.server import WebSocketServerProtocol
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================= Top tests by peak-RSS delta ==========================
++  115.1 MB  (now    115.1 MB)  tests/inner/test_claude_sdk_executor.py::TestPromptExtraction::test_cold_reload_keeps_unresolved_history_attachment_visible
++    6.6 MB  (now    132.1 MB)  tests/inner/test_claude_sdk_executor.py::TestToolCallPolicyGate::test_allow_verdict_no_human_prompt_under_bypass
++    5.3 MB  (now    120.5 MB)  tests/inner/test_claude_sdk_executor.py::TestConstructor::test_databricks_fable_pins_thinking_to_adaptive
++    2.8 MB  (now    123.2 MB)  tests/inner/test_claude_sdk_executor.py::TestConstructor::test_databricks_profile_default_model_used_when_unset
++    1.8 MB  (now    125.0 MB)  tests/inner/test_claude_sdk_executor.py::TestSystemMessages::test_auth_retry_databricks_gateway_mentions_databrickscfg
++    0.4 MB  (now    125.3 MB)  tests/inner/test_claude_sdk_executor.py::TestSystemMessages::test_databricks_auth_uses_api_key_helper_settings
++    0.2 MB  (now    125.5 MB)  tests/inner/test_claude_sdk_executor.py::test_context_tokens_uses_last_call_not_cumulative_on_multi_iteration_turn
++    0.2 MB  (now    132.3 MB)  tests/inner/test_claude_sdk_executor.py::TestToolCallPolicyGate::test_deny_verdict_blocks_execution
+126 passed, 2 warnings in 1.18s

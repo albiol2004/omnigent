@@ -1,0 +1,30 @@
+🤖 The hotfix is complete. Resume/rebuild paths now pass `guard=False` and
+log oversized context at INFO; fork-only paths retain enforcement.
+
+Changed:
+- `omnigent/fork_context.py`
+- `omnigent/claude_native.py`
+- `omnigent/codex_native.py`
+- `omnigent/pi_native_resume.py`
+- `omnigent/runner/native/orchestration.py`
+- `tests/runner/test_fork_resume_oversize_guard.py`
+
+Fork decisions cover Claude, Codex, Pi, OpenCode, Qwen, and cursor-native
+fork preambles. SDK replay and transcript clone helpers remain guarded.
+
+Verification:
+- Focused suites: **254 passed**, 1 existing deprecation warning.
+- Trio compatibility: **5 passed, 250 deselected**.
+- Pre-commit: **passed** after installing the declared tracing extra.
+- `git diff --check`: passed.
+
+Evidence saved under `loop-fixes/evidence/hotfix/`.
+
+No commit or push was performed, per the explicit instruction.🤖 Follow-up checks are complete:
+
+- Required fork-guard tests: passed.
+- Trio compatibility tests: passed.
+- Pre-commit rerun: passed after installing tracing dependencies.
+
+The earlier failures were superseded by these successful reruns. No further action is needed.
+exit=0

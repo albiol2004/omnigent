@@ -1,0 +1,43 @@
+{
+  "scratch": "/tmp/hotfix-eval-p66iwiv7",
+  "non_fork_direct": {
+    "guard": false,
+    "path": "/tmp/hotfix-eval-p66iwiv7/claude-projects/-tmp-hotfix-eval-p66iwiv7-workspace/02857840-6362-408f-b41f-309e396ed7c6.jsonl",
+    "bytes": 1100667,
+    "threshold": 600000,
+    "over_threshold": true
+  },
+  "fork_direct": {
+    "raised": true,
+    "http_status": 413,
+    "actual_bytes": 1100677,
+    "threshold_bytes": 600000,
+    "message": "Fork context too large: 1100677 bytes exceeds threshold 600000 bytes (OMNIGENT_FORK_MAX_CONTEXT_BYTES)."
+  },
+  "auto_create_non_fork": {
+    "raised": false,
+    "resume_in_args": true,
+    "args": [
+      "--resume",
+      "02857840-6362-408f-b41f-309e396ed7c6",
+      "--mcp-config",
+      "{\"mcpServers\":{\"omnigent\":{\"command\":\"/home/alex/omnigent-fixes/.venv/bin/python3\",\"args\":[\"-I\",\"-m\",\"omnigent.claude_native_bridge\",\"serve-mcp\",\"--bridge-dir\",\"/tmp/hotfix-eval-p66iwiv7/auto/bridges/3ba3f5f43b92602683c19aee62a20342\"],\"env\":{\"PYTHONUNBUFFERED\":\"1\"}}}}",
+      "--settings",
+      "/tmp/hotfix-eval-p66iwiv7/auto/bridges/3ba3f5f43b92602683c19aee62a20342/claude-settings.json"
+    ]
+  },
+  "auto_create_fork": {
+    "raised": true,
+    "type": "ForkContextTooLarge",
+    "message": "Fork context too large: 1100687 bytes exceeds threshold 600000 bytes (OMNIGENT_FORK_MAX_CONTEXT_BYTES).",
+    "http_status": 413
+  },
+  "sdk_cold_replay": {
+    "raised": true,
+    "file": "omnigent/inner/claude_sdk_executor.py:3130",
+    "actual_bytes": 800133,
+    "threshold_bytes": 600000,
+    "http_status": 413,
+    "message": "Fork context too large: 800133 bytes exceeds threshold 600000 bytes (OMNIGENT_FORK_MAX_CONTEXT_BYTES)."
+  }
+}

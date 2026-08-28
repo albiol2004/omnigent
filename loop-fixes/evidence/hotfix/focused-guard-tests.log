@@ -1,0 +1,21 @@
+2026-08-28T15:13:17.926286Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 254 items in this shard
+........................................................................ [ 28%]
+........................................................................ [ 56%]
+........................................................................ [ 85%]
+......................................                                   [100%]
+=============================== warnings summary ===============================
+tests/server/routes/test_fork_oversize_guard.py:5
+  /home/alex/omnigent-fixes/tests/server/routes/test_fork_oversize_guard.py:5: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================= Top tests by peak-RSS delta ==========================
++  175.1 MB  (now    175.1 MB)  tests/runner/test_fork_context_guard.py::test_oversized_context_names_actual_size_and_threshold
++   28.7 MB  (now    203.8 MB)  tests/server/routes/test_fork_compact.py::test_oversized_fork_uses_compacted_replacement_items
++    1.7 MB  (now    205.5 MB)  tests/test_claude_native_bridge.py::test_channel_server_relays_active_omnigent_tools
+================================== slow tests ==================================
+[slow] 26.06s tests/test_claude_native_bridge.py::test_curl_evaluate_policy_command_round_trips
+[slow] 1.81s tests/test_claude_native_bridge.py::test_hook_evaluate_endpoint_fails_closed_on_unreachable_upstream
+[slow] 1.00s tests/test_claude_native_bridge.py::test_relay_close_keeps_advertisement_owned_by_newer_relay
+254 passed, 1 warning in 39.17s

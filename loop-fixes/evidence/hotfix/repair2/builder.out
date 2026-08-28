@@ -1,0 +1,21 @@
+🤖 Implemented the SDK fork-only replay guard.
+
+Changed:
+- `omnigent/inner/claude_sdk_executor.py`
+- `tests/inner/test_claude_sdk_fork_context_guard.py`
+- Evidence: `loop-fixes/evidence/hotfix/repair2/`
+
+The SDK now skips rejection for oversized non-fork replay, logs at INFO, and preserves
+413 rejection for fork-labeled replay. Native paths were untouched.
+
+Verification:
+- Required suites: `11 passed, 1 warning`
+- Existing SDK tests: `126 passed, 2 warnings`
+- Pre-commit: all hooks passed
+- `git diff --check`: passed
+
+Concern: the current adapter strips session labels before they reach the executor.
+The scoped implementation supports labels present in message metadata, but full runtime
+fork-label propagation may require a future adapter change outside the allowed scope.
+No commit or push performed.
+exit=0

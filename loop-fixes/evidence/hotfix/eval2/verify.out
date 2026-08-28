@@ -1,0 +1,22 @@
+{
+  "scratch": "/tmp/hotfix-eval2-74s7ome1",
+  "non_fork_800k": {
+    "raised": false,
+    "prompt_bytes": 800133
+  },
+  "fork_labeled_800k": {
+    "raised": true,
+    "http_status": 413,
+    "actual_bytes": 800133,
+    "threshold_bytes": 600000,
+    "message": "Fork context too large: 800133 bytes exceeds threshold 600000 bytes (OMNIGENT_FORK_MAX_CONTEXT_BYTES)."
+  },
+  "has_fork_labels_unlabeled": false,
+  "has_fork_labels_labeled": true,
+  "adapter_keeps_keys": [
+    "content",
+    "role"
+  ],
+  "adapter_has_fork_labels": false,
+  "skip_log": "Skipping fork context size guard for non-fork context: 800133 bytes exceeds threshold 600000 bytes\n"
+}

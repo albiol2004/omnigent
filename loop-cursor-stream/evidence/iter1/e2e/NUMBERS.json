@@ -1,0 +1,19 @@
+{
+  "port": 17200,
+  "scratch": "/tmp/cursor-stream-e2e-kmmrisji",
+  "conversation_id": "6c1e5743e96e4b639773f8c8065e0e37",
+  "ttfd_s": 57.375179770053364,
+  "complete_s": 60.98050962004345,
+  "delta_count": 17,
+  "joined_len": 4979,
+  "complete_len": 4979,
+  "byte_equal": true,
+  "sse_event_count": 98,
+  "post_complete_watch_s": 10.00864641397493,
+  "post_complete_delta_count": 0,
+  "second_delta_count": 1,
+  "second_message_ids": [
+    "cursor-live-6c1e5743e96e4b639773f8c8065e0e37-1"
+  ],
+  "second_message_id_is_new": true
+}

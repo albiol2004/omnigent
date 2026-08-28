@@ -1,0 +1,26 @@
+🤖 Probe completed without product-code or mailbox changes.
+
+Changed:
+- `loop-cursor-stream/evidence/iter1/probe/store-timeline.jsonl`
+- `loop-cursor-stream/evidence/iter1/probe/pane-timeline.jsonl`
+- `loop-cursor-stream/evidence/iter1/probe/NOTES.md`
+- `loop-cursor-stream/evidence/iter1/probe/DECISION.md`
+
+Results:
+- 231 paired samples at ~100 ms cadence.
+- No partial store blob observed.
+- First assistant store blob: 21,700.056 ms, rowid 11,
+  21,631 bytes / 6,434 text characters.
+- First assistant pane text: 16,300.059 ms.
+- Pane led store visibility by 5,399.997 ms.
+- Decision: `pane-diff`.
+- Model id: `gpt-5.6-luna`.
+
+Verification:
+- Both JSONL files parsed successfully: 231 lines each.
+- Health check: `200`.
+- Protected database mtime: `1787905289` unchanged.
+- Own tmux session: gone.
+- No commit or push performed.
+
+Concern: a 100 ms cadence could miss a sub-100 ms transient store write.

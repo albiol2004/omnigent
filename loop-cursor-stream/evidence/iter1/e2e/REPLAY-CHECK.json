@@ -1,0 +1,15 @@
+{
+  "conversation_id": "6c1e5743e96e4b639773f8c8065e0e37",
+  "first_message_ids": [
+    "cursor-live-6c1e5743e96e4b639773f8c8065e0e37"
+  ],
+  "complete_event_observed": true,
+  "post_complete_watch_s": 10.00864641397493,
+  "post_complete_delta_count": 0,
+  "second_prompt": "In one short paragraph, name the main parts of that clock.",
+  "second_message_ids": [
+    "cursor-live-6c1e5743e96e4b639773f8c8065e0e37-1"
+  ],
+  "second_delta_count": 1,
+  "second_message_id_is_new": true
+}

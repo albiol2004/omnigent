@@ -1,1 +1,3 @@
 - iter 0 | coordinator | cursor-native streaming mailbox initialized
+- iter 1 | lead | pane-diff streaming: probe DECISION + slice commits 87482f1f8 9beb255aa; e2e 26 deltas byte-equal; trio-shadow exit 0
+- iter 1 | lead | repair 1: suppressed completed-pane replay with epoch IDs, robust markers, and interleaved tool chrome

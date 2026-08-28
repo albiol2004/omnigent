@@ -1,0 +1,23 @@
+🤖 Scoped repair complete. Added turn-epoch replay suppression, robust assistant-marker
+selection, and interleaved tool-chrome handling. Added unit and e2e coverage.
+
+Changed:
+- Stream/forwarder implementation and tests.
+- `loop-cursor-stream/evidence/iter1/e2e/` replay artifacts.
+- `REPORT.md`, `LOG.md`.
+
+Verification:
+- Targeted tests: **77 passed**.
+- Pre-commit: **exit 0**.
+- Trio subset: **5 passed, 250 deselected**.
+- E2E: **17 deltas**, byte-equal `4979/4979`; **0** post-completion deltas over
+  **10.009s**; second prompt emitted under a fresh message ID.
+- Port `17200` torn down; `:6767` healthy; protected DB mtime unchanged.
+
+No commit or push performed. Direct `pre-commit` required adding `.venv/bin` to `PATH`.
+Manual check: restart the test server/runner, send a long Cursor prompt, confirm no
+duplicate after completion, then send a second prompt and confirm streaming resumes.🤖 Final result: the repair is complete. Targeted tests, Trio compatibility tests, final
+pre-commit, and isolated replay e2e all passed.
+
+No follow-up action is needed. No commit or push was performed.
+exit=0

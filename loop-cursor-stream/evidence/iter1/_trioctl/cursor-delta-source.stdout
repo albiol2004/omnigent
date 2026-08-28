@@ -1,0 +1,21 @@
+🤖 Implemented `cursor-delta-source`.
+
+Changed:
+- Added pane stream extraction and suffix tracking.
+- Added shared native delta POST helper.
+- Integrated Cursor pane sampling and env gate.
+- Preserved complete-item POST and UI hand-off.
+- Updated Cursor executor documentation.
+- Added stream and forwarder tests.
+- Added evidence notes.
+
+Verification:
+- `260 passed in 27.79s`
+- `uv run pre-commit ...`: all applicable hooks passed.
+- `git diff --check`: passed.
+- Test-first collection initially failed as expected before implementation.
+
+Concerns:
+- No live TUI e2e was run; that belongs to the later e2e slice.
+- Parser assumes the observed Cursor chrome markers (`🤖`, `Working`, `→ `,
+  `Run Everything`).

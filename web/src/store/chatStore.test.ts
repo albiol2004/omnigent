@@ -4631,6 +4631,44 @@ describe("chatStore — handleSessionEvent (session.* events)", () => {
       ]);
     });
 
+    it("splices the committed user block before a trailing live preview", () => {
+      // Cursor pane text can land before session.input.consumed. A tail
+      // append would paint the user bubble under the live assistant.
+      const livePreview: AnyBlock = {
+        type: "text_done",
+        ctx: {
+          agent: null,
+          depth: 0,
+          turn: 0,
+          timestamp: 0,
+          responseId: "live:cursor-live-sess-1",
+          itemId: "live:cursor-live-sess-1",
+        },
+        fullText: "still generating",
+        hasCodeBlocks: false,
+      };
+      useChatStore.setState({
+        blocks: [livePreview],
+        pendingUserMessages: [
+          { tempId: "pend_live", content: [{ type: "input_text", text: "write 600 words" }] },
+        ],
+      });
+
+      handleSessionEvent({
+        type: "session_input_consumed",
+        itemId: "msg_user_live",
+        itemType: "message",
+        data: { role: "user", content: [{ type: "input_text", text: "write 600 words" }] },
+      });
+
+      const state = useChatStore.getState();
+      expect(state.blocks).toHaveLength(2);
+      expect(state.blocks[0]?.type).toBe("user_message");
+      expect(state.blocks[0]?.ctx.itemId).toBe("msg_user_live");
+      expect(state.blocks[1]).toBe(livePreview);
+      expect(state.pendingUserMessages).toEqual([]);
+    });
+
     it("clears the pending echo without re-appending when the committed item already rendered", () => {
       // Native-terminal race: the forwarder-mirrored user item reached
       // `blocks` (via the stream or a snapshot merge) BEFORE this

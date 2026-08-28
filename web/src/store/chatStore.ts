@@ -4260,6 +4260,16 @@ function isCursorLiveMessageId(messageId: string): boolean {
   return messageId.startsWith(CURSOR_LIVE_MESSAGE_PREFIX);
 }
 
+/** Place a newly committed user bubble before any trailing live preview. */
+function insertCommittedUserBeforeLiveTail(
+  blocks: AnyBlock[],
+  user: ReturnType<typeof committedUserBlock>,
+): AnyBlock[] {
+  let at = blocks.length;
+  while (at > 0 && isLiveProvisionalBlock(blocks[at - 1]!)) at -= 1;
+  return [...blocks.slice(0, at), user, ...blocks.slice(at)];
+}
+
 /** Extract the vendor message id from a provisional live block. */
 function liveMessageIdFromBlock(b: AnyBlock): string | null {
   const itemId = b.ctx.itemId;
@@ -5681,8 +5691,8 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
               ],
               // stableKey = the optimistic bubble's temp id → the
               // promoted bubble keeps the same React key (no remount).
-              blocks: [
-                ...s.blocks,
+              blocks: insertCommittedUserBeforeLiveTail(
+                s.blocks,
                 committedUserBlock(
                   event.itemId,
                   content,
@@ -5690,7 +5700,7 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
                   event.createdBy ?? matched.author,
                   matched.createdAtS,
                 ),
-              ],
+              ),
             };
           }
         }
@@ -5715,8 +5725,8 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
             pendingUserMessages: s.pendingUserMessages.slice(1),
             // stableKey = the popped optimistic bubble's temp id so the
             // promoted bubble keeps the same React key (no remount/flink).
-            blocks: [
-              ...s.blocks,
+            blocks: insertCommittedUserBeforeLiveTail(
+              s.blocks,
               committedUserBlock(
                 event.itemId,
                 content,
@@ -5724,7 +5734,7 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
                 event.createdBy ?? head.author,
                 head.createdAtS,
               ),
-            ],
+            ),
           };
         }
 
@@ -5732,10 +5742,10 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
         //    event payload fresh.
         if (eventContent === null) return {};
         return {
-          blocks: [
-            ...s.blocks,
+          blocks: insertCommittedUserBeforeLiveTail(
+            s.blocks,
             committedUserBlock(event.itemId, eventContent, undefined, event.createdBy),
-          ],
+          ),
         };
       });
       return;

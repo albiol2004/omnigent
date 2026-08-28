@@ -1,0 +1,27 @@
+2026-08-28T08:37:02.048212Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 211 items in this shard
+.....................................s.................................. [ 34%]
+........................................................................ [ 68%]
+...................................................................      [100%]
+========================= Top tests by peak-RSS delta ==========================
++  129.5 MB  (now    129.5 MB)  tests/stores/test_conversation_store.py::test_fork_drops_import_provenance_labels
++   16.7 MB  (now    438.7 MB)  tests/stores/test_conversation_store_split_db.py::test_append_and_list_items_land_in_conv_db
++   16.5 MB  (now    389.8 MB)  tests/stores/test_conversation_store_split_db.py::test_set_external_session_id
++   16.3 MB  (now    422.0 MB)  tests/stores/test_conversation_store_split_db.py::test_list_conversations_project_name_filter_crosses_dbs
++   16.1 MB  (now    233.0 MB)  tests/stores/test_conversation_store_split_db.py::test_get_conversations_bulk
++   16.1 MB  (now    295.5 MB)  tests/stores/test_conversation_store_split_db.py::test_child_listing_does_not_prefetch_workspace_wide
++   16.1 MB  (now    484.7 MB)  tests/stores/test_conversation_store_split_db.py::test_get_runner_ids_reads_from_omnigent_db
++   16.1 MB  (now    500.8 MB)  tests/stores/test_conversation_store_split_db.py::test_list_conversations_by_runner_id
++   16.1 MB  (now    573.9 MB)  tests/stores/test_conversation_store_split_db.py::test_delete_conversation_keeps_template_agent
++   15.9 MB  (now    405.7 MB)  tests/stores/test_conversation_store_split_db.py::test_set_conversation_project_lands_in_omnigent_db
++   15.8 MB  (now    264.3 MB)  tests/stores/test_conversation_store_split_db.py::test_list_conversations_archived_filter
++   15.8 MB  (now    311.2 MB)  tests/stores/test_conversation_store_split_db.py::test_labels_land_in_conv_db
++   15.8 MB  (now    342.3 MB)  tests/stores/test_conversation_store_split_db.py::test_set_runner_id_lands_in_omnigent_db
++   15.8 MB  (now    358.1 MB)  tests/stores/test_conversation_store_split_db.py::test_set_session_state_lands_in_omnigent_db
++   15.8 MB  (now    468.5 MB)  tests/stores/test_conversation_store_split_db.py::test_delete_conversation_subtree_cleans_both_dbs
++   15.8 MB  (now    516.5 MB)  tests/stores/test_conversation_store_split_db.py::test_fork_conversation_copies_to_both_dbs
++   15.6 MB  (now    248.6 MB)  tests/stores/test_conversation_store_split_db.py::test_list_conversations_kind_filter_crosses_dbs
++   15.4 MB  (now    216.9 MB)  tests/stores/test_conversation_store_split_db.py::test_get_conversation_merges_both_dbs
++   15.4 MB  (now    326.6 MB)  tests/stores/test_conversation_store_split_db.py::test_delete_label
++   15.2 MB  (now    373.3 MB)  tests/stores/test_conversation_store_split_db.py::test_increment_session_usage
+210 passed, 1 skipped in 135.04s (0:02:15)

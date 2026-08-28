@@ -1,0 +1,29 @@
+{
+  "status_code": 201,
+  "bytes_before": 3944621,
+  "bytes_after": 55766,
+  "max_context_bytes": 600000,
+  "resolved_model": "mock-compact-model",
+  "resolved_source": "env",
+  "port": 17110,
+  "scratch": "/tmp/fork-compact-5a9eou6s",
+  "source_item_count": 640,
+  "fork_item_count": 10,
+  "retained_non_summary_item_count": 9,
+  "compaction_item_id": "c5eb681d2e75407c963eb2c3831a5ab8",
+  "summary_last_item_id": "u315",
+  "retained_tail_ids": [
+    "a315",
+    "u316",
+    "a316",
+    "u317",
+    "a317",
+    "u318",
+    "a318",
+    "u319",
+    "a319"
+  ],
+  "retained_tail_verbatim": true,
+  "summary_call_count": 1,
+  "source_unchanged": true
+}

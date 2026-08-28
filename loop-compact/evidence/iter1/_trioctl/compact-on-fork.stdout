@@ -1,0 +1,25 @@
+🤖 Implemented the compact-on-fork server slice. Oversized forks now compact in memory,
+preserve the source, resolve models by precedence, handle running sessions with 409, and
+pass replacement items into fork storage.
+
+Added tests and evidence under
+`loop-compact/evidence/iter1/compact-on-fork/`. No commit, push, UI, or README changes
+were made.
+
+Files changed:
+- `omnigent/fork_compact.py`
+- Fork route and conversation-store interfaces
+- Fork route/store tests
+- Model-resolution tests
+- Evidence notes and command outputs
+
+Verification:
+- Requested pytest suite: **18 passed**, 1 warning.
+- Pre-commit via `uv run pre-commit`: **all applicable hooks passed**.
+- SQL store regressions: **210 passed, 1 skipped**.
+- `git diff --check`: passed.
+
+Concern: bare `pre-commit` is unavailable on PATH; the equivalent `uv run pre-commit`
+command passed. Live provider compaction was not run because the task requires mocked,
+isolated verification.🤖 SQL conversation-store regressions completed successfully: **210 passed, 1 skipped**. No follow-up action is needed.
+EXIT:0

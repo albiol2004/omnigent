@@ -1,1 +1,3 @@
 - iter 0 | coordinator | compact-on-fork mailbox initialized (base e11b40f95)
+- iter 1 | lead | compact-on-fork + UI: oversize fork summarizes in-memory (3937371→272 bytes mock LLM); 413 last resort
+- iter 1 | lead | repair 1: honest compaction evidence (3944621→55766 bytes, 9 retained)

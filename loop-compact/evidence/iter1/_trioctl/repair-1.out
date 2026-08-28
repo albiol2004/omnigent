@@ -1,0 +1,24 @@
+🤖 Completed the scoped repair.
+
+Changed:
+- `tests/server/routes/test_fork_compact.py`
+- Throwaway script and evidence outputs
+- `loop-compact/REPORT.md`
+- `loop-compact/LOG.md`
+
+Results:
+- Real compaction path verified: `3,944,621 → 55,766` bytes.
+- 10 fork items: 1 summary + 9 verbatim retained items.
+- Model: `mock-compact-model`; source unchanged.
+- Pytest: `8 passed, 1 warning`.
+- `uv run pre-commit ...`: clean.
+- `:17110` closed; `:6767` healthy; protected DB mtime unchanged.
+
+Concerns:
+- No commit or push was performed due to the direct no-commit instruction.
+- Broad port check still shows unrelated `kdeconnectd` on `1716`; no throwaway
+  listener remains.
+
+Verify with:
+`uv run pytest -q tests/server/routes/test_fork_compact.py tests/server/routes/test_fork_oversize_guard.py`
+exit=0

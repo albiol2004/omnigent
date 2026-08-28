@@ -1,0 +1,21 @@
+🤖 Implemented the UI slice.
+
+Changed:
+- `ForkSessionDialog.tsx`: added accessible `Summarizing history…` progress state.
+- `ForkSessionDialog.test.tsx`: added deferred progress and exact 413 error tests.
+- Added evidence outputs and `NOTES.md`.
+- `sessionsApi.ts` unchanged; existing error preservation is correct.
+
+Verification:
+- Vitest: **34 passed**.
+- Prettier and TypeScript: **passed**.
+- Pre-commit: Oxlint fails on existing repository-wide diagnostics.
+- `git diff --check`: **passed**.
+
+Concern: source model/size and SSE are unavailable in this component, so the permitted generic fallback is used.
+
+Manual test:
+```text
+cd web && npx vitest run src/shell/ForkSessionDialog.test.tsx
+```
+EXIT:0

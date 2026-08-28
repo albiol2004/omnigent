@@ -36,7 +36,7 @@ import pathlib
 import sys
 import tempfile
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from types import ModuleType
@@ -54,6 +54,11 @@ from omnigent.llms._usage_observer import notify_from_dict as _notify_usage_from
 from omnigent.llms.adapters._content import parse_data_uri as _parse_replay_data_uri
 from omnigent.reasoning_effort import CLAUDE_EFFORTS, validate_effort
 from omnigent.spec.types import RetryPolicy
+from omnigent.stores.conversation_store import (
+    FORK_CARRY_HISTORY_LABEL_KEY,
+    FORK_SOURCE_EXTERNAL_SESSION_LABEL_KEY,
+    FORK_SOURCE_LABEL_KEY,
+)
 
 from ._subprocess_lifecycle import close_anyio_subprocess_transport
 from .async_utils import run_sync_on_thread
@@ -1988,6 +1993,30 @@ class ClaudeSDKExecutor(Executor):
                 return str(metadata["session_id"])
         return "default"
 
+    @staticmethod
+    def _has_fork_labels(messages: Sequence[Message]) -> bool:
+        """Return whether message metadata identifies a forked session."""
+        source_keys = (
+            FORK_SOURCE_LABEL_KEY,
+            FORK_SOURCE_EXTERNAL_SESSION_LABEL_KEY,
+        )
+        for message in messages:
+            candidates: list[object] = [
+                message.get("labels"),
+                message.get("session_labels"),
+            ]
+            metadata = message.get("metadata")
+            if isinstance(metadata, Mapping):
+                candidates.extend([metadata.get("labels"), metadata.get("session_labels")])
+            for labels in candidates:
+                if not isinstance(labels, Mapping):
+                    continue
+                if labels.get(FORK_CARRY_HISTORY_LABEL_KEY) == "1":
+                    return True
+                if any(key in labels for key in source_keys):
+                    return True
+        return False
+
     def _install_subagent_router_hook(
         self,
         sdk: _ClaudeSDK,
@@ -2259,6 +2288,7 @@ class ClaudeSDKExecutor(Executor):
             prompt = self._build_prompt(
                 messages,
                 resume_session=session_key in self._clients,
+                is_fork=self._has_fork_labels(messages),
             )
         except ForkContextTooLarge as exc:
             yield ExecutorError(message=str(exc))
@@ -3058,6 +3088,7 @@ class ClaudeSDKExecutor(Executor):
         messages: list[Message],
         *,
         resume_session: bool,
+        is_fork: bool | None = None,
     ) -> str | list[_JsonObject]:
         """
         Build the prompt for the SDK.
@@ -3078,6 +3109,9 @@ class ClaudeSDKExecutor(Executor):
         :param resume_session: ``True`` when the SDK session
             already has prior turns cached (no need to replay
             history).
+        :param is_fork: Explicit fork decision for this replay.
+            When omitted, fork labels in message/session metadata
+            decide it.
         :returns: A plain string prompt, or a list of Anthropic
             API content block dicts when multimodal blocks are
             present in the latest user message.
@@ -3127,7 +3161,10 @@ class ClaudeSDKExecutor(Executor):
             prompt = [*prior_blocks, _text_block(f"\nuser: {latest_content}")]
         else:
             prompt = f"{prior_blocks[0]['text']}\n\nuser: {latest_content}"
-        guard_fork_context(prompt)
+        guard_fork_context(
+            prompt,
+            guard=(ClaudeSDKExecutor._has_fork_labels(messages) if is_fork is None else is_fork),
+        )
         return prompt
 
     @staticmethod

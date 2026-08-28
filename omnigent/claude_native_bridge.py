@@ -56,6 +56,7 @@ from omnigent._platform import stable_user_id
 from omnigent.claude_model_vocabulary import MODEL_VOCABULARY_ENV_VARS
 from omnigent.claude_native_message_display_hook import MESSAGE_DELTAS_FILE
 from omnigent.claude_native_status import CONTEXT_RAW_FILE
+from omnigent.inner import _proc
 from omnigent.json_types import JsonObject as _JsonObject
 from omnigent.kiro_native_bridge import bridge_root as kiro_bridge_root
 
@@ -133,6 +134,8 @@ _MAX_CONCURRENT_MCP_REQUESTS = 64
 # tails it and shells out to tmux.
 _TMUX_READY_TIMEOUT_S = 30.0
 _TMUX_SEND_TIMEOUT_S = 5.0
+_TMUX_KILL_VERIFY_TIMEOUT_S = 1.0
+_TMUX_KILL_VERIFY_POLL_INTERVAL_S = 0.05
 # Claude Code renders this prompt glyph in its input box once the TUI
 # is interactive. We poll ``capture-pane`` for it before injecting the
 # first message so keystrokes typed during Claude's boot aren't dropped.
@@ -3171,7 +3174,12 @@ def kill_session(
         time, or if the ``tmux kill-session`` invocation fails.
     """
     info = _wait_for_tmux_info(bridge_dir, timeout_s=timeout_s)
+    pane_pid = _recorded_tmux_pid(bridge_dir)
+    if pane_pid is None:
+        pane_pid = _tmux_pane_pid(info["socket_path"], info["tmux_target"])
     _run_tmux(info["socket_path"], "kill-session", "-t", info["tmux_target"])
+    if pane_pid is not None:
+        _kill_leftover_tmux_process(pane_pid)
 
 
 def inject_slash_command(
@@ -3522,6 +3530,60 @@ def _run_tmux(socket_path: str, *args: str) -> None:
     if proc.returncode != 0:
         detail = proc.stderr.strip() or proc.stdout.strip() or "<no output>"
         raise RuntimeError(f"tmux command failed (rc={proc.returncode}): {detail}")
+
+
+def _tmux_pane_pid(socket_path: str, tmux_target: str) -> int | None:
+    """Read the foreground process id for one tmux pane."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [
+                "tmux",
+                "-S",
+                socket_path,
+                "list-panes",
+                "-t",
+                tmux_target,
+                "-F",
+                "#{pane_pid}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_TMUX_SEND_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        pid = int(proc.stdout.split()[0])
+    except (IndexError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def _recorded_tmux_pid(bridge_dir: Path) -> int | None:
+    """Read a valid pane process id recorded in ``tmux.json``."""
+    pid = _read_json_file(bridge_dir / _TMUX_FILE).get("pid")
+    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+        return pid
+    return None
+
+
+def _kill_leftover_tmux_process(pid: int) -> None:
+    """SIGKILL a pane process that survived tmux teardown, with a deadline."""
+    if not _proc.process_alive(pid):
+        return
+    # _killpg resolves the target's group and rejects this process's own group.
+    if not _proc._killpg(pid, _proc._SIGKILL):
+        return
+    deadline = time.monotonic() + _TMUX_KILL_VERIFY_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if not _proc.process_alive(pid):
+            return
+        time.sleep(_TMUX_KILL_VERIFY_POLL_INTERVAL_S)
 
 
 def _capture_pane(socket_path: str, tmux_target: str) -> str:

@@ -3800,6 +3800,7 @@ def test_kill_session_issues_kill_session_on_target(
         bridge_dir,
         socket_path=Path("/tmp/example/tmux.sock"),
         tmux_target="main",
+        pid=12345,
     )
 
     captured: list[list[str]] = []
@@ -3824,6 +3825,7 @@ def test_kill_session_issues_kill_session_on_target(
         return _FakeCompleted()
 
     monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr(claude_native_bridge._proc, "process_alive", lambda _pid: False)
     kill_session(bridge_dir)
 
     # Exactly one tmux call: kill-session on the advertised target.
@@ -3838,6 +3840,69 @@ def test_kill_session_issues_kill_session_on_target(
         "-t",
         "main",
     ]
+
+
+def test_kill_session_escalates_live_pane_after_tmux_kill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pane that survives kill-session receives a SIGKILL for its group."""
+    bridge_dir = tmp_path / "bridge"
+    write_tmux_target(
+        bridge_dir,
+        socket_path=Path("/tmp/example/tmux.sock"),
+        tmux_target="main",
+    )
+
+    captured: list[list[str]] = []
+
+    class _FakeCompleted:
+        returncode = 0
+        stdout = "24680\n"
+        stderr = ""
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+        del kwargs
+        captured.append(cmd)
+        return _FakeCompleted()
+
+    alive = iter((True, False))
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr(
+        claude_native_bridge._proc,
+        "process_alive",
+        lambda _pid: next(alive),
+    )
+    monkeypatch.setattr(
+        claude_native_bridge._proc,
+        "_killpg",
+        lambda pid, sig: killed.append((pid, sig)) or True,
+    )
+
+    kill_session(bridge_dir)
+
+    assert captured == [
+        [
+            "tmux",
+            "-S",
+            "/tmp/example/tmux.sock",
+            "list-panes",
+            "-t",
+            "main",
+            "-F",
+            "#{pane_pid}",
+        ],
+        [
+            "tmux",
+            "-S",
+            "/tmp/example/tmux.sock",
+            "kill-session",
+            "-t",
+            "main",
+        ],
+    ]
+    assert killed == [(24680, claude_native_bridge._proc._SIGKILL)]
 
 
 def test_kill_session_raises_when_tmux_target_never_published(

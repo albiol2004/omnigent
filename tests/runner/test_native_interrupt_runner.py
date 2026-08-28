@@ -258,3 +258,48 @@ async def test_claude_interrupt_resolves_bridge_id_and_injects(
     assert isinstance(resp, Response) and resp.status_code == 204
     assert injected == [("dir/bid-conv_cl", 1.0)]
     assert captured["wakes"] == [("conv_cl", "cancelled", "[System: sub-agent interrupted]")]
+
+
+@pytest.mark.asyncio
+async def test_claude_stop_cancels_forwarder_after_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude stop tears down terminals before cancelling its transcript forwarder."""
+    import omnigent.claude_native_bridge as claude_bridge
+    from omnigent.runner.native import interrupt as interrupt_mod
+
+    async def _fake_bridge_id(*, server_client: Any, session_id: str) -> str:
+        return f"bid-{session_id}"
+
+    calls: list[tuple[str, Any]] = []
+    monkeypatch.setattr(interrupt_mod, "_claude_native_bridge_id_for_session", _fake_bridge_id)
+    monkeypatch.setattr(
+        claude_bridge,
+        "bridge_dir_for_bridge_id",
+        lambda bid: f"dir/{bid}",
+    )
+    monkeypatch.setattr(
+        claude_bridge,
+        "kill_session",
+        lambda bridge_dir, *, timeout_s: calls.append(("kill", (bridge_dir, timeout_s))),
+    )
+
+    runner, _ = _make_runner()
+
+    async def _teardown(conv_id: str) -> None:
+        calls.append(("teardown", conv_id))
+
+    async def _cancel(conv_id: str) -> None:
+        calls.append(("cancel", conv_id))
+
+    monkeypatch.setattr(runner, "_teardown_session_terminals", _teardown)
+    monkeypatch.setattr(interrupt_mod, "_cancel_auto_forwarder_task", _cancel)
+
+    resp = await runner.stop("claude-native", "conv_cl")
+
+    assert isinstance(resp, Response) and resp.status_code == 204
+    assert calls == [
+        ("kill", ("dir/bid-conv_cl", 1.0)),
+        ("teardown", "conv_cl"),
+        ("cancel", "conv_cl"),
+    ]

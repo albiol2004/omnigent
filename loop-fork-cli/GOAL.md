@@ -1,0 +1,33 @@
+# GOAL — fork compaction summaries come from the subscription CLIs (claude/codex), never from API keys
+
+Target repo: /home/alex/omnigent-fixes (git WORKTREE, branch `fork-compact-cli`, based on trio-v0.10.0-fixes 94c7921a6 which is checked out LIVE in /home/alex/omnigent). Mailbox: loop-fork-cli/. Prior loops: loop-fork-real/ (shipped: alias routing to API providers + honest 413 + real e2e), loop-compact/, loop-fixes/.
+
+## User requirement (verbatim intent)
+"Anthropic key no please, only CLI models." The user's providers are `claude` (subscription, `cli: claude`) and `codex` (subscription, `cli: codex`); the API-key providers in config.yaml are NOT to be used for fork compaction (the anthropic key is invalid anyway; the openai key must not be silently used either). The summary must be produced by the pinned CLI model itself — e.g. pinned `fable` → `claude -p --model fable --output-format json` (headless print mode, non-interactive, no permissions needed for a pure text task); pinned codex model → `codex exec --model <m>`; cursor pins → `cursor-agent -p` if it has a print mode, else the claude CLI default.
+
+## Mission
+Make an oversize fork of a real claude-native session on this machine succeed with a summary written by the pinned subscription CLI in headless mode, with API-key providers excluded from fork compaction unless `OMNIGENT_FORK_COMPACT_ALLOW_API=1` is set, and keep every failure honest (413 names the CLI/model tried and the reason; no fake "Summarizing…").
+
+## Design
+1. Add a CLI summary backend to `omnigent/fork_compact.py` / `fork_compact_routing.py`: candidate resolution keeps the existing order (env override → source pin → target spec → source spec) but maps to **CLI runners**: claude-family alias → `claude -p --model <alias> --output-format json` (reuse how omnigent already shells CLIs headlessly: `omnigent/chat.py:2110 _run_local_headless_prompt` / `:2162 _run_headless_prompt`, and `omnigent/inner/kimi_executor.py:309-320` for the `-p … --output-format` pattern; prefer an existing helper over a new subprocess call). Codex slugs → `codex exec --model <slug> -q`/equivalent (check `codex exec --help`). Run with `start_new_session=True` (`omnigent/inner/_proc.spawn_kwargs`), a bounded timeout (`OMNIGENT_FORK_COMPACT_CLI_TIMEOUT_S`, default 300), cwd = a scratch temp dir (never the user's workspace), no MCP/hooks/skills loaded if the CLI supports disabling them (claude: check `--strict-mcp-config`/`--mcp-config` empty, `--setting-sources`), and the summarization prompt = the same prompt `compaction.compact` Layer 2 uses. Parse the text result; feed it into the existing compaction item construction so the fork item set is identical in shape to the API path (summary item + verbatim recent tail).
+2. API-key providers are excluded unless `OMNIGENT_FORK_COMPACT_ALLOW_API=1`; the previous static `openai/gpt-4o-mini` fallback is removed from the default path.
+3. Server-side only, independent of the runner/session being connected; the CLI runs on the server host (this machine, where `claude` is logged in). If the server host has no CLI binary → honest 413.
+4. Progress: publish `compaction_in_progress` only after the CLI process has actually started; failed/completed exactly once.
+
+## Verification floor
+Test-first with a fake CLI binary on PATH for unit/integration tests (assert argv: `-p`, `--model fable`, `--output-format json`, cwd scratch, timeout; result parsed; timeouts and non-zero exits → honest error). AND one REAL run on a throwaway server (port ≥ 17900, scratch OMNIGENT_DATA_DIR/OMNIGENT_CONFIG_HOME, **unset OMNIGENT_PROCESS_LOG_FILE**, config.yaml copied read-only WITH the `kind: key` providers removed so the test proves no API key is needed) forking a read-only copy of conversation e34847899b7d47b3ad322948d4ea6002 (16-byte blob ids; copy conversations/metadata/labels/items + agents/users/session_permissions/files rows as loop-fork-real did — reuse its scripts under loop-fork-real/evidence/iter1/eval-e2e/) with pin `fable`: the real `claude -p --model fable` call produces the summary. Record: argv, wall time, summary length, rendered bytes before/after, 201, fake-claude `--resume` on < 600 kB. Then: PATH without `claude` → 413 naming the missing CLI; no `compaction_in_progress` published.
+
+## HARD isolation
+~/.omnigent read-only (copies only); never ~/.claude/projects writes (a `claude -p` run in a scratch cwd will create its own project dir under ~/.claude/projects for that cwd — acceptable, but the summary run must use a scratch cwd, never the user's workspaces); never live :6767, `omni host`, /home/alex/omnigent (no git there). Never kill processes you did not start. Preserve all commits; new work = `slice(<slice-id>): …` commits (ids below) with trailer `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`. Rebase-friendly, env-overridable, CLAUDE.md comment rules. Tests need `PYTHONPATH=/home/alex/omnigent-fixes`.
+
+## Slices
+1. **cli-summary-backend** — the headless CLI summarizer + routing change + unit tests with a fake CLI.
+2. **no-api-by-default** — exclude key providers unless opted in; remove default openai fallback; honest 413 text; tests.
+3. **cli-real-e2e** — the real run above; fix what it reveals.
+
+## Acceptance
+1. Real e2e: pin `fable`, no API-key providers in config → 201 with a compaction item whose `model` records `claude-cli/fable` (or equivalent) and a summary produced by the real CLI; rendered < 600 kB; `--resume` launch; source rows byte-identical.
+2. Missing CLI on PATH → 413 `compaction failed: … claude CLI not found …`, WARNING traceback, no in-progress event. API keys present but `OMNIGENT_FORK_COMPACT_ALLOW_API` unset → API path never used (assert no HTTP to api.openai.com/anthropic.com via a spy or by leaving keys invalid and checking logs).
+3. Suites green: tests/fork_context, tests/server/routes/test_fork_compact.py test_fork_oversize_guard.py, tests/runner/test_fork_clone_fallback.py test_fork_context_guard.py test_fork_resume_oversize_guard.py, tests/llms/test_summarize.py, plus Trio-compat (`uv run pytest -q tests/tools/builtins/test_spawn.py tests/runner/test_runner_dispatch.py tests/server/integration/test_sessions_child_sessions.py -k 'reasoning_effort or session_create_spawns_child_under_caller or registered_native_agent_create_derives_launch_args_from_root_spec'`); pre-commit clean; tree clean except mailbox.
+4. Isolation audit as in loop-fork-real/VERDICT.md (health 200, no new files under ~/.omnigent by the loop, no `:179xx` leftovers, no leftover `claude` processes started by the loop).
+5. REPORT ends with operator steps: fast-forward `trio-v0.10.0-fixes`, `omni server stop`, re-fork e348… and expect a summary written by `fable` via the CLI.

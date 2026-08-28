@@ -1,0 +1,1 @@
+- iter 0 | coordinator | fork-compact-cli mailbox initialized (base 94c7921a6; user: summaries via subscription CLIs only, no API keys)

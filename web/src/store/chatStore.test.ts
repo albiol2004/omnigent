@@ -8644,14 +8644,10 @@ describe("chatStore — startStreamPump reconnect loop", () => {
     });
     const sink = pushableStream();
     const controller = new AbortController();
-    const done = pumpStreamEvents(
-      sessionId,
-      sink.stream,
-      controller,
-      set,
-      get,
-      { schedule: (cb) => cb(), cancel: () => {} },
-    );
+    const done = pumpStreamEvents(sessionId, sink.stream, controller, set, get, {
+      schedule: (cb) => cb(),
+      cancel: () => {},
+    });
 
     // Injection completes before Cursor emits its first pane delta.
     sink.push(nativeDeltaFrame("cursor-live-sess-1", 0, "still working"));
@@ -8679,14 +8675,10 @@ describe("chatStore — startStreamPump reconnect loop", () => {
     });
     const sink = pushableStream();
     const controller = new AbortController();
-    const done = pumpStreamEvents(
-      sessionId,
-      sink.stream,
-      controller,
-      set,
-      get,
-      { schedule: (cb) => cb(), cancel: () => {} },
-    );
+    const done = pumpStreamEvents(sessionId, sink.stream, controller, set, get, {
+      schedule: (cb) => cb(),
+      cancel: () => {},
+    });
 
     sink.push(nativeDeltaFrame("wake-msg-1", 0, "scheduled wake"));
     await drainAsync(2);

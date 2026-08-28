@@ -1,0 +1,29 @@
+{
+  "port": 17901,
+  "fork_status": 201,
+  "fork_id": "96a13d49944b4e0ba0875d401eec2e7e",
+  "wall_ms": 110,
+  "bytes_before": 1028488,
+  "source_item_count": 644,
+  "fork_item_count": 644,
+  "has_compaction": false,
+  "copy_counts": {
+    "users": 1,
+    "agents": 1,
+    "conversations": 1,
+    "metadata": 1,
+    "labels": 10,
+    "items": 644,
+    "permissions": 1,
+    "files": 1,
+    "file_blobs": 1
+  },
+  "source_jsonl_bytes": 1328243,
+  "clone_path": "/tmp/fork-compact-cli-e2e/claude-projects/-tmp-fork-compact-cli-e2e-clone-ws/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl",
+  "clone_bytes": 1341194,
+  "resume_argv": [
+    "claude",
+    "--resume",
+    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  ]
+}

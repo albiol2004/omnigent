@@ -1,0 +1,59 @@
+State  Recv-Q Send-Q              Local Address:Port  Peer Address:PortProcess                                 
+LISTEN 0      100                     127.0.0.1:12001      0.0.0.0:*    users:(("nxnode.bin",pid=4262,fd=20))  
+LISTEN 0      64                      127.0.0.1:28084      0.0.0.0:*                                           
+LISTEN 0      5                       127.0.0.1:44331      0.0.0.0:*    users:(("python",pid=99017,fd=4))      
+LISTEN 0      5                       127.0.0.1:44321      0.0.0.0:*    users:(("python",pid=83586,fd=4))      
+LISTEN 0      5                       127.0.0.1:43171      0.0.0.0:*    users:(("python",pid=4114778,fd=4))    
+LISTEN 0      5                       127.0.0.1:42987      0.0.0.0:*    users:(("python",pid=103051,fd=4))     
+LISTEN 0      5                       127.0.0.1:9470       0.0.0.0:*    users:(("python3",pid=1680606,fd=3))   
+LISTEN 0      5                       127.0.0.1:41763      0.0.0.0:*    users:(("python",pid=4129103,fd=4))    
+LISTEN 0      100                     127.0.0.1:25001      0.0.0.0:*    users:(("nxrunner.bin",pid=4332,fd=14))
+LISTEN 0      5                       127.0.0.1:41405      0.0.0.0:*    users:(("python",pid=4113706,fd=17))   
+LISTEN 0      5                       127.0.0.1:41307      0.0.0.0:*    users:(("python",pid=4113706,fd=19))   
+LISTEN 0      128                  100.118.7.29:22         0.0.0.0:*                                           
+LISTEN 0      4096                    127.0.0.1:8384       0.0.0.0:*    users:(("syncthing",pid=1879,fd=23))   
+LISTEN 0      5                       127.0.0.1:41103      0.0.0.0:*    users:(("python",pid=4116016,fd=4))    
+LISTEN 0      5                       127.0.0.1:48787      0.0.0.0:*    users:(("subusage",pid=1833,fd=4))     
+LISTEN 0      4096                 100.118.7.29:7456       0.0.0.0:*                                           
+LISTEN 0      4096                   127.0.0.54:53         0.0.0.0:*                                           
+LISTEN 0      5                       127.0.0.1:45871      0.0.0.0:*    users:(("python",pid=4113706,fd=20))   
+LISTEN 0      2048                    127.0.0.1:45585      0.0.0.0:*    users:(("python",pid=4113706,fd=5))    
+LISTEN 0      5                       127.0.0.1:36513      0.0.0.0:*    users:(("python",pid=236121,fd=4))     
+LISTEN 0      2048                    127.0.0.1:35887      0.0.0.0:*    users:(("python",pid=4114602,fd=5))    
+LISTEN 0      5                       127.0.0.1:35795      0.0.0.0:*    users:(("python",pid=108526,fd=4))     
+LISTEN 0      5                       127.0.0.1:35237      0.0.0.0:*    users:(("python",pid=4114602,fd=24))   
+LISTEN 0      4096                 100.118.7.29:9470       0.0.0.0:*                                           
+LISTEN 0      100                       0.0.0.0:4000       0.0.0.0:*                                           
+LISTEN 0      4096                    127.0.0.1:631        0.0.0.0:*                                           
+LISTEN 0      4096                 100.118.7.29:8443       0.0.0.0:*                                           
+LISTEN 0      5                       127.0.0.1:32957      0.0.0.0:*    users:(("python",pid=117510,fd=4))     
+LISTEN 0      128                     127.0.0.1:22         0.0.0.0:*                                           
+LISTEN 0      4096                 100.118.7.29:48787      0.0.0.0:*                                           
+LISTEN 0      4096                      0.0.0.0:5355       0.0.0.0:*                                           
+LISTEN 0      5                       127.0.0.1:40475      0.0.0.0:*    users:(("python",pid=4114602,fd=22))   
+LISTEN 0      4096                    127.0.0.1:7456       0.0.0.0:*                                           
+LISTEN 0      4096                127.0.0.53%lo:53         0.0.0.0:*                                           
+LISTEN 0      128                     127.0.0.1:7001       0.0.0.0:*    users:(("nxnode.bin",pid=4262,fd=27))  
+LISTEN 0      2048                    127.0.0.1:6767       0.0.0.0:*    users:(("python",pid=4113253,fd=21))   
+LISTEN 0      5                       127.0.0.1:38817      0.0.0.0:*    users:(("python",pid=4113706,fd=25))   
+LISTEN 0      5                       127.0.0.1:38625      0.0.0.0:*    users:(("python",pid=4114602,fd=28))   
+LISTEN 0      5                       127.0.0.1:38651      0.0.0.0:*    users:(("python",pid=4114602,fd=19))   
+LISTEN 0      5                       127.0.0.1:38641      0.0.0.0:*    users:(("python",pid=4113706,fd=35))   
+LISTEN 0      4096                 100.118.7.29:47086      0.0.0.0:*                                           
+LISTEN 0      128                     127.0.0.1:54689      0.0.0.0:*    users:(("codex",pid=108134,fd=29))     
+LISTEN 0      5                       127.0.0.1:37837      0.0.0.0:*    users:(("python",pid=4114602,fd=25))   
+LISTEN 0      4096                    127.0.0.1:37221      0.0.0.0:*                                           
+LISTEN 0      5                       127.0.0.1:36991      0.0.0.0:*    users:(("python",pid=4113857,fd=4))    
+LISTEN 0      100                     127.0.0.1:20508      0.0.0.0:*                                           
+LISTEN 0      4096   [fd7a:115c:a1e0::d701:7b2]:7456          [::]:*                                           
+LISTEN 0      50                              *:1716             *:*    users:(("kdeconnectd",pid=3928,fd=16)) 
+LISTEN 0      4096   [fd7a:115c:a1e0::d701:7b2]:63298         [::]:*                                           
+LISTEN 0      100                          [::]:4000          [::]:*                                           
+LISTEN 0      4096                        [::1]:631           [::]:*                                           
+LISTEN 0      4096   [fd7a:115c:a1e0::d701:7b2]:48787         [::]:*                                           
+LISTEN 0      128                         [::1]:22            [::]:*                                           
+LISTEN 0      4096   [fd7a:115c:a1e0::d701:7b2]:8443          [::]:*                                           
+LISTEN 0      4096                         [::]:5355          [::]:*                                           
+LISTEN 0      4096                            *:22000            *:*    users:(("syncthing",pid=1879,fd=21))   
+LISTEN 0      4096   [fd7a:115c:a1e0::d701:7b2]:9470          [::]:*                                           
+LISTEN 0      128                         [::1]:7001          [::]:*    users:(("nxnode.bin",pid=4262,fd=26))  

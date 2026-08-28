@@ -1,0 +1,366 @@
+ruff format..............................................................Passed
+ruff check...............................................................Passed
+pyrefly..................................................................Failed
+- hook id: pyrefly
+- exit code: 1
+
+WARN PYTHONPATH environment variable is set to `/home/alex/omnigent-fixes`. Checks in other environments may not include these paths.
+ INFO Checking project configured at `/home/alex/omnigent-fixes/pyrefly.toml`
+ERROR Cannot find module `botocore.config` [missing-import]
+  --> omnigent/llms/adapters/bedrock.py:98:5
+   |
+98 |     from botocore.config import Config
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `boto3` [missing-import]
+   --> omnigent/llms/adapters/bedrock.py:141:16
+    |
+141 |         import boto3
+    |                ^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.sdk._logs.export` [missing-import]
+  --> omnigent/runtime/telemetry.py:43:5
+   |
+43 |     from opentelemetry.sdk._logs.export import LogRecordExporter
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.sdk.metrics.export` [missing-import]
+  --> omnigent/runtime/telemetry.py:44:5
+   |
+44 |     from opentelemetry.sdk.metrics.export import MetricExporter
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.sdk.trace.export` [missing-import]
+  --> omnigent/runtime/telemetry.py:45:5
+   |
+45 |     from opentelemetry.sdk.trace.export import SpanExporter
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.sdk.trace` [missing-import]
+   --> omnigent/runtime/telemetry.py:292:5
+    |
+292 |     from opentelemetry.sdk.trace import SpanProcessor
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.instrumentation.fastapi` [missing-import]
+   --> omnigent/runtime/telemetry.py:388:9
+    |
+388 |         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.instrumentation.httpx` [missing-import]
+   --> omnigent/runtime/telemetry.py:417:9
+    |
+417 |         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.instrumentation.httpx` [missing-import]
+   --> omnigent/runtime/telemetry.py:452:9
+    |
+452 |         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.instrumentation.sqlalchemy` [missing-import]
+   --> omnigent/runtime/telemetry.py:479:9
+    |
+479 |         from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.exporter.otlp.proto.http.trace_exporter` [missing-import]
+   --> omnigent/runtime/telemetry.py:871:9
+    |
+871 | /         from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+872 | |             OTLPSpanExporter as HttpOTLPSpanExporter,
+873 | |         )
+    | |_________^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.exporter.otlp.proto.grpc.trace_exporter` [missing-import]
+   --> omnigent/runtime/telemetry.py:876:5
+    |
+876 | /     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+877 | |         OTLPSpanExporter as GrpcOTLPSpanExporter,
+878 | |     )
+    | |_____^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.exporter.otlp.proto.http.metric_exporter` [missing-import]
+   --> omnigent/runtime/telemetry.py:894:9
+    |
+894 | /         from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
+895 | |             OTLPMetricExporter as HttpOTLPMetricExporter,
+896 | |         )
+    | |_________^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.exporter.otlp.proto.grpc.metric_exporter` [missing-import]
+   --> omnigent/runtime/telemetry.py:899:5
+    |
+899 | /     from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+900 | |         OTLPMetricExporter as GrpcOTLPMetricExporter,
+901 | |     )
+    | |_____^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.sdk.resources` [missing-import]
+   --> omnigent/runtime/telemetry.py:920:13
+    |
+920 |             from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.sdk.trace` [missing-import]
+   --> omnigent/runtime/telemetry.py:921:13
+    |
+921 |             from opentelemetry.sdk.trace import TracerProvider
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.sdk.trace.export` [missing-import]
+   --> omnigent/runtime/telemetry.py:922:13
+    |
+922 |             from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.sdk.metrics` [missing-import]
+   --> omnigent/runtime/telemetry.py:966:9
+    |
+966 |         from opentelemetry.sdk.metrics import MeterProvider
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.sdk.metrics.export` [missing-import]
+   --> omnigent/runtime/telemetry.py:967:9
+    |
+967 |         from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.sdk.resources` [missing-import]
+   --> omnigent/runtime/telemetry.py:968:9
+    |
+968 |         from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.exporter.otlp.proto.http._log_exporter` [missing-import]
+    --> omnigent/runtime/telemetry.py:1013:9
+     |
+1013 | /         from opentelemetry.exporter.otlp.proto.http._log_exporter import (
+1014 | |             OTLPLogExporter as HttpOTLPLogExporter,
+1015 | |         )
+     | |_________^
+     |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.exporter.otlp.proto.grpc._log_exporter` [missing-import]
+    --> omnigent/runtime/telemetry.py:1018:5
+     |
+1018 | /     from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
+1019 | |         OTLPLogExporter as GrpcOTLPLogExporter,
+1020 | |     )
+     | |_____^
+     |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.sdk._logs` [missing-import]
+    --> omnigent/runtime/telemetry.py:1059:9
+     |
+1059 |         from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.sdk._logs.export` [missing-import]
+    --> omnigent/runtime/telemetry.py:1060:9
+     |
+1060 |         from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `opentelemetry.sdk.resources` [missing-import]
+    --> omnigent/runtime/telemetry.py:1061:9
+     |
+1061 |         from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `boto3` [missing-import]
+  --> omnigent/stores/artifact_store/s3.py:42:16
+   |
+42 |         import boto3  # noqa: F401
+   |                ^^^^^
+   |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `boto3` [missing-import]
+   --> omnigent/stores/artifact_store/s3.py:116:12
+    |
+116 |     import boto3
+    |            ^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `botocore.config` [missing-import]
+   --> omnigent/stores/artifact_store/s3.py:117:5
+    |
+117 |     from botocore.config import Config
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `botocore.exceptions` [missing-import]
+   --> omnigent/stores/artifact_store/s3.py:192:9
+    |
+192 |         from botocore.exceptions import ClientError
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `botocore.exceptions` [missing-import]
+   --> omnigent/stores/artifact_store/s3.py:221:9
+    |
+221 |         from botocore.exceptions import ClientError
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `hindsight_client` [missing-import]
+  --> omnigent/tools/builtins/hindsight.py:43:5
+   |
+43 |     from hindsight_client import Hindsight
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `hindsight_client` [missing-import]
+  --> omnigent/tools/builtins/hindsight.py:94:16
+   |
+94 |         import hindsight_client
+   |                ^^^^^^^^^^^^^^^^
+   |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ERROR Cannot find module `nimble_python` [missing-import]
+   --> omnigent/tools/builtins/nimble_research.py:532:9
+    |
+532 | /         from nimble_python import (
+533 | |             APIConnectionError,
+534 | |             APIError,
+535 | |             APIStatusError,
+536 | |             Nimble,
+537 | |         )
+    | |_________^
+    |
+  Looked in these locations (from config in `/home/alex/omnigent-fixes/pyrefly.toml`):
+  Search path (from config file): ["/home/alex/omnigent-fixes"]
+  Site package path queried from interpreter: ["/home/alex/omnigent-fixes", "/home/alex/omnigent-fixes/.venv/lib/python3.12/site-packages", "__editable__.omnigent-0.10.0.finder.__path_hook__", "/home/alex/omnigent-fixes/sdks/python-client", "/home/alex/omnigent-fixes/sdks/ui"]
+ INFO 33 errors (410 suppressed, 195 warnings not shown)
+
+no globally-clobbering asyncio monkeypatch...............................Passed
+no unconditional `@pytest.mark.skip`.....................................Passed
+no new hardcoded LLM model ids...........................................Failed
+- hook id: no-hardcoded-models
+- exit code: 1
+
+loop-fork-real/evidence/iter1/e2e/E2E.json:24: hardcoded model id `openai/gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/E2E.json:37: hardcoded model id `claude-fable-5`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/E2E.json:38: hardcoded model id `claude-fable-5`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/E2E.json:39: hardcoded model id `openai/gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/E2E.json:42: hardcoded model id `claude-fable-5`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/E2E.json:42: hardcoded model id `gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/E2E.json:42: hardcoded model id `openai/gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/E2E.json:42: hardcoded model id `claude-fable-5`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/FAIL413.json:3: hardcoded model id `claude-fable-5`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/FAIL413.json:3: hardcoded model id `gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/e2e/FAIL413.json:3: hardcoded model id `openai/gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/eval-e2e/E2E.json:25: hardcoded model id `openai/gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/eval-e2e/FAIL413.json:3: hardcoded model id `claude-fable-5`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/eval-e2e/FAIL413.json:3: hardcoded model id `gpt-4o-mini`; resolve from the configured provider/model catalog instead
+loop-fork-real/evidence/iter1/eval-e2e/FAIL413.json:3: hardcoded model id `openai/gpt-4o-mini`; resolve from the configured provider/model catalog instead
+
+Avoid adding hardcoded model names outside tests. Unavoidable static aliases belong in complete StaticModelFallback records in omnigent/model_fallbacks.py.
+
+web prettier.........................................(no files to check)Skipped
+web oxlint...........................................(no files to check)Skipped
+web TypeScript type check............................(no files to check)Skipped
+VS Code extension TypeScript type check..............(no files to check)Skipped
+android ktlint format................................(no files to check)Skipped
+android ktlint check.................................(no files to check)Skipped
+web ios swift-format.................................(no files to check)Skipped
+web ios swift format lint............................(no files to check)Skipped
+sync omnigent/version.py to pyproject version........(no files to check)Skipped
+normalize uv.lock registry to pypi.org...............(no files to check)Skipped
+routing protobuf bindings are up to date.............(no files to check)Skipped
+trim trailing whitespace.................................................Passed
+ensure files end with newline............................................Passed
+check yaml syntax....................................(no files to check)Skipped
+check for merge conflicts................................................Passed
+prevent large files......................................................Passed
+check for case conflicts.................................................Passed
+check line endings.......................................................Passed

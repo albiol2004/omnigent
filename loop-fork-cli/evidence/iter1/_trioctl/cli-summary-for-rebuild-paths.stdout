@@ -1,0 +1,19 @@
+🤖 Implemented CLI-first fork compaction with isolated Claude/Codex execution, credential stripping, timeout/error handling, delayed readiness callbacks, and opt-in API fallback. Added fake-CLI integration coverage.
+
+Changed:
+- `omnigent/fork_compact.py`
+- `omnigent/fork_compact_cli.py` — 199 lines
+- `tests/fork_context/test_fork_compact_cli.py`
+- Evidence: `loop-fork-cli/evidence/iter1/cli-summary-for-rebuild-paths/SUMMARY.md`
+
+Verification:
+- Focused pytest: `20 passed in 0.16s`
+- Ruff format/check: passed
+- Required pre-commit: ruff passed; pyrefly and hardcoded-model checks failed on existing repository dependencies/artifacts.
+- No commit or push performed.
+
+Existing concurrent edits, including routing/native files and
+`test_fork_compact_model.py`, were preserved.🤖 No follow-up needed: the initial test attempt failed during concurrent edits, but the final rerun passed all 20 focused tests.
+gs.
+
+No commit, push, stash, reset, rebase, checkout, or mailbox/native-file edits were performed.

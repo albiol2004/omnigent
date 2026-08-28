@@ -1,0 +1,13 @@
+{
+  "fork_status": 201,
+  "fork_id": "ba377ee2996544b1b68985942300c9ec",
+  "wall_ms": 44468,
+  "fork_item_count": 10,
+  "bytes_after": 19789,
+  "summary_len": 7212,
+  "resolved_model": "claude-cli/fable",
+  "has_compaction": true,
+  "token_count": 2079,
+  "argv": ["claude", "-p", "--model", "fable", "--output-format", "json", "--safe-mode", "--strict-mcp-config", "--mcp-config", "<scratch/empty-mcp.json>", "--no-session-persistence", "-"],
+  "prompt": "stdin (not argv); E2BIG was the first e2e failure"
+}

@@ -1,0 +1,50 @@
+{
+  "port": 17911,
+  "scratch": "/tmp/fork-cli-e2e-iter1",
+  "source_jsonl_bytes": 1328243,
+  "isolation_before": {
+    "6767": 200,
+    "config_mtime": 1784710969.9506998,
+    "chat_db_mtime": 1787945141.763479,
+    "projects_count": 1958
+  },
+  "copy_counts": {
+    "users": 1,
+    "agents_58a1bc5b": 1,
+    "agents_16a06503": 1,
+    "conversations": 1,
+    "metadata": 1,
+    "kept_external": 1,
+    "labels": 10,
+    "items": 644,
+    "permissions": 1,
+    "files": 1
+  },
+  "file_blobs": 1,
+  "a_wall_s": 0.119,
+  "a_status": 201,
+  "a_fork_id": "c9d2d0e10cff483f9cf29a59f1faa028",
+  "a_has_compaction": false,
+  "a_item_count": 0,
+  "a_clone_path": "/tmp/fork-cli-e2e-iter1/claude-projects/-home-alex-omnigent/22222222-2222-2222-2222-222222222222.jsonl",
+  "a_clone_bytes": 1330139,
+  "a_resume": [
+    "claude",
+    "--resume",
+    "22222222-2222-2222-2222-222222222222"
+  ],
+  "b_wall_s": 1.946,
+  "b_status": 413,
+  "b_api_hits": [],
+  "c_status": 413,
+  "c_body": "{\"error\":{\"code\":\"fork_context_too_large\",\"message\":\"Fork context too large: 892544 bytes exceeds threshold 600000 bytes (OMNIGENT_FORK_MAX_CONTEXT_BYTES).; compaction failed: No fork compaction CLI succeeded; OMNIGENT_FORK_COMPACT_ALLOW_API=1 is required for API fallback; tried: env model=<unset> -> skipped (empty); source_override model=fable -> claude CLI not found for model 'fable'; target_spec model=<unset> -> skipped (empty); source_spec model=<unset> -> skipped (empty)\"}}",
+  "c_in_progress": false,
+  "c_names_cli": true,
+  "isolation_after": {
+    "6767": 200,
+    "config_mtime": 1784710969.9506998,
+    "chat_db_mtime": 1787945141.763479,
+    "projects_count": 1958
+  },
+  "isolation_ok": true
+}

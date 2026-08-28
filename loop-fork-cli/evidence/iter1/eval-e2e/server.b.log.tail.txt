@@ -1,0 +1,10 @@
+Starting omnigent server on 127.0.0.1:17951
+  database:  sqlite:////tmp/fork-cli-eval-iter1/data/chat.db
+  artifacts: /tmp/fork-cli-eval-iter1/data/artifacts
+  log:       /tmp/fork-cli-eval-iter1/data/logs/server/server-20260828-225559-606479.log
+  ⚠ web UI not built — serving API only. Run `pnpm install --frozen-lockfile --filter web && pnpm --filter web run build`, then restart (or install a release wheel/image).
+Starting omnigent server on 127.0.0.1:17951
+  database:  sqlite:////tmp/fork-cli-eval-iter1/data/chat.db
+  artifacts: /tmp/fork-cli-eval-iter1/data/artifacts
+  log:       /tmp/fork-cli-eval-iter1/data/logs/server/server-20260828-225601-445835.log
+  ⚠ web UI not built — serving API only. Run `pnpm install --frozen-lockfile --filter web && pnpm --filter web run build`, then restart (or install a release wheel/image).

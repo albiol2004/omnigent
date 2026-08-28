@@ -1,0 +1,38 @@
+🤖 The native fork passthrough slice is implemented. Same-family Claude/Codex native forks
+now skip preflight compaction under the required conditions; SDK and cross-family paths retain
+the existing guard behavior.
+
+Clone helpers now support environment-controlled guarding, with regression coverage for
+passthrough, guarded rebuilds, and compact-boundary trimming.
+
+Changed:
+- `omnigent/server/routes/sessions/routes_core.py`
+- `omnigent/claude_native.py`
+- `omnigent/codex_native.py`
+- `omnigent/fork_context.py`
+- Focused fork tests under `tests/`
+- Evidence under `loop-fork-cli/evidence/iter1/native-fork-passthrough/`
+
+Verification:
+- Focused pytest: `268 passed, 1 warning`
+- Ruff format: passed
+- Ruff check: passed
+- `git diff --check`: passed
+- Pre-commit overall: failed only on unrelated Pyrefly missing optional
+  dependencies and existing `loop-fork-real` hardcoded model evidence.
+
+No commit or push was performed. To reproduce:
+
+```bash
+uv run pytest -q tests/server/routes/test_fork_oversize_guard.py \
+  tests/server/routes/test_fork_compact.py \
+  tests/runner/test_fork_clone_fallback.py \
+  tests/runner/test_fork_context_guard.py \
+  tests/runner/test_fork_resume_oversize_guard.py \
+  tests/test_claude_native_bridge.py
+```🤖 The required focused test suites completed successfully; the final run reported
+268 passed with one warning.
+
+Pre-commit remains non-zero due to unrelated missing optional dependencies in Pyrefly
+and existing `loop-fork-real` evidence files. No follow-up code changes are needed;
+the results are recorded in the slice evidence directory.

@@ -1,0 +1,32 @@
+2026-08-28T19:19:30.441634Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 268 items in this shard
+........................................................................ [ 26%]
+........................................................................ [ 53%]
+........................................................................ [ 80%]
+....................................................                     [100%]
+=============================== warnings summary ===============================
+tests/server/routes/test_fork_oversize_guard.py:5
+  /home/alex/omnigent-fixes/tests/server/routes/test_fork_oversize_guard.py:5: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================= Top tests by peak-RSS delta ==========================
++  150.7 MB  (now    150.7 MB)  tests/server/routes/test_fork_oversize_guard.py::test_fork_refuses_oversized_history_before_store_fork
++   31.2 MB  (now    193.3 MB)  tests/server/routes/test_fork_compact.py::test_oversized_fork_uses_compacted_replacement_items
++    3.1 MB  (now    201.4 MB)  tests/runner/test_fork_context_guard.py::test_summary_only_compaction_is_measured_again
++    2.8 MB  (now    153.5 MB)  tests/server/routes/test_fork_oversize_guard.py::test_same_family_native_clone_skips_preflight_compaction
++    2.6 MB  (now    161.0 MB)  tests/server/routes/test_fork_oversize_guard.py::test_fork_keeps_small_history_unchanged
++    2.4 MB  (now    156.0 MB)  tests/server/routes/test_fork_oversize_guard.py::test_sdk_source_external_id_keeps_preflight_guard
++    2.4 MB  (now    158.4 MB)  tests/server/routes/test_fork_oversize_guard.py::test_fork_allows_summary_only_compaction
++    2.1 MB  (now    196.1 MB)  tests/server/routes/test_fork_compact.py::test_oversized_fork_keeps_recent_assistant_tail_verbatim
++    1.4 MB  (now    202.8 MB)  tests/test_claude_native_bridge.py::test_channel_server_relays_active_omnigent_tools
++    1.1 MB  (now    162.2 MB)  tests/server/routes/test_fork_oversize_guard.py::test_fork_paginates_source_history_before_measurement
++    1.1 MB  (now    197.2 MB)  tests/server/routes/test_fork_compact.py::test_summary_failure_keeps_original_413_and_source
++    0.6 MB  (now    193.9 MB)  tests/server/routes/test_fork_compact.py::test_rendered_claude_size_triggers_compaction
++    0.6 MB  (now    197.8 MB)  tests/server/routes/test_fork_compact.py::test_compaction_resolve_failure_does_not_publish_in_progress
++    0.5 MB  (now    198.3 MB)  tests/runner/test_fork_clone_fallback.py::test_claude_fork_clone_oversize_rebuilds_from_items[clone-passthrough]
++    0.2 MB  (now    203.0 MB)  tests/test_claude_native_bridge.py::test_read_user_effort_level_returns_configured_level[medium]
+================================== slow tests ==================================
+[slow] 25.92s tests/test_claude_native_bridge.py::test_curl_evaluate_policy_command_round_trips
+[slow] 1.80s tests/test_claude_native_bridge.py::test_hook_evaluate_endpoint_fails_closed_on_unreachable_upstream
+268 passed, 1 warning in 39.73s

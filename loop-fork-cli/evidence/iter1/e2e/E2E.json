@@ -1,0 +1,25 @@
+{
+  "native": {
+    "http": 201,
+    "wall_ms": 110,
+    "bytes_before": 1028488,
+    "fork_items": 644,
+    "compaction": false,
+    "clone_bytes": 1341194,
+    "resume_argv": ["claude", "--resume", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]
+  },
+  "missing_cli": {
+    "http": 413,
+    "names_claude_cli_not_found": true,
+    "in_progress": false
+  },
+  "rebuild_cli_summary": {
+    "http": 201,
+    "wall_ms": 44468,
+    "bytes_after": 19789,
+    "summary_len": 7212,
+    "model": "claude-cli/fable",
+    "fork_items": 10
+  },
+  "source_rows_byte_identical": true
+}

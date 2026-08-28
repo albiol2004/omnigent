@@ -1,0 +1,2 @@
+413
+{"error":{"code":"fork_context_too_large","message":"Fork context too large: 911126 bytes exceeds threshold 600000 bytes (OMNIGENT_FORK_MAX_CONTEXT_BYTES).; compaction failed: No fork compaction CLI succeeded; OMNIGENT_FORK_COMPACT_ALLOW_API=1 is required for API fallback; tried: env model=<unset> -> skipped (empty); source_override model=opus -> claude CLI not found for model 'opus'; target_spec model=<unset> -> skipped (empty); source_spec model=<unset> -> skipped (empty)"}}

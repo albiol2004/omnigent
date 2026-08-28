@@ -1,7 +1,8 @@
 {
   "driver": "claude-code",
   "session": "f4bd03c9-3c11-46fd-b0df-fdc7952301c2",
-  "phase":"lead",
+  "phase": "lead-done",
   "pid": null,
-  "started_at": "2026-08-28T18:55:00Z"
+  "started_at": "2026-08-28T18:55:00Z",
+  "done": false
 }

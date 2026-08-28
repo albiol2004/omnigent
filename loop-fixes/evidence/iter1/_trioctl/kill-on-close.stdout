@@ -1,0 +1,19 @@
+🤖 Implemented the kill-on-close slice.
+
+Changed:
+- Target-only best-effort stop event before REST tombstone.
+- Claude stop now cancels its transcript forwarder.
+- tmux kill verifies pane PID and escalates via safe `_killpg` with bounded wait.
+- Added regression tests and evidence:
+  - `loop-fixes/evidence/iter1/kill-on-close/fake_tmux_kill.py`
+  - `loop-fixes/evidence/iter1/kill-on-close/pytest.log`
+
+Verification:
+- Required pytest selection: **487 passed, 9 skipped**.
+- Trio compatibility tests: **5 passed**.
+- Fake tmux evidence: passed; SIGKILL escalation and own-PGID refusal confirmed.
+- Ruff format/check: passed.
+- Pre-commit: all hooks passed except Pyrefly, which reports 6 errors in unrelated concurrent edits. `SKIP=pyrefly` passes all remaining hooks.
+
+No commit or push performed.🤖 The background test tasks ended with errors because they were interrupted after timing out. Follow-up isolated verification already passed: **487 passed, 9 skipped**, plus **5 Trio-compatibility tests passed**. No further action is needed.
+EXIT:0

@@ -1,0 +1,6 @@
+cursor defaults: fast=0.150s idle=0.700s
+claude defaults: fast=0.100s idle=0.250s
+cursor idle/fast delay ratio: 4.67x
+claude idle/fast delay ratio: 2.50x
+cursor 1M alternating interval selections: 46.54ms
+claude 1M alternating interval selections: 45.49ms

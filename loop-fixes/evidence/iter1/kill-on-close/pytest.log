@@ -1,0 +1,12 @@
+Kill-on-close verification ran with a clean scratch HOME, data directory,
+transcript directory, and RUNNER_SERVER_URL on port 17000.
+
+Command:
+  uv run pytest -q tests/runner/test_runner_dispatch.py
+    tests/runner/test_native_interrupt_runner.py
+    tests/test_claude_native_bridge.py
+    tests/inner/test_proc_and_platform.py
+    tests/tools/builtins/test_sys_session.py
+
+Result:
+  487 passed, 9 skipped in 88.77s (0:01:28)

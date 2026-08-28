@@ -1,0 +1,21 @@
+🤖 Implemented the fork oversize guard slice.
+
+The implementation adds a 600,000-byte env-overridable limit, summary-only compaction retry, full pagination, and clear 413/error handling across route, native, and SDK fork paths.
+
+Changed paths:
+- `omnigent/fork_context.py`
+- Fork route, native harness, SDK executor, and error handling modules
+- `README.md`
+- Three focused test files under `tests/`
+- `loop-fixes/evidence/iter1/fork-oversize-guard/`
+
+Verification:
+- Focused tests: **12 passed**, 1 existing deprecation warning.
+- Native compaction smoke test: **passed**.
+- Evidence: 3,907,941-byte fixture refused; compacted payload measured 134 bytes; oversized compacted payload refused at 600,093 bytes.
+- `uv run pre-commit run --files ...`: **all checks passed**.
+- `git diff --check`: **passed**.
+- Required broad suite was blocked by an environment-level pytest file-descriptor teardown error (`Errno 9/22`), without a code assertion failure.
+
+No commits or pushes were made. Unrelated existing worktree changes were preserved.
+EXIT:0

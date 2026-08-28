@@ -1,1 +1,2 @@
 - iter 0 | coordinator | fix mailbox initialized in worktree /home/alex/omnigent-fixes (branch trio-v0.10.0-fixes, base dadaa04d5)
+- iter 1 | lead | four slices committed (sqlite QueuePool, kill-on-close, fork 413, render rAF); shadow gate pass

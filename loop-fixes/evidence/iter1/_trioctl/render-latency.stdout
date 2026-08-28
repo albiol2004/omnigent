@@ -1,0 +1,28 @@
+🤖 Implemented the render-latency slice without committing or pushing.
+
+Changed:
+- Adaptive Cursor polling: 0.15s active, 0.7s idle, environment-overridable.
+- Adaptive Claude polling: 0.1s active, 0.25s idle.
+- Claude delta batching per message and poll.
+- UI live-delta coalescing per animation frame.
+- Added regression tests and README configuration notes.
+- Added evidence under `loop-fixes/evidence/iter1/render-latency/`.
+
+Verification:
+- Python tests: **251 passed in 28.00s**
+- Vitest: **352 passed**
+- Targeted Ruff, Prettier, TypeScript, Oxlint, Pyrefly: **passed**
+- `git diff --check`: **passed**
+
+Concern:
+- Aggregate pre-commit remains blocked by unrelated existing Pyrefly and web Oxlint errors outside this slice. No live TUI, server, or external user directories were accessed.
+
+Re-run with:
+
+```bash
+uv run pytest -q tests/test_cursor_native_forwarder.py \
+  tests/test_claude_native_forwarder.py tests/test_qwen_native_forwarder.py
+
+cd web && npm test -- --run src/store/chatStore.test.ts
+```
+EXIT:0

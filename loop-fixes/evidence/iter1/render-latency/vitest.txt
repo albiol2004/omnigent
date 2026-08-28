@@ -1,0 +1,17 @@
+
+> web@0.0.0 test
+> vitest run --run src/store/chatStore.test.ts
+
+[dev-proxy] target=http://localhost:6767
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - `__dirname` (vite.config.ts:186:43). Use `import.meta.dirname` instead
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v4.1.11 /home/alex/omnigent-fixes/web
+
+
+ Test Files  1 passed (1)
+      Tests  352 passed (352)
+   Start at  23:41:11
+   Duration  1.86s (transform 643ms, setup 73ms, import 795ms, tests 499ms, environment 397ms)
+

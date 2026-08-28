@@ -1,0 +1,8 @@
+2026-08-28T07:05:48.840026Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 3 items in this shard
+...                                                                      [100%]
+========================= Top tests by peak-RSS delta ==========================
++  112.1 MB  (now    112.1 MB)  tests/db/test_sqlite_pool_concurrency.py::test_sqlite_pool_handles_concurrent_checkouts
++    0.8 MB  (now    112.9 MB)  tests/db/test_utils.py::test_sqlite_engine_uses_pool_settings_and_enables_wal
++    0.8 MB  (now    113.6 MB)  tests/db/test_utils.py::test_sqlite_engine_honors_pool_environment_overrides
+3 passed in 0.16s

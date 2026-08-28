@@ -1,0 +1,61 @@
+/home/alex/omnigent-fixes/tests/server/routes/test_fork_compact.py:9: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient
+{
+  "scratch": "/tmp/hotfix3-eval-qsb1m7w0",
+  "port": 17621,
+  "timing": {
+    "raw_api_bytes": 471821,
+    "rendered_estimate_bytes": 667830,
+    "estimate_raw_ratio": 1.415,
+    "render_ms": 8.58,
+    "item_count": 496
+  },
+  "harness_map": {
+    "claude-native": "renderer",
+    "claude-sdk": "renderer",
+    "codex-native": "renderer",
+    "pi-native": "renderer",
+    "cursor-native": "1.8x",
+    "omnigent": "1.8x",
+    "antigravity-native": "1.8x",
+    "qwen-native": "1.8x"
+  },
+  "compact_disabled": {
+    "status": 413,
+    "body": {
+      "error": {
+        "code": "fork_context_too_large",
+        "message": "Fork context too large: 667830 bytes exceeds threshold 600000 bytes (OMNIGENT_FORK_MAX_CONTEXT_BYTES)."
+      }
+    }
+  },
+  "fork": {
+    "status": 201,
+    "id": "c538360473d41c84c1eee13918fbeca0",
+    "compaction_items": 1
+  },
+  "post_compact": {
+    "item_count": 19,
+    "rendered_estimate": 25735,
+    "jsonl_bytes": 25735
+  },
+  "launch": {
+    "resume": true,
+    "args_head": [
+      "--resume",
+      "b6337162-ecc8-44b6-bc49-af1f518e8c3e",
+      "--mcp-config"
+    ],
+    "dest_bytes": 25895,
+    "dest": "/tmp/hotfix3-eval-qsb1m7w0/claude-projects/-tmp-hotfix3-eval-qsb1m7w0-workspace/b6337162-ecc8-44b6-bc49-af1f518e8c3e.jsonl"
+  },
+  "small_fork": {
+    "status": 201,
+    "item_ids": [
+      "item_1"
+    ],
+    "equal": true
+  },
+  "runner_413_message": "Fork context too large: 1 bytes exceeds threshold 1 bytes (OMNIGENT_FORK_MAX_CONTEXT_BYTES). (server did not compact the fork context)",
+  "ok": true
+}

@@ -1,0 +1,24 @@
+2026-08-28T17:56:21.086829Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 266 items in this shard
+........................................................................ [ 27%]
+........................................................................ [ 54%]
+........................................................................ [ 81%]
+..................................................                       [100%]
+=============================== warnings summary ===============================
+tests/server/routes/test_fork_compact.py:9
+  /home/alex/omnigent-fixes/tests/server/routes/test_fork_compact.py:9: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================= Top tests by peak-RSS delta ==========================
++  197.0 MB  (now    197.0 MB)  tests/server/routes/test_fork_compact.py::test_oversized_fork_uses_compacted_replacement_items
++    3.6 MB  (now    205.6 MB)  tests/test_claude_native_bridge.py::test_relay_close_keeps_advertisement_owned_by_newer_relay
++    1.7 MB  (now    202.0 MB)  tests/test_claude_native_bridge.py::test_channel_server_relays_active_omnigent_tools
++    1.7 MB  (now    200.1 MB)  tests/runner/test_fork_clone_fallback.py::test_claude_fork_clone_oversize_rebuilds_from_items[rebuilds]
++    0.9 MB  (now    198.4 MB)  tests/server/routes/test_fork_oversize_guard.py::test_fork_paginates_source_history_before_measurement
++    0.5 MB  (now    197.5 MB)  tests/server/routes/test_fork_compact.py::test_summary_failure_keeps_original_413_and_source
++    0.2 MB  (now    200.3 MB)  tests/test_claude_native_bridge.py::test_trusted_parent_accepts_qwen_native_bridge_dir
+================================== slow tests ==================================
+[slow] 25.92s tests/test_claude_native_bridge.py::test_curl_evaluate_policy_command_round_trips
+[slow] 1.80s tests/test_claude_native_bridge.py::test_hook_evaluate_endpoint_fails_closed_on_unreachable_upstream
+266 passed, 1 warning in 39.15s

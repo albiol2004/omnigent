@@ -1,0 +1,10 @@
+2026-08-28T17:57:24.396331Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 5 items in this shard
+.....                                                                    [100%]
+========================= Top tests by peak-RSS delta ==========================
++  139.0 MB  (now    139.0 MB)  tests/tools/builtins/test_spawn.py::test_session_create_reasoning_effort_present_and_optional
++   35.1 MB  (now    174.3 MB)  tests/server/integration/test_sessions_child_sessions.py::test_registered_native_agent_create_derives_launch_args_from_root_spec[claude-native-root_config0-expected_args0]
++   13.3 MB  (now    187.6 MB)  tests/server/integration/test_sessions_child_sessions.py::test_registered_native_agent_create_derives_launch_args_from_root_spec[codex-native-root_config1-expected_args1]
++    2.2 MB  (now    189.9 MB)  tests/server/integration/test_sessions_child_sessions.py::test_registered_native_agent_create_derives_launch_args_from_root_spec[cursor-native-root_config2-expected_args2]
++    0.2 MB  (now    139.2 MB)  tests/runner/test_runner_dispatch.py::test_sys_session_create_spawns_child_under_caller
+5 passed, 250 deselected in 2.50s

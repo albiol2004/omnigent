@@ -1,0 +1,5 @@
+claude-native: renderer=yes bytes=296
+claude-sdk: renderer=yes bytes=296
+codex-native: renderer=yes bytes=793
+pi-native: renderer=yes bytes=324
+omnigent: renderer=fallback bytes=224

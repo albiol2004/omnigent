@@ -538,11 +538,20 @@ def _run_tmux(socket_path: str, *args: str) -> None:
         raise RuntimeError(f"tmux command failed (rc={proc.returncode}): {detail}")
 
 
-def _capture_pane(socket_path: str, tmux_target: str) -> str:
-    """Capture the visible pane contents; ``""`` on any failure (treat as not-ready)."""
+def _capture_pane(
+    socket_path: str,
+    tmux_target: str,
+    *,
+    include_escape_sequences: bool = False,
+) -> str:
+    """Capture the visible pane contents; ``""`` on any failure."""
+    capture_args = ["capture-pane"]
+    if include_escape_sequences:
+        capture_args.append("-e")
+    capture_args.extend(["-p", "-t", tmux_target])
     try:
         proc = subprocess.run(
-            ["tmux", "-S", socket_path, "capture-pane", "-p", "-t", tmux_target],
+            ["tmux", "-S", socket_path, *capture_args],
             check=False,
             capture_output=True,
             text=True,
@@ -606,6 +615,21 @@ def capture_cursor_pane(bridge_dir: Path) -> str | None:
     if not _session_alive(socket_path, tmux_target):
         return None
     return _capture_pane(socket_path, tmux_target)
+
+
+def capture_cursor_pane_for_stream(bridge_dir: Path) -> str | None:
+    """Return a raw pane snapshot for Cursor assistant-text streaming."""
+    info = read_tmux_info(bridge_dir)
+    if info is None:
+        return None
+    socket_path, tmux_target = info["socket_path"], info["tmux_target"]
+    if not _session_alive(socket_path, tmux_target):
+        return None
+    return _capture_pane(
+        socket_path,
+        tmux_target,
+        include_escape_sequences=True,
+    )
 
 
 def send_cursor_pane_keys(bridge_dir: Path, *keys: str) -> None:

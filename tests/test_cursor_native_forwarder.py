@@ -1293,3 +1293,171 @@ async def test_persist_native_compaction_item_no_store_skips_messages() -> None:
     assert body["type"] == "compaction"
     assert body["data"]["last_item_id"] == "item_abc"
     assert "compacted_messages" not in body["data"]
+
+
+async def _run_cursor_stream_loop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    read_items,
+    delta_posts: list[dict],
+    item_posts: list[fwd._MirrorItem],
+) -> None:
+    """Run the cursor loop with fake pane and store sources."""
+    store = tmp_path / "store.db"
+    store.touch()
+    bridge_dir = tmp_path / "cursor-native" / "stream"
+    bridge_dir.mkdir(parents=True)
+
+    async def _delta_post(
+        client: object,
+        *,
+        session_id: str,
+        delta: str,
+        message_id: str,
+        index: int,
+        final: bool,
+    ) -> None:
+        del client, session_id
+        delta_posts.append(
+            {
+                "delta": delta,
+                "message_id": message_id,
+                "index": index,
+                "final": final,
+            }
+        )
+
+    async def _item_post(client: object, *, session_id: str, item: fwd._MirrorItem) -> None:
+        del client, session_id
+        item_posts.append(item)
+
+    monkeypatch.setattr(fwd, "_discover_store", lambda *args: store)
+    monkeypatch.setattr(fwd, "_chat_claimed_by_other", lambda *args: False)
+    monkeypatch.setattr(fwd, "_patch_external_session_id", AsyncMock())
+    monkeypatch.setattr(fwd, "_post_external_output_text_delta", _delta_post)
+    monkeypatch.setattr(fwd, "_post_conversation_item", _item_post)
+    monkeypatch.setattr(fwd, "_read_new_items", read_items)
+
+    task = asyncio.create_task(
+        fwd.forward_cursor_store_to_session(
+            base_url="http://test",
+            headers={},
+            session_id="conv_stream",
+            bridge_dir=bridge_dir,
+            agent_name="cursor-native-ui",
+            workspace="/ws",
+            launch_epoch_ms=1_000,
+            poll_interval_s=0.001,
+        )
+    )
+    try:
+        for _ in range(2000):
+            if item_posts:
+                return
+            await asyncio.sleep(0.001)
+        raise AssertionError("cursor stream loop never posted the complete item")
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cursor_stream_env_off_skips_pane_deltas_but_posts_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The opt-out preserves complete-item mirroring and avoids pane sampling."""
+    monkeypatch.setenv("OMNIGENT_CURSOR_STREAM", "0")
+    pane_calls = 0
+    complete = fwd._MirrorItem(
+        rowid=1,
+        item_type="message",
+        item_data={
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "complete"}],
+        },
+        response_id="cursor:assistant",
+    )
+
+    def _capture(_bridge: Path) -> str:
+        nonlocal pane_calls
+        pane_calls += 1
+        return "  🤖 should not be sampled\n ⠼ Working"
+
+    read_calls = 0
+
+    def _read(*args) -> list[fwd._MirrorItem]:
+        nonlocal read_calls
+        read_calls += 1
+        return [complete] if read_calls > 1 else []
+
+    delta_posts: list[dict] = []
+    item_posts: list[fwd._MirrorItem] = []
+    monkeypatch.setattr(fwd, "capture_cursor_pane_for_stream", _capture)
+    await _run_cursor_stream_loop(
+        monkeypatch,
+        tmp_path,
+        read_items=_read,
+        delta_posts=delta_posts,
+        item_posts=item_posts,
+    )
+
+    assert pane_calls == 0
+    assert delta_posts == []
+    assert item_posts == [complete]
+
+
+@pytest.mark.asyncio
+async def test_cursor_stream_posts_deltas_before_complete_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pane growth is streamed, then the existing complete item is posted."""
+    monkeypatch.setenv("OMNIGENT_CURSOR_STREAM", "1")
+    frames = iter(
+        [
+            "  🤖 Hello\n\n ⠼ Working 1 token",
+            "  🤖 Hello world\n\n ⠼ Working 2 tokens",
+        ]
+    )
+    complete = fwd._MirrorItem(
+        rowid=1,
+        item_type="message",
+        item_data={
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Hello world"}],
+        },
+        response_id="cursor:assistant",
+    )
+    delta_posts: list[dict] = []
+    item_posts: list[fwd._MirrorItem] = []
+
+    def _capture(_bridge: Path) -> str:
+        return next(frames, "  🤖 Hello world\n\n ⠼ Working 2 tokens")
+
+    def _read(*args) -> list[fwd._MirrorItem]:
+        return [complete] if len(delta_posts) >= 2 else []
+
+    monkeypatch.setattr(fwd, "capture_cursor_pane_for_stream", _capture)
+    await _run_cursor_stream_loop(
+        monkeypatch,
+        tmp_path,
+        read_items=_read,
+        delta_posts=delta_posts,
+        item_posts=item_posts,
+    )
+
+    assert delta_posts == [
+        {
+            "delta": "Hello",
+            "message_id": "cursor-live-conv_stream",
+            "index": 0,
+            "final": False,
+        },
+        {
+            "delta": " world",
+            "message_id": "cursor-live-conv_stream",
+            "index": 1,
+            "final": False,
+        },
+    ]
+    assert item_posts == [complete]

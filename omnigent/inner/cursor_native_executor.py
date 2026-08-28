@@ -5,7 +5,8 @@ launched the interactive TUI in the session terminal. Each web-UI turn injects
 the latest user message into that same tmux pane (bracketed paste + Enter), so
 the message appears in the running Cursor TUI (and, since the web UI embeds the
 pane, in both surfaces). Output is terminal-originated; the embedded terminal
-renders it live.
+renders it live, while the runner-side forwarder may publish transient pane
+live-deltas.
 """
 
 from __future__ import annotations
@@ -42,7 +43,8 @@ class CursorNativeExecutor(Executor):
     """Harness-side executor for ``omnigent cursor`` web-UI turns.
 
     Injects each web-UI message into the running Cursor TUI's tmux pane. Does not
-    stream output (the embedded terminal shows it); accepts mid-turn steering.
+    stream output itself (the forwarder publishes pane live-deltas); accepts
+    mid-turn steering.
 
     :param bridge_dir: Optional bridge dir override; ``None`` reads
         :data:`BRIDGE_DIR_ENV_VAR` from the harness spawn env.

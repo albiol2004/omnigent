@@ -17,6 +17,7 @@ from pathlib import Path
 
 import httpx
 
+from omnigent._native_output_text_delta import post_external_output_text_delta
 from omnigent._native_post_delivery import (
     append_dead_letter,
     post_external_session_status,
@@ -4031,19 +4032,14 @@ async def _post_external_output_text_delta(
     :returns: None.
     :raises httpx.HTTPError: If the Omnigent request fails or is rejected.
     """
-    resp = await client.post(
-        f"/v1/sessions/{session_id}/events",
-        json={
-            "type": "external_output_text_delta",
-            "data": {
-                "delta": delta.delta,
-                "message_id": delta.message_id,
-                "index": delta.index,
-                "final": delta.final,
-            },
-        },
+    await post_external_output_text_delta(
+        client,
+        session_id=session_id,
+        delta=delta.delta,
+        message_id=delta.message_id,
+        index=delta.index,
+        final=delta.final,
     )
-    resp.raise_for_status()
 
 
 def _coalesce_deltas(deltas: list[ClaudeMessageDelta]) -> list[ClaudeMessageDelta]:

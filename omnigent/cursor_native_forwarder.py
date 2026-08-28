@@ -50,8 +50,16 @@ from typing import cast
 import httpx
 
 from omnigent import cursor_native_status
+from omnigent._native_output_text_delta import (
+    post_external_output_text_delta as _post_external_output_text_delta,
+)
 from omnigent._native_post_delivery import post_may_have_been_delivered
-from omnigent.cursor_native_bridge import FORK_HISTORY_CLOSE_TAG, FORK_HISTORY_OPEN_TAG
+from omnigent.cursor_native_bridge import (
+    FORK_HISTORY_CLOSE_TAG,
+    FORK_HISTORY_OPEN_TAG,
+    capture_cursor_pane_for_stream,
+)
+from omnigent.cursor_native_stream import CursorNativeStream, pane_is_working
 from omnigent.inner.native_attachments import ATTACHMENT_MARKER_STRIP_PATTERN
 
 _logger = logging.getLogger(__name__)
@@ -63,6 +71,11 @@ _DEFAULT_IDLE_POLL_INTERVAL_S = 0.7
 # Keep the old name available for callers that imported this private constant.
 _DEFAULT_POLL_INTERVAL_S = _DEFAULT_IDLE_POLL_INTERVAL_S
 _POST_TIMEOUT_S = 30.0
+
+
+def _cursor_stream_enabled() -> bool:
+    """Return whether transient Cursor pane streaming is enabled."""
+    return os.getenv("OMNIGENT_CURSOR_STREAM", "1") != "0"
 
 
 def _poll_interval_from_env(name: str, default: float) -> float:
@@ -956,6 +969,7 @@ async def forward_cursor_store_to_session(
     # so the cold-resume path can pass ``--resume <chatId>`` to cursor-agent.
     chat_id_patched = False
     model_state = _ModelMirrorState()
+    live_stream = CursorNativeStream(session_id)
     fast_poll_interval_s, idle_poll_interval_s = _configured_poll_intervals(poll_interval_s)
     timeout = httpx.Timeout(_POST_TIMEOUT_S)
     async with httpx.AsyncClient(
@@ -1041,10 +1055,41 @@ async def forward_cursor_store_to_session(
                         )
                         store_path = None
                     else:
+                        if _cursor_stream_enabled():
+                            pane = await asyncio.to_thread(
+                                capture_cursor_pane_for_stream,
+                                bridge_dir,
+                            )
+                            # Stay on the fast cadence while Cursor is
+                            # generating, even between suffix-less frames.
+                            if pane and pane_is_working(pane):
+                                has_new_output = True
+                                delta = live_stream.observe(pane)
+                                if delta is not None:
+                                    try:
+                                        await _post_external_output_text_delta(
+                                            client,
+                                            session_id=session_id,
+                                            delta=delta.delta,
+                                            message_id=delta.message_id,
+                                            index=delta.index,
+                                            final=delta.final,
+                                        )
+                                    except httpx.HTTPError:
+                                        live_stream.rewind(delta)
+                                        _logger.debug(
+                                            "Retrying cursor streamed delta after "
+                                            "HTTP failure; session=%s message_id=%s "
+                                            "index=%s",
+                                            session_id,
+                                            delta.message_id,
+                                            delta.index,
+                                            exc_info=True,
+                                        )
                         items = await asyncio.to_thread(
                             _read_new_items, store_path, last_rowid, agent_name
                         )
-                        has_new_output = bool(items)
+                        has_new_output = has_new_output or bool(items)
                         for item in items:
                             if item.item_type == "compaction_completed":
                                 # cursor finished /summarize: tell the web UI so
@@ -1162,6 +1207,8 @@ async def forward_cursor_store_to_session(
                                             exc_info=True,
                                         )
                                         break
+                                if item.item_data.get("role") == "assistant":
+                                    live_stream.reset()
                             # Reached on a successful post, an ambiguous-delivery
                             # skip, a quarantine, or a non-posted sentinel row:
                             # advance past this item and reset the failure counter.

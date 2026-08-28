@@ -5105,23 +5105,20 @@ def _publish_error_event(session_id: str, error: ErrorData) -> None:
     session_stream.publish(session_id, event.model_dump())
 
 
-#: Error code for a model change the terminal never applied.
-_MODEL_CHANGE_NOT_APPLIED_CODE = "model_change_not_applied"
-
-
 def _surface_model_change_forward_failure(
     session_id: str,
     model: str | None,
     runner_result: _RunnerForwardResult | None,
 ) -> None:
     """
-    Publish a visible notice when a native pane never took a model change.
+    Log when a native pane never took a model change.
 
     A PATCH persists ``model_override`` and then forwards the change to the
     runner, which types ``/model`` into the terminal. On a native terminal that
     injection is the ONLY thing that moves the model, so a dropped forward left
-    the row (and the picker) claiming a model the pane was never on, silently.
-    This does not roll the row back — it makes the divergence visible.
+    the row (and the picker) claiming a model the pane was never on.
+    This does not roll the row back — the persisted value is still the
+    authoritative value for the next launch.
 
     Call only for native terminal sessions: every other harness re-reads the
     persisted value at its next turn boundary, so a dropped forward there is
@@ -5156,18 +5153,9 @@ def _surface_model_change_forward_failure(
         reason,
         runner_result.body,
     )
-    target = model or "its default model"
-    _publish_error_event(
-        session_id,
-        ErrorData(
-            source="execution",
-            code=_MODEL_CHANGE_NOT_APPLIED_CODE,
-            message=(
-                f"The terminal was not switched to {target}: {reason}. "
-                "It is still running on its previous model."
-            ),
-        ),
-    )
+    # A model re-pin is session configuration, not a turn failure. Do not emit
+    # ``response.error`` here: the web reducer renders that event as a
+    # transcript ErrorBanner even though no turn started.
 
 
 async def _persist_native_policy_notice(

@@ -6411,18 +6411,18 @@ async def test_patch_model_override_skips_note_for_native_session(
     assert _model_change_notes(published) == []
 
 
-async def test_patch_model_override_surfaces_a_refused_native_forward(
+async def test_patch_model_override_does_not_publish_refused_native_forward_as_error(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    A LIVE native pane the model change never reached must say so.
+    A refused model forward must not become a turn-error transcript item.
 
     The PATCH persists ``model_override`` and forwards it to the runner, which
     types ``/model`` into the terminal — the only thing that moves a native
-    pane's model. The forward's result was discarded, so a refused one left the
-    row and the picker claiming a model the pane was never switched to, with
-    nothing on screen to say the switch had not happened.
+    pane's model. A refused forward is session configuration feedback, not a
+    turn failure, so it remains in the server log instead of becoming a
+    ``response.error`` event or persisted ``error`` item.
     """
     published: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr(
@@ -6450,14 +6450,16 @@ async def test_patch_model_override_surfaces_a_refused_native_forward(
         json={"model_override": "opus"},
     )
     assert patch.status_code == 200, patch.text
-    errors = [
+    assert [
         event
         for _sid, event in published
         if event.get("type") == "response.error"
-        and event.get("error", {}).get("code") == "model_change_not_applied"
-    ]
-    assert len(errors) == 1, f"Expected one visible failure notice; got {published!r}"
-    assert "opus" in errors[0]["error"]["message"]
+    ] == []
+    snapshot = (await client.get(f"/v1/sessions/{session['id']}")).json()
+    assert snapshot["model_override"] == "opus"
+    assert [
+        item for item in snapshot["items"] if item["type"] == "error"
+    ] == []
 
 
 async def test_patch_model_override_stays_quiet_when_no_runner_answers(

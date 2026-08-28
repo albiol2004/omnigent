@@ -190,6 +190,8 @@ _FAILURE_CODE_DESCRIPTIONS: dict[str, str] = {
     "connection_error": "The connection to the agent dropped mid-turn.",
     "context_length_exceeded": "The conversation grew past the model's context window.",
     "executor_error": "The agent runtime hit an error while running the turn.",
+    "cursor_native_model_failed": "Cursor couldn't switch to the requested model.",
+    "model_change_not_applied": "The model change wasn't applied to the terminal.",
 }
 
 

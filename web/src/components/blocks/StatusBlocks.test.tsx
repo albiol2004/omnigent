@@ -331,6 +331,18 @@ describe("ErrorBanner", () => {
     expect(screen.queryByRole("button", { name: "View diagnostics" })).toBeNull();
   });
 
+  it.each([
+    ["cursor_native_model_failed", "Cursor couldn't switch to the requested model."],
+    ["model_change_not_applied", "The model change wasn't applied to the terminal."],
+  ])("uses an honest headline for %s", (code, headline) => {
+    render(<ErrorBanner message="The model switch failed." source="execution" code={code} />);
+
+    expect(screen.getByTestId("error-headline")).toHaveTextContent(headline);
+    expect(screen.getByTestId("error-headline")).not.toHaveTextContent(
+      "Something went wrong",
+    );
+  });
+
   it("dismisses only the visible banner", () => {
     render(
       <div>

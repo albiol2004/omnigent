@@ -119,6 +119,8 @@ def test_command_path_is_matched_by_basename() -> None:
         ("runner_disconnected", "host dropped"),
         ("connection_error", "connection"),
         ("context_length_exceeded", "context window"),
+        ("cursor_native_model_failed", "Cursor couldn't switch"),
+        ("model_change_not_applied", "model change wasn't applied"),
     ],
 )
 def test_describe_failure_code_known(code: str, expected_substring: str) -> None:

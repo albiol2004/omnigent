@@ -1989,23 +1989,27 @@ describe("Composer config gear", () => {
     expect(calls).toEqual(["model", "effort"]);
   });
 
-  it("skips unchanged knobs on Save (no spurious slash-command injection)", async () => {
-    const setModel = vi.fn().mockResolvedValue(undefined);
-    const setEffort = vi.fn().mockResolvedValue(undefined);
-    useChatStore.setState({ setModel, setEffort, selectedEffort: "medium" });
-    renderWithTooltips(
-      <Composer
-        {...composerProps({ showEffort: true, showModels: true, modelPickerKind: "claude" })}
-      />,
-    );
-    fireEvent.click(gear()!);
-    await screen.findByTestId("composer-config-modal");
-    // Save with nothing changed — no setter should fire.
-    fireEvent.click(screen.getByTestId("composer-config-save"));
-    await waitFor(() => expect(screen.queryByTestId("composer-config-modal")).toBeNull());
-    expect(setModel).not.toHaveBeenCalled();
-    expect(setEffort).not.toHaveBeenCalled();
-  });
+  it.each([
+    ["claude", true],
+    ["cursor", false],
+  ] as const)(
+    "skips unchanged knobs on Save for %s (no spurious slash-command injection)",
+    async (modelPickerKind, showEffort) => {
+      const setModel = vi.fn().mockResolvedValue(undefined);
+      const setEffort = vi.fn().mockResolvedValue(undefined);
+      useChatStore.setState({ setModel, setEffort, selectedEffort: "medium" });
+      renderWithTooltips(
+        <Composer {...composerProps({ showEffort, showModels: true, modelPickerKind })} />,
+      );
+      fireEvent.click(gear()!);
+      await screen.findByTestId("composer-config-modal");
+      // Save with nothing changed — no setter should fire.
+      fireEvent.click(screen.getByTestId("composer-config-save"));
+      await waitFor(() => expect(screen.queryByTestId("composer-config-modal")).toBeNull());
+      expect(setModel).not.toHaveBeenCalled();
+      expect(setEffort).not.toHaveBeenCalled();
+    },
+  );
 
   it("re-pins the model when turning Smart Routing off, even if the shown model is unchanged", async () => {
     // Routing-on clears the applied override but keeps the cross-session sticky

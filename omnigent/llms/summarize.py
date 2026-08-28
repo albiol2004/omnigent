@@ -73,6 +73,40 @@ def build_summarization_prompt(messages: list[dict[str, Any]]) -> str:
     return _SUMMARIZATION_BASE_PROMPT
 
 
+def _summarization_text_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop Responses-only content keys OpenAI rejects (e.g. filename)."""
+    cleaned: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        updated = dict(message)
+        content = updated.get("content")
+        if not isinstance(content, list):
+            cleaned.append(updated)
+            continue
+        blocks: list[object] = []
+        for block in content:
+            if not isinstance(block, dict):
+                blocks.append(block)
+                continue
+            block_type = block.get("type")
+            text = block.get("text")
+            if block_type in ("input_text", "output_text", "text") and isinstance(text, str):
+                blocks.append({"type": block_type, "text": text})
+            elif isinstance(block.get("filename"), str):
+                blocks.append(
+                    {
+                        "type": "input_text",
+                        "text": f"[attached file {block['filename']}]",
+                    }
+                )
+        updated["content"] = blocks
+        cleaned.append(updated)
+    return cleaned
+
+
 def build_summarization_input(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -93,9 +127,13 @@ def build_summarization_input(
         or a copy of *messages* unchanged if it already ends with
         a user message.
     """
-    if messages and messages[-1].get("role") == "user":
-        return list(messages)
-    return [*messages, {"role": "user", "content": _SUMMARIZATION_TRIGGER_MESSAGE}]
+    prepared = _summarization_text_messages(messages)
+    if prepared and prepared[-1].get("role") == "user":
+        return prepared
+    return [
+        *prepared,
+        {"role": "user", "content": _SUMMARIZATION_TRIGGER_MESSAGE},
+    ]
 
 
 def extract_summary_text(resp: Any) -> str:

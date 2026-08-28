@@ -79,3 +79,22 @@ def test_build_summarization_input_appends_trigger_when_last_item_is_tool_output
         f"Expected trigger turn appended after tool output, got {len(result)} items."
     )
     assert result[-1]["role"] == "user"
+
+
+def test_build_summarization_input_strips_filename_from_content_blocks() -> None:
+    """OpenAI Responses rejects content[].filename on summarization input."""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "see", "filename": "image.png"},
+                {"type": "input_image", "filename": "image.png", "file_id": "abc"},
+            ],
+        }
+    ]
+    result = build_summarization_input(messages)
+    assert result[0]["content"] == [
+        {"type": "input_text", "text": "see"},
+        {"type": "input_text", "text": "[attached file image.png]"},
+    ]
+    assert "filename" not in str(result)

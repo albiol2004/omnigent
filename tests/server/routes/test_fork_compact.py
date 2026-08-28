@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,9 +17,11 @@ from omnigent.entities import (
     FunctionCallOutputData,
     MessageData,
 )
+from omnigent.fork_compact_routing import ResolvedForkCompactModel
 from omnigent.fork_context import estimate_fork_context_bytes, serialized_context_bytes
 from omnigent.runtime.compaction import CompactionResult, SummaryMetadata
 from omnigent.server.routes._sessions.common import _session_status_cache
+from omnigent.server.routes.sessions import routes_core as routes_core_module
 from omnigent.server.routes.sessions.routes_core import _fork_context_renderer
 from omnigent.spec import AgentSpec
 from omnigent.spec.types import ExecutorSpec
@@ -139,12 +143,20 @@ def _rendered_size_items() -> list[ConversationItem]:
     return items
 
 
-def _patch_compaction_clients(monkeypatch: pytest.MonkeyPatch) -> None:
+def _patch_compaction_clients(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    model: str = "anthropic/claude-fable-5",
+) -> None:
     """Keep route tests inside the mocked compaction boundary."""
     monkeypatch.setattr("omnigent.runtime.workflow._get_llm_client", lambda: object())
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._get_runner_client_for_compaction",
-        lambda _session_id: None,
+        "omnigent.fork_compact.resolve_fork_compact_model",
+        lambda **_kwargs: ResolvedForkCompactModel(
+            model=model,
+            source="test",
+            connection={"api_key": "test-key"},
+        ),
     )
 
 
@@ -189,7 +201,7 @@ async def test_oversized_fork_uses_compacted_replacement_items(
     assert replacement[0].data.summary == "short summary"
     assert fork_call["resume_source_native_session"] is False
     assert store._items[_SOURCE_ID] == [source_item]
-    assert "source_spec model=spec-model" in caplog.text
+    assert "source=test model=anthropic/claude-fable-5" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -304,6 +316,7 @@ async def test_oversized_fork_keeps_recent_assistant_tail_verbatim(
     monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", str(actual - 1))
     monkeypatch.setenv("OMNIGENT_FORK_COMPACT", "1")
     monkeypatch.delenv("OMNIGENT_FORK_COMPACT_MODEL", raising=False)
+    _patch_compaction_clients(monkeypatch, model="spec-model")
 
     summary_models: list[str] = []
 
@@ -355,12 +368,14 @@ async def test_oversized_fork_keeps_recent_assistant_tail_verbatim(
 @pytest.mark.asyncio
 async def test_summary_failure_keeps_original_413_and_source(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A failed summary never reaches the fork store operation."""
     store, source_item = _oversized_store()
     actual = estimate_fork_context_bytes([source_item.to_api_dict()])
     monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", str(actual - 1))
     _patch_compaction_clients(monkeypatch)
+    caplog.set_level(logging.WARNING)
 
     async def _fail(*args: object, **kwargs: object) -> CompactionResult:
         del args, kwargs
@@ -377,8 +392,113 @@ async def test_summary_failure_keeps_original_413_and_source(
     message = response.json()["error"]["message"]
     assert f"{actual} bytes" in message
     assert f"threshold {actual - 1} bytes" in message
+    assert "compaction failed: summary unavailable" in message
+    assert "RuntimeError: summary unavailable" in caplog.text
+    assert any(
+        record.levelno == logging.WARNING
+        and record.exc_info is not None
+        and "summary unavailable" in record.getMessage()
+        for record in caplog.records
+    )
     assert store.fork_calls == []
     assert store._items[_SOURCE_ID] == [source_item]
+
+
+@pytest.mark.asyncio
+async def test_compaction_resolve_failure_does_not_publish_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Resolution failures dismiss compaction without showing a spinner."""
+    store, source_item = _oversized_store()
+    actual = estimate_fork_context_bytes([source_item.to_api_dict()])
+    monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", str(actual - 1))
+    caplog.set_level(logging.WARNING)
+    published: list[str] = []
+    failed: list[str] = []
+    monkeypatch.setattr(
+        routes_core_module,
+        "_publish_compaction_in_progress",
+        lambda session_id: published.append(session_id),
+    )
+    monkeypatch.setattr(
+        routes_core_module,
+        "_publish_compaction_failed",
+        lambda session_id: failed.append(session_id),
+    )
+
+    async def _fail_before_ready(
+        *,
+        on_llm_ready: Callable[[object], None],
+        **kwargs: object,
+    ) -> list[ConversationItem]:
+        del on_llm_ready, kwargs
+        raise RuntimeError("model resolution unavailable")
+
+    monkeypatch.setattr(
+        routes_core_module,
+        "compact_fork_items",
+        _fail_before_ready,
+    )
+
+    response = TestClient(_build_app(store, agent_cache=_spec_cache())).post(
+        f"/v1/sessions/{_SOURCE_ID}/fork",
+        json={},
+    )
+
+    assert response.status_code == 413, response.text
+    assert "compaction failed: model resolution unavailable" in response.json()["error"]["message"]
+    assert published == []
+    assert failed == [_SOURCE_ID]
+    assert store.fork_calls == []
+    assert store._items[_SOURCE_ID] == [source_item]
+
+
+@pytest.mark.asyncio
+async def test_compaction_publishes_progress_when_llm_is_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compaction entered after resolution emits one progress event."""
+    store, source_item = _oversized_store()
+    actual = estimate_fork_context_bytes([source_item.to_api_dict()])
+    monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", str(actual - 1))
+    published: list[str] = []
+    failed: list[str] = []
+    monkeypatch.setattr(
+        routes_core_module,
+        "_publish_compaction_in_progress",
+        lambda session_id: published.append(session_id),
+    )
+    monkeypatch.setattr(
+        routes_core_module,
+        "_publish_compaction_failed",
+        lambda session_id: failed.append(session_id),
+    )
+
+    async def _compact_after_ready(
+        *,
+        on_llm_ready: Callable[[object], None],
+        **kwargs: object,
+    ) -> list[ConversationItem]:
+        del kwargs
+        on_llm_ready(SimpleNamespace(model="compact-model", provider="anthropic"))
+        return [_make_item("replacement", "short summary")]
+
+    monkeypatch.setattr(
+        routes_core_module,
+        "compact_fork_items",
+        _compact_after_ready,
+    )
+
+    response = TestClient(_build_app(store, agent_cache=_spec_cache())).post(
+        f"/v1/sessions/{_SOURCE_ID}/fork",
+        json={},
+    )
+
+    assert response.status_code == 201, response.text
+    assert published == [_SOURCE_ID]
+    assert failed == []
+    assert len(store.fork_calls) == 1
 
 
 @pytest.mark.asyncio

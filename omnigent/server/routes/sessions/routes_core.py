@@ -2374,10 +2374,19 @@ def register_core_routes(
                         "cancel or wait for it to finish first",
                         code=ErrorCode.CONFLICT,
                     ) from exc
-                try:
-                    # SSE on the SOURCE stream so the fork dialog/chat
-                    # can show summarizing progress during this POST.
+                resolved_model: str | None = None
+                resolved_provider: str | None = None
+
+                def _on_llm_ready(resolved: object) -> None:
+                    nonlocal resolved_model, resolved_provider
+                    model = getattr(resolved, "model", None)
+                    if isinstance(model, str):
+                        resolved_model = model
+                        if "/" in model:
+                            resolved_provider = model.split("/", 1)[0]
                     _publish_compaction_in_progress(source_id)
+
+                try:
                     replacement_items = await compact_fork_items(
                         source_id=source_id,
                         source=source,
@@ -2385,6 +2394,7 @@ def register_core_routes(
                         target_agent=base_agent if switching_agent else None,
                         context_items=context_items,
                         agent_cache=agent_cache,
+                        on_llm_ready=_on_llm_ready,
                     )
                     compacted_payload = [item.to_api_dict() for item in replacement_items]
                     compacted_bytes = estimate_fork_context_bytes(
@@ -2397,8 +2407,47 @@ def register_core_routes(
                     )
                     guard_fork_context_bytes(compacted_bytes)
                 except Exception as compact_exc:
+                    exception_extra = getattr(compact_exc, "extra", None)
+                    if not isinstance(exception_extra, Mapping):
+                        exception_extra = {}
+                    attempted_model = (
+                        getattr(compact_exc, "compact_model", None)
+                        or getattr(compact_exc, "model", None)
+                        or exception_extra.get("compact_model")
+                        or exception_extra.get("model")
+                        or resolved_model
+                    )
+                    attempted_provider = (
+                        getattr(compact_exc, "compact_provider", None)
+                        or getattr(compact_exc, "provider", None)
+                        or exception_extra.get("compact_provider")
+                        or exception_extra.get("provider")
+                        or resolved_provider
+                    )
+                    if (
+                        attempted_provider is None
+                        and isinstance(attempted_model, str)
+                        and "/" in attempted_model
+                    ):
+                        attempted_provider = attempted_model.split("/", 1)[0]
+                    _logger.warning(
+                        "Fork compaction failed for session %s (model=%s, provider=%s): %s",
+                        source_id,
+                        attempted_model or "unknown",
+                        attempted_provider or "unknown",
+                        compact_exc,
+                        exc_info=True,
+                        extra={
+                            "compact_model": attempted_model,
+                            "compact_provider": attempted_provider,
+                        },
+                    )
                     _publish_compaction_failed(source_id)
-                    raise OmnigentError(str(exc), code=exc.code) from compact_exc
+                    compact_reason = str(compact_exc) or repr(compact_exc)
+                    raise OmnigentError(
+                        f"{exc}; compaction failed: {compact_reason}",
+                        code=exc.code,
+                    ) from compact_exc
 
         try:
             new_conv = await asyncio.to_thread(

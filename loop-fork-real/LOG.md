@@ -1,0 +1,1 @@
+- iter 0 | coordinator | fork-compact-real mailbox initialized (base 48d3a5c03; live log: model=fable resolved, compaction failed silently in 36 ms)

@@ -191,6 +191,8 @@ export function ForkSessionForm({
   const [agentChoice, setAgentChoice] = useState<string>(SAME_AS_SOURCE);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const cancelledRef = useRef(false);
+  const mountedRef = useRef(true);
   // Working directory + git worktree live behind "Advanced settings",
   // collapsed by default (they prefill sensibly from the source, so the
   // common "clone & start in the same place" path needs no input).
@@ -199,6 +201,12 @@ export function ForkSessionForm({
   // warning + branch field aren't hidden. A ref (not state in the effect dep)
   // keeps it one-shot — the user can re-collapse it without it springing back.
   const autoExpandedRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // A coding source ran in a working directory; only then does the fork
   // need a host + directory to start. A non-coding source forks with just
@@ -467,13 +475,21 @@ export function ForkSessionForm({
         switching ? agentChoice : undefined,
         upToResponseId ?? undefined,
       );
-      // Coding fork: launch the runner in the BACKGROUND, then navigate
-      // into the (already-created, unbound) clone immediately — awaiting the
-      // launch would block the modal for a worktree create (up to minutes)
-      // and hang on a dropped response. If the launch fails the clone stays
-      // unbound; ChatPage's existing unbound-fork path lets the user retry
-      // the bind via the directory picker. (A follow-up will surface the
-      // failure proactively + show "Connecting…" for the whole launch.)
+      // Seed the new route with the 201 snapshot. An async fork can already
+      // carry `omnigent.fork.preparing=1`, so that state should not wait for
+      // a second GET after navigation.
+      queryClient.setQueryData(["session", fork.id], fork);
+      // Close and navigate at the fork response boundary. Runner binding is
+      // detached below, so a slow host/worktree operation cannot keep this
+      // modal mounted or block the rest of the application.
+      if (!cancelledRef.current) {
+        onClose();
+        navigate(`/c/${fork.id}`);
+      }
+      // Coding fork: launch the runner in the BACKGROUND after navigation.
+      // Awaiting the launch would block the modal for a worktree create (up
+      // to minutes) and hang on a dropped response. If it fails, the clone
+      // stays unbound and ChatPage lets the user retry the bind.
       if (isCodingSource && selectedHostId) {
         const trimmedBranch = branchName.trim();
         addRecent(workspaceTrimmed);
@@ -506,16 +522,16 @@ export function ForkSessionForm({
       void queryClient.invalidateQueries({ queryKey: ["conversations"] });
       // The fork inherits the source's project, and each folder renders its
       // own ["project-sessions", <name>] list. The WS fallback can't converge
-      // it either: it skips the active session, and the navigate below makes
+      // it either: it skips the active session, and the navigation above makes
       // the fork active.
       void queryClient.invalidateQueries({ queryKey: ["project-sessions"] });
-      onClose();
-      navigate(`/c/${fork.id}`);
     } catch (e) {
       // forkSession failed — nothing created, so inputs stay editable for a resubmit.
-      setError(e instanceof Error ? e.message : "Couldn't clone the session. Try again.");
+      if (mountedRef.current) {
+        setError(e instanceof Error ? e.message : "Couldn't clone the session. Try again.");
+      }
     } finally {
-      setSubmitting(false);
+      if (mountedRef.current) setSubmitting(false);
     }
   }
 
@@ -862,7 +878,13 @@ export function ForkSessionForm({
       )}
 
       <DialogFooter>
-        <Button variant="ghost" onClick={onClose} disabled={submitting}>
+        <Button
+          variant="ghost"
+          onClick={() => {
+            cancelledRef.current = true;
+            onClose();
+          }}
+        >
           Cancel
         </Button>
         <Button

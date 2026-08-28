@@ -7,6 +7,7 @@ import type * as AgentLabelsModule from "@/lib/agentLabels";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useChatStore } from "@/store/chatStore";
 
 // Composer reads workspace files via a TanStack query hook (for "@"-file
@@ -49,6 +50,7 @@ vi.mock("@/lib/agentLabels", async (importOriginal) => ({
 import type { ElicitationBlock } from "@/lib/blocks";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Composer, isSubagentRoutingEligible, shouldQueueSend } from "./ChatPage";
+import { ForkPreparingBanner, forkPreparationState } from "@/shell/ForkPreparingBanner";
 import type { Session } from "@/lib/types";
 import type { QueuedMessage } from "@/store/chatStore";
 import {
@@ -1357,6 +1359,42 @@ describe("Composer placeholder", () => {
     render(<Composer {...composerProps({ unreachable: true, reconnectHint: true })} />);
     expect(textarea().disabled).toBe(true);
     expect(textarea().placeholder).toMatch(/reconnect below/i);
+  });
+});
+
+describe("Composer fork preparation", () => {
+  afterEach(cleanup);
+
+  it("blocks input while the fork history is being prepared", () => {
+    render(<Composer {...composerProps({ forkPreparing: true })} />);
+
+    expect(textarea()).toBeDisabled();
+    expect(textarea().placeholder).toBe("Preparing fork — summarizing history…");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  });
+
+  it("shows the failure reason and a retry control", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    const state = forkPreparationState({
+      labels: {
+        "omnigent.fork.preparing": "failed",
+        "omnigent.fork.preparing_reason": "Summary provider timed out",
+      },
+    });
+
+    render(
+      <QueryClientProvider client={client}>
+        <ForkPreparingBanner sessionId="conv_fork" state={state} />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Summary provider timed out");
+    fireEvent.click(screen.getByRole("button", { name: "Retry fork preparation" }));
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["session", "conv_fork"],
+      exact: true,
+    });
   });
 });
 

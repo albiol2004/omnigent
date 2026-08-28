@@ -5193,6 +5193,14 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
     applyToConversation(patch);
   };
 
+  const refreshSessionSnapshot = (): void => {
+    if (sourceConversationId === null) return;
+    void queryClient?.invalidateQueries({
+      queryKey: ["session", sourceConversationId],
+      exact: true,
+    });
+  };
+
   switch (event.type) {
     case "response_completed":
       // Prefer contextTokens (last sub-call total) for the context ring — on
@@ -5350,6 +5358,12 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
       queryClient?.setQueryData<TerminalInfo[]>(terminalsQueryKey(event.conversationId), []);
       queryClient?.invalidateQueries({ queryKey: terminalsQueryKey(event.conversationId) });
       return;
+    case "compaction_in_progress":
+      // Fork preparation uses the same compaction event stream. Refreshing
+      // the snapshot lets the label-driven UI see the server's state without
+      // waiting for its polling fallback.
+      refreshSessionSnapshot();
+      return;
     case "compaction_completed":
       // Update the context-ring immediately with the post-compaction token
       // estimate so the ring reflects the reduced context without waiting
@@ -5357,6 +5371,7 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
       if (event.totalTokens != null) {
         applyToConversation({ tokensUsed: event.totalTokens });
       }
+      refreshSessionSnapshot();
       return;
     case "compaction_failed":
       // Compaction failed — history is unchanged. Remove the compaction_loading
@@ -5367,6 +5382,7 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
         const realIdx = s.blocks.length - 1 - idx;
         return { blocks: [...s.blocks.slice(0, realIdx), ...s.blocks.slice(realIdx + 1)] };
       });
+      refreshSessionSnapshot();
       return;
     case "policy_denied":
       // Policy denied the user input — drop the optimistic bubble (the

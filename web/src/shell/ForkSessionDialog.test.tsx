@@ -2,6 +2,7 @@ import type * as ReactRouterDomModule from "react-router-dom";
 import type * as WorkspacePickerModule from "./WorkspacePicker";
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -235,6 +236,46 @@ describe("ForkSessionDialog", () => {
     await waitFor(() => expect(navigateMock).toHaveBeenCalledWith("/c/conv_fork"));
   });
 
+  it("closes before a background runner launch settles", async () => {
+    forkSessionMock.mockResolvedValue({
+      id: "conv_fork",
+      labels: { "omnigent.fork.preparing": "1" },
+    } as unknown as Awaited<ReturnType<typeof forkSession>>);
+    launchRunnerMock.mockReturnValue(new Promise(() => {}));
+
+    function ControlledDialog() {
+      const [open, setOpen] = useState(true);
+      const [client] = useState(
+        () => new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+      );
+      return (
+        <QueryClientProvider client={client}>
+          <TooltipProvider>
+            <MemoryRouter>
+              <ForkSessionDialog
+                sourceSessionId="conv_src"
+                sourceTitle="My session"
+                sourceWorkspace="/repo"
+                sourceHostId="host_1"
+                open={open}
+                onOpenChange={setOpen}
+              />
+            </MemoryRouter>
+          </TooltipProvider>
+        </QueryClientProvider>
+      );
+    }
+
+    render(<ControlledDialog />);
+    const submit = screen.getByTestId("fork-session-submit");
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(screen.queryByTestId("fork-session-dialog")).toBeNull());
+    expect(navigateMock).toHaveBeenCalledWith("/c/conv_fork");
+    expect(launchRunnerMock).toHaveBeenCalled();
+  });
+
   it("spins the submit button while the fork is in flight", async () => {
     // The fork call can take seconds. Without the spinner the button only
     // fades (disabled), which reads as a hang rather than work in progress.
@@ -252,6 +293,7 @@ describe("ForkSessionDialog", () => {
 
     await waitFor(() => expect(submit).toHaveAttribute("aria-busy", "true"));
     expect(submit).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
     expect(screen.getByRole("status", { name: "Loading" })).toBeInTheDocument();
     expect(screen.getByText("Summarizing history…")).toBeInTheDocument();
 

@@ -201,6 +201,11 @@ import { ResumeWithDirectoryDialog } from "@/shell/ResumeWithDirectoryDialog";
 import { ReconnectSessionDialog } from "@/shell/ReconnectSessionDialog";
 import { useTerminalFirst } from "@/shell/TerminalFirstContext";
 import { useForkDialog } from "@/shell/ForkDialogContext";
+import {
+  ForkPreparingBanner,
+  forkPreparationState,
+  type ForkPreparationState,
+} from "@/shell/ForkPreparingBanner";
 import { supportsEffortControl } from "@/lib/sessionCapabilities";
 import { isCodexNativeSession } from "@/lib/codexPlanMode";
 import { getCliServerUrl } from "@/lib/host";
@@ -1024,6 +1029,10 @@ export function ChatPage() {
 
   // Hoisted above the early-return guards so the title-update effect can read them.
   const activeConv = urlConvId ? conversations?.find((c) => c.id === urlConvId) : null;
+  // The fork endpoint returns this label in its 201 snapshot. Prefer the
+  // authoritative session snapshot, with the sidebar row as a cold-load
+  // fallback for deployments that populate it first.
+  const forkPreparation = forkPreparationState(activeSession ?? activeConv);
 
   // `isWorking` gates the parent's OWN turn (Stop/Interrupt) and must NOT
   // include child-session activity. `showsWorking` is display-only (tab title
@@ -1280,6 +1289,7 @@ export function ChatPage() {
       liveness={liveness}
       agentsError={agentsError}
       disabled={!agentId || agentsError !== null}
+      forkPreparation={forkPreparation}
       onSend={onSend}
       onSendSlashCommand={onSendSlashCommand}
       onStop={onStop}
@@ -1559,6 +1569,8 @@ interface MainAgentSurfaceProps {
   subAgentLabel: string | null;
   /** The session's ``omnigent.wrapper`` label; see ``ComposerProps``. */
   wrapperLabel: string | null;
+  /** Server-owned preparation state for an asynchronously-created fork. */
+  forkPreparation: ForkPreparationState;
 }
 
 /**
@@ -1690,6 +1702,7 @@ function MainAgentSurface({
   subagentRoutingEligible,
   subAgentLabel,
   wrapperLabel,
+  forkPreparation,
 }: MainAgentSurfaceProps) {
   const terminalFirst = useTerminalFirst();
   // The turn rail is a hover minimap with no mobile affordance (CSS-hidden
@@ -1988,6 +2001,7 @@ function MainAgentSurface({
   // terminal is shown (a heavy transcript shouldn't render behind it).
   return (
     <>
+      <ForkPreparingBanner sessionId={conversationId} state={forkPreparation} />
       {terminalSurfaces}
       {!showTerminal && (
         <>
@@ -2169,6 +2183,7 @@ function MainAgentSurface({
 
           <Composer
             disabled={disabled}
+            forkPreparing={forkPreparation.status !== "ready"}
             status={status}
             isWorking={isWorking}
             onSend={handleSend}
@@ -3893,6 +3908,8 @@ interface ComposerProps {
   /** Local stream OR cross-client `session.status: running`. */
   isWorking: boolean;
   disabled: boolean;
+  /** Blocks input while the fork's copied history is being prepared. */
+  forkPreparing?: boolean;
   onSend: (text: string, files?: File[]) => void;
   /**
    * Send a recognised skill as a `slash_command` event (the REPL's wire
@@ -4408,6 +4425,7 @@ export function Composer({
   status,
   isWorking,
   disabled,
+  forkPreparing = false,
   onSend,
   onSendSlashCommand,
   onStop,
@@ -4481,6 +4499,9 @@ export function Composer({
   // `/skill` token stays aligned once the draft grows past the visible rows.
   const backdropRef = useRef<HTMLDivElement>(null);
   const isStreaming = status === "streaming";
+  // Keep this separate from `disabled`: the latter also covers agent catalog
+  // loading, while this state needs its own user-facing placeholder.
+  const inputDisabled = disabled || forkPreparing;
 
   // Read-only when either the user lacks a write grant OR the session
   // is structurally non-interactive (``readOnlyReason``). The
@@ -5032,7 +5053,7 @@ export function Composer({
     // Allow send if there's text, attached files, OR "@"-tagged paths.
     if (
       (!trimmed && files.length === 0 && mentionedItems.length === 0) ||
-      disabled ||
+      inputDisabled ||
       hasPendingElicitation
     )
       return;
@@ -5460,18 +5481,20 @@ export function Composer({
                     ? "Session offline — reconnect below to continue"
                     : hasPendingElicitation
                       ? "Respond to the pending request above to continue"
-                      : disabled
-                        ? "Waiting for agents…"
-                        : isStreaming
-                          ? "Send a follow-up (queued) — Esc to stop"
-                          : sandboxAsleepHint
-                            ? "Current session's host is offline. Next message will resume the sandbox host which can take minutes"
-                            : reconnectHint
-                              ? "Send a message to reconnect this session"
-                              : "Ask the agent anything…"
+                      : forkPreparing
+                        ? "Preparing fork — summarizing history…"
+                        : disabled
+                          ? "Waiting for agents…"
+                          : isStreaming
+                            ? "Send a follow-up (queued) — Esc to stop"
+                            : sandboxAsleepHint
+                              ? "Current session's host is offline. Next message will resume the sandbox host which can take minutes"
+                              : reconnectHint
+                                ? "Send a message to reconnect this session"
+                                : "Ask the agent anything…"
             }
             rows={1}
-            disabled={disabled || isReadOnly || unreachable || hasPendingElicitation}
+            disabled={inputDisabled || isReadOnly || unreachable || hasPendingElicitation}
             data-slash-command={composerIsCommand ? "true" : undefined}
             className={cn(
               "relative w-full resize-none bg-transparent px-4 pt-3 pb-2 text-ui outline-none placeholder:text-muted-foreground disabled:opacity-60",
@@ -5562,7 +5585,7 @@ export function Composer({
               size="icon"
               variant="ghost"
               className="size-9 md:size-8"
-              disabled={disabled || isReadOnly || hasPendingElicitation}
+              disabled={inputDisabled || isReadOnly || hasPendingElicitation}
               onClick={() => fileInputRef.current?.click()}
               title="Attach files"
             >
@@ -5571,7 +5594,7 @@ export function Composer({
             </Button>
             <ComposerMicButton
               enableHotkey
-              disabled={disabled || isReadOnly || hasPendingElicitation}
+              disabled={inputDisabled || isReadOnly || hasPendingElicitation}
               onVoiceStart={() => {
                 voiceSnapshotRef.current = value;
               }}
@@ -5609,7 +5632,7 @@ export function Composer({
                       "h-9 gap-1.5 px-2 text-sm md:h-8",
                       codexPlanMode && "border border-ring/30 text-foreground",
                     )}
-                    disabled={isReadOnly || planModeBusy}
+                    disabled={isReadOnly || forkPreparing || planModeBusy}
                     aria-pressed={codexPlanMode}
                     aria-label={codexPlanMode ? "Exit Plan mode" : "Enter Plan mode"}
                     data-testid="codex-plan-mode-toggle"
@@ -5632,7 +5655,7 @@ export function Composer({
             {showGoalControl && (
               <GoalControl
                 conversationId={conversationId}
-                readOnly={isReadOnly}
+                readOnly={isReadOnly || forkPreparing}
                 goal={goal}
                 onGoalChange={setGoalState}
                 backendLabel="Codex"
@@ -5642,7 +5665,7 @@ export function Composer({
               <GoalControl
                 mode="command"
                 conversationId={conversationId}
-                readOnly={isReadOnly}
+                readOnly={isReadOnly || forkPreparing}
                 onStartGoal={(condition) => onSend(`/goal ${condition}`)}
                 backendLabel="Claude"
               />
@@ -5651,7 +5674,7 @@ export function Composer({
               <GoalControl
                 mode="command"
                 conversationId={conversationId}
-                readOnly={isReadOnly}
+                readOnly={isReadOnly || forkPreparing}
                 onStartGoal={(condition) => onSend(`/goal ${condition}`)}
                 backendLabel="Codex"
               />
@@ -5679,7 +5702,7 @@ export function Composer({
                 // stays live wherever a message could be sent — including
                 // asleep/starting/unknown. Only read-only viewers and sessions
                 // no message can wake (unreachable) get an inert gear.
-                disabled={isReadOnly || unreachable}
+                disabled={isReadOnly || forkPreparing || unreachable}
                 openNonce={pickerOpenNonce}
               />
             </div>
@@ -5701,7 +5724,7 @@ export function Composer({
               disabled={
                 showInterruptButton
                   ? isReadOnly
-                  : !hasDraft || disabled || isReadOnly || hasPendingElicitation
+                  : !hasDraft || inputDisabled || isReadOnly || hasPendingElicitation
               }
               title={showInterruptButton ? "Interrupt" : "Send"}
               aria-label={showInterruptButton ? "Interrupt" : "Send"}

@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Sequence
+from dataclasses import replace
 
+from omnigent.config import load_global_config
 from omnigent.db.utils import generate_item_id, generate_task_id, now_epoch
 from omnigent.entities import Agent, CompactionData, Conversation, ConversationItem
+from omnigent.fork_compact_routing import (
+    ResolvedForkCompactModel,
+    resolve_fork_compact_candidates,
+)
 from omnigent.fork_context import max_fork_context_bytes
+from omnigent.onboarding.provider_config import load_providers
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.runtime.compaction import SummaryMetadata, _CompactionState, compact
 from omnigent.spec import AgentSpec
@@ -20,12 +26,6 @@ _logger = logging.getLogger(__name__)
 FORK_COMPACT_ENV = "OMNIGENT_FORK_COMPACT"
 FORK_COMPACT_MODEL_ENV = "OMNIGENT_FORK_COMPACT_MODEL"
 FORK_COMPACT_TARGET_BYTES_ENV = "OMNIGENT_FORK_COMPACT_TARGET_BYTES"
-
-
-@dataclass(frozen=True)
-class ResolvedForkCompactModel:
-    model: str
-    source: str
 
 
 def fork_compact_enabled() -> bool:
@@ -51,7 +51,7 @@ def resolve_fork_compact_model(
     source_model_override: str | None,
     target_model: str | None,
     spec_model: str | None,
-) -> ResolvedForkCompactModel | None:
+) -> ResolvedForkCompactModel:
     """Resolve the model in the documented fork-compaction precedence order."""
     candidates = (
         ("env", os.environ.get(FORK_COMPACT_MODEL_ENV)),
@@ -59,10 +59,8 @@ def resolve_fork_compact_model(
         ("target_spec", target_model),
         ("source_spec", spec_model),
     )
-    for source, candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip():
-            return ResolvedForkCompactModel(candidate.strip(), source)
-    return None
+    providers = load_providers(load_global_config())
+    return resolve_fork_compact_candidates(candidates, providers)
 
 
 def _spec_model(spec: AgentSpec) -> str | None:
@@ -77,12 +75,20 @@ def _load_spec(agent_cache: AgentCache | None, agent: Agent) -> AgentSpec:
     ).spec
 
 
-def _llm_config_for_model(spec: AgentSpec, model: str) -> LLMConfig:
+def _llm_config_for_model(
+    spec: AgentSpec,
+    model: str,
+    connection: dict[str, str] | None = None,
+) -> LLMConfig:
     base = spec.llm or LLMConfig(
         model=spec.executor.model or model,
         connection=spec.executor.connection,
     )
-    return replace(base, model=model)
+    return replace(
+        base,
+        model=model,
+        connection=connection if connection is not None else base.connection,
+    )
 
 
 async def compact_fork_items(
@@ -93,6 +99,7 @@ async def compact_fork_items(
     target_agent: Agent | None,
     context_items: Sequence[ConversationItem],
     agent_cache: AgentCache | None,
+    on_llm_ready: Callable[[ResolvedForkCompactModel], None] | None = None,
 ) -> list[ConversationItem]:
     """Compact an in-memory fork prefix and return its replacement items."""
     source_spec = _load_spec(agent_cache, source_agent)
@@ -102,17 +109,17 @@ async def compact_fork_items(
         target_model=_spec_model(target_spec) if target_spec else None,
         spec_model=_spec_model(source_spec),
     )
-    if resolved is None:
-        raise ValueError("No LLM model is configured for fork compaction")
-
     config_spec = target_spec if resolved.source == "target_spec" else source_spec
     assert config_spec is not None
-    llm_config = _llm_config_for_model(config_spec, resolved.model)
+    llm_config = _llm_config_for_model(
+        config_spec,
+        resolved.model,
+        resolved.connection,
+    )
 
     # Reuse workflow routing and client singletons.
     from omnigent.runtime.workflow import (
         _get_llm_client,
-        _get_runner_client_for_compaction,
         _prepare_messages,
         _route_bare_model_for_compaction,
     )
@@ -150,6 +157,10 @@ async def compact_fork_items(
         else get_model_context_window(llm_config.model)
     )
     task_id = generate_task_id()
+    if on_llm_ready is not None:
+        on_llm_ready(resolved)
+    # Fork compaction is server-side: never tunnel summarize through the
+    # session's runner (it may be disconnected, or only speak CLI aliases).
     result = await compact(
         messages,
         history,
@@ -160,10 +171,10 @@ async def compact_fork_items(
         task_id=task_id,
         llm_client=_get_llm_client(),
         connection=llm_config.connection,
-        runner_client=_get_runner_client_for_compaction(source_id),
+        runner_client=None,
         force=True,
         fail_on_summary_error=True,
-        conversation_id=source_id,
+        conversation_id=None,
     )
     summary = result.summary_metadata
     if summary is None or not summary.text or not summary.last_item_id:

@@ -38,6 +38,11 @@ from omnigent.entities import (
 )
 from omnigent.entities.permission import SessionPermission
 from omnigent.errors import ErrorCode, OmnigentError
+from omnigent.fork_compact import (
+    compact_fork_items,
+    fork_compact_enabled,
+    fork_compact_target_bytes,
+)
 from omnigent.fork_context import (
     ForkContextTooLarge,
     guard_fork_context,
@@ -107,6 +112,7 @@ from omnigent.server.routes._sessions.common import (
     _CODEX_NATIVE_WRAPPER_LABEL_VALUE,
     _logger,
     _managed_launch_tasks,
+    _session_status_cache,
     get_server_runner_router,
     set_server_runner_router,
 )
@@ -130,6 +136,8 @@ from omnigent.server.routes._sessions.helpers import (
     _presentation_labels_for_agent,
     _prune_session_read_state,
     _publish_collaboration_mode,
+    _publish_compaction_failed,
+    _publish_compaction_in_progress,
     _publish_sandbox_status,
     _publish_terminal_pending,
     _reject_reserved_cost_control_label_seed,
@@ -2201,6 +2209,7 @@ def register_core_routes(
             source_items,
             body.up_to_response_id,
         )
+        replacement_items = None
         if context_items is not None:
             payload = [item.to_api_dict() for item in context_items]
             compacted_payload = summary_only_items(payload)
@@ -2210,7 +2219,35 @@ def register_core_routes(
                     compacted_value=compacted_payload,
                 )
             except ForkContextTooLarge as exc:
-                raise OmnigentError(str(exc), code=exc.code) from exc
+                if not fork_compact_enabled():
+                    raise OmnigentError(str(exc), code=exc.code) from exc
+                if _session_status_cache.get(source_id) in ("running", "waiting"):
+                    raise OmnigentError(
+                        "Cannot fork-compact while a turn is running; "
+                        "cancel or wait for it to finish first",
+                        code=ErrorCode.CONFLICT,
+                    ) from exc
+                try:
+                    # SSE on the SOURCE stream so the fork dialog/chat
+                    # can show summarizing progress during this POST.
+                    _publish_compaction_in_progress(source_id)
+                    replacement_items = await compact_fork_items(
+                        source_id=source_id,
+                        source=source,
+                        source_agent=source_agent,
+                        target_agent=base_agent if switching_agent else None,
+                        context_items=context_items,
+                        agent_cache=agent_cache,
+                    )
+                    compacted_payload = [item.to_api_dict() for item in replacement_items]
+                    guard_fork_context(
+                        compacted_payload,
+                        threshold=fork_compact_target_bytes(),
+                    )
+                    guard_fork_context(compacted_payload)
+                except Exception as compact_exc:
+                    _publish_compaction_failed(source_id)
+                    raise OmnigentError(str(exc), code=exc.code) from compact_exc
 
         try:
             new_conv = await asyncio.to_thread(
@@ -2229,10 +2266,16 @@ def register_core_routes(
                 # carry the source's launch args on a same-agent fork.
                 copy_terminal_launch_args=not switching_agent,
                 carry_history_into_native=carry_history_into_native,
-                resume_source_native_session=resume_source_native_session,
+                # Compacted forks must not clone the source JSONL —
+                # that payload is the oversize transcript we just
+                # summarized. Rebuild from replacement items instead.
+                resume_source_native_session=(
+                    resume_source_native_session and replacement_items is None
+                ),
                 presentation_labels=presentation_labels,
                 up_to_response_id=body.up_to_response_id,
                 project_id=fork_project_id,
+                replacement_items=replacement_items,
             )
         except LookupError as exc:
             raise OmnigentError(

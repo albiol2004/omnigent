@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from typing import Any, Protocol, cast
 
 from sqlalchemy import (
@@ -3410,6 +3411,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         presentation_labels: dict[str, str] | None = None,
         up_to_response_id: str | None = None,
         project_id: str | None = None,
+        replacement_items: Sequence[ConversationItem] | None = None,
     ) -> Conversation:
         """
         Deep-copy a conversation and its items into a new conversation.
@@ -3496,6 +3498,8 @@ class SqlAlchemyConversationStore(ConversationStore):
             unfiled. The caller resolves whether the fork keeps the
             source's project — projects are owner-private, so the route
             passes the source's id only when the forker owns it.
+        :param replacement_items: Optional in-memory replacement snapshot.
+            When set, these items are copied instead of querying source rows.
         :returns: The newly created :class:`Conversation`.
         :raises LookupError: If no conversation with
             *source_conversation_id* exists.
@@ -3517,6 +3521,7 @@ class SqlAlchemyConversationStore(ConversationStore):
             presentation_labels=presentation_labels,
             up_to_response_id=up_to_response_id,
             project_id=project_id,
+            replacement_items=replacement_items,
         )
 
     def _fork_conversation_with_id(
@@ -3536,11 +3541,14 @@ class SqlAlchemyConversationStore(ConversationStore):
         presentation_labels: dict[str, str] | None = None,
         up_to_response_id: str | None = None,
         project_id: str | None = None,
+        replacement_items: Sequence[ConversationItem] | None = None,
     ) -> Conversation:
         """Body of :meth:`fork_conversation` under a caller-supplied
         ``conversation_id``. The public method generates a fresh id; this seam
         lets a subclass inject one (MAS's WHS-homed store injects the WHS node id
-        so a forked session keeps a single identity across storage backends)."""
+        so a forked session keeps a single identity across storage backends).
+        ``replacement_items`` supplies an already-compacted snapshot when set.
+        """
         now = now_epoch()
         new_conv_id = conversation_id
 
@@ -3630,46 +3638,90 @@ class SqlAlchemyConversationStore(ConversationStore):
                 ).scalar_one()
                 truncated = cutoff_position < last_position
 
-            # Copy items ordered by position so the fork preserves
-            # the original chronological order.
-            items_query = (
-                select(SqlConversationItem)
-                .where(
-                    SqlConversationItem.workspace_id == current_workspace_id(),
-                    SqlConversationItem.conversation_id == source_conversation_id,
+            # Copy items ordered by position so the fork preserves the
+            # original chronological order. A compacted snapshot is already
+            # ordered and deliberately avoids reading the source rows again.
+            item_snapshots: list[tuple[str, str, str, str, str | None, str | None]]
+            if replacement_items is None:
+                items_query = (
+                    select(SqlConversationItem)
+                    .where(
+                        SqlConversationItem.workspace_id == current_workspace_id(),
+                        SqlConversationItem.conversation_id == source_conversation_id,
+                    )
+                    .order_by(SqlConversationItem.position.asc())
                 )
-                .order_by(SqlConversationItem.position.asc())
-            )
-            if cutoff_position is not None:
-                items_query = items_query.where(SqlConversationItem.position <= cutoff_position)
-            source_items = session.execute(items_query).scalars().all()
+                if cutoff_position is not None:
+                    items_query = items_query.where(
+                        SqlConversationItem.position <= cutoff_position
+                    )
+                source_rows = session.execute(items_query).scalars().all()
+                item_snapshots = [
+                    (
+                        decode_item_type(row.type),
+                        decode_item_status(row.status),
+                        row.response_id,
+                        row.data,
+                        row.search_text,
+                        row.created_by,
+                    )
+                    for row in source_rows
+                ]
+            else:
+                item_snapshots = []
+                for item in replacement_items:
+                    search_item = NewConversationItem(
+                        type=item.type,
+                        response_id=item.response_id,
+                        data=item.data,
+                        created_by=item.created_by,
+                    )
+                    item_snapshots.append(
+                        (
+                            item.type,
+                            item.status,
+                            item.response_id,
+                            self._encode_item_data(
+                                strip_nul_bytes(
+                                    json.dumps(item.data.model_dump(exclude_none=True))
+                                )
+                            ),
+                            self._item_search_text(search_item),
+                            item.created_by,
+                        )
+                    )
 
             fts_rows: list[tuple[str, str, str]] = []
-            for pos, src_item in enumerate(source_items):
-                # src_item.type/status are int codes copied verbatim to the new
-                # row; only generate_item_id needs the decoded string type.
-                new_item_id = generate_item_id(decode_item_type(src_item.type))
+            for pos, (
+                item_type,
+                item_status,
+                response_id,
+                data,
+                search_text,
+                created_by,
+            ) in enumerate(item_snapshots):
+                new_item_id = generate_item_id(item_type)
                 new_item = SqlConversationItem(
                     id=new_item_id,
                     conversation_id=new_conv.id,
-                    response_id=src_item.response_id,
+                    response_id=response_id,
                     created_at=now,
-                    status=src_item.status,
+                    status=encode_item_status(item_status),
                     position=pos,
-                    type=src_item.type,
-                    data=src_item.data,
-                    search_text=src_item.search_text,
-                    created_by=src_item.created_by,
+                    type=encode_item_type(item_type),
+                    data=data,
+                    search_text=search_text,
+                    created_by=created_by,
                 )
                 session.add(new_item)
-                fts_rows.append((new_item_id, new_conv.id, src_item.search_text or ""))
+                fts_rows.append((new_item_id, new_conv.id, search_text or ""))
             insert_fts_bulk(session, fts_rows)
 
-            # The clone copied len(source_items) items at dense positions
+            # The clone copied len(item_snapshots) items at dense positions
             # 0..N-1, so its position allocator starts at N. Seed it from the
             # snapshot (not the source row's counter) so the fork is correct
             # even when the source predates the counter.
-            new_conv.next_position = len(source_items)
+            new_conv.next_position = len(item_snapshots)
 
             # Cloned agent: the row itself is written to the Omnigent DB after
             # the AP session commits (see the block below the with-statement);

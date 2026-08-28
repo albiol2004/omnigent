@@ -7,6 +7,7 @@ shape using minimal real-type stubs — no MagicMock.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -136,6 +137,7 @@ class _ConversationStore:
         presentation_labels: dict[str, str] | None = None,
         up_to_response_id: str | None = None,
         project_id: str | None = None,
+        replacement_items: Sequence[ConversationItem] | None = None,
     ) -> Conversation:
         """
         Record the fork call and return a fixed new conversation.
@@ -170,6 +172,8 @@ class _ConversationStore:
         :param project_id: First-class project the fork is filed into
             (route passes the source's project only when the forker
             owns it), or ``None`` for unfiled.
+        :param replacement_items: Optional in-memory replacement snapshot
+            to copy instead of the source rows.
         :returns: A new Conversation with a deterministic ID.
         :raises LookupError: If source is not in our map.
         :raises ValueError: If *up_to_response_id* matches no item.
@@ -189,6 +193,7 @@ class _ConversationStore:
                 "presentation_labels": presentation_labels,
                 "up_to_response_id": up_to_response_id,
                 "project_id": project_id,
+                "replacement_items": replacement_items,
             }
         )
         src = self._convs.get(source_conversation_id)
@@ -207,8 +212,12 @@ class _ConversationStore:
         # the copied items (mirrors real store behavior, including the
         # up-to-and-including-last-item-of-the-response truncation).
         fork_id = "c538360473d41c84c1eee13918fbeca0"
-        source_items = list(self._items.get(source_conversation_id, []))
-        if up_to_response_id is not None:
+        source_items = (
+            list(replacement_items)
+            if replacement_items is not None
+            else list(self._items.get(source_conversation_id, []))
+        )
+        if replacement_items is None and up_to_response_id is not None:
             cutoff_index = max(
                 index
                 for index, item in enumerate(source_items)
@@ -309,6 +318,7 @@ def _make_item(item_id: str, text: str, response_id: str = "resp_001") -> Conver
 def _build_app(
     store: _ConversationStore,
     agent_store: _AgentStore | None = None,
+    agent_cache: Any | None = None,
 ) -> FastAPI:
     """
     Build a FastAPI app with the sessions router and error handler.
@@ -320,6 +330,7 @@ def _build_app(
     :param store: The conversation store stub.
     :param agent_store: The agent store stub. Defaults to a
         pre-populated stub with ``087b7cb7ac30abf4debfaa578d052ec6``.
+    :param agent_cache: Optional parsed-agent cache used by compaction tests.
     :returns: A configured FastAPI app ready for TestClient.
     """
     if agent_store is None:
@@ -337,6 +348,7 @@ def _build_app(
     router = create_sessions_router(
         conversation_store=store,  # type: ignore[arg-type]
         agent_store=agent_store,  # type: ignore[arg-type]
+        agent_cache=agent_cache,
     )
     app = FastAPI()
 

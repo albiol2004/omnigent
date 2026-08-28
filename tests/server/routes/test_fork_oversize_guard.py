@@ -28,6 +28,7 @@ def test_fork_refuses_oversized_history_before_store_fork(
     )
     actual = serialized_context_bytes([item.to_api_dict()])
     monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", str(actual - 1))
+    monkeypatch.setenv("OMNIGENT_FORK_COMPACT", "0")
 
     response = TestClient(_build_app(store)).post(
         f"/v1/sessions/{_SOURCE_ID}/fork",
@@ -92,6 +93,8 @@ def test_fork_keeps_small_history_unchanged(monkeypatch) -> None:
 
     assert response.status_code == 201, response.text
     assert len(store.fork_calls) == 1
+    assert store.fork_calls[0]["replacement_items"] is None
+    assert store._items["c538360473d41c84c1eee13918fbeca0"] == [item]
     assert response.json()["items"][0]["data"]["content"][0]["text"] == "small"
 
 

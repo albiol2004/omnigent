@@ -3842,8 +3842,12 @@ async def _auto_create_codex_terminal(
                 clone_codex_home=codex_home,
                 clone_workspace=clone_workspace,
             )
-        except ForkContextTooLarge:
-            raise
+        except ForkContextTooLarge as exc:
+            cloned_rollout = None
+            _logger.info(
+                "source transcript %d bytes > threshold; rebuilding from compacted items",
+                exc.actual_bytes,
+            )
         except Exception:  # noqa: BLE001 — best-effort; fall back to stored items
             cloned_rollout = None
             _logger.warning(
@@ -6313,6 +6317,7 @@ async def _auto_create_claude_terminal(
     # hook, and the executor's prompt inject waits on the same boot, so a
     # ``stat`` taken later routinely skips the freshly-injected message.
     resume_prefix_bytes: int | None = None
+    clone_context_too_large = False
     if server_client is not None and session_external_id is not None:
         from omnigent.claude_native import _ensure_local_claude_resume_transcript
 
@@ -6356,8 +6361,13 @@ async def _auto_create_claude_terminal(
                 target_external_session_id=our_uuid,
                 clone_workspace=_clone_workspace,
             )
-        except ForkContextTooLarge:
-            raise
+        except ForkContextTooLarge as exc:
+            clone_context_too_large = True
+            _cloned = None
+            _logger.info(
+                "source transcript %d bytes > threshold; rebuilding from compacted items",
+                exc.actual_bytes,
+            )
         except Exception:  # noqa: BLE001 — best-effort; launch fresh on failure
             _cloned = None
             _logger.warning(
@@ -6396,21 +6406,22 @@ async def _auto_create_claude_terminal(
                         session_id,
                         exc_info=True,
                     )
-    elif (
+    if (
         server_client is not None
         and fork_carry_history
         and session_external_id is None
-        and fork_source_external_id is None
+        and (fork_source_external_id is None or clone_context_too_large)
     ):
-        # Forked clone bound to a native target with NO source native
-        # transcript to clone (an SDK or cross-family source): build the clone's
-        # native transcript from its OWN copied Omnigent items under a uuid we
-        # assign, then launch plain ``--resume <our_uuid>``. This reuses the
-        # same server-items→transcript converter the cross-machine cold
-        # resume path uses (``_ensure_local_claude_resume_transcript``), so
-        # the clone opens with the prior conversation (messages + tool
-        # history) as real Claude context. Best-effort: launch fresh on
-        # failure. See designs/FORK_SESSION_UX.md.
+        # Forked clone bound to a native target with no usable source native
+        # transcript (an SDK/cross-family source or an oversized local clone):
+        # build the clone's native transcript from its OWN copied Omnigent
+        # items under a uuid we assign, then launch plain ``--resume
+        # <our_uuid>``. This reuses the same server-items→transcript converter
+        # the cross-machine cold resume path uses
+        # (``_ensure_local_claude_resume_transcript``), so the clone opens with
+        # the prior conversation (messages + tool history) as real Claude
+        # context. Best-effort: launch fresh on failure. See
+        # designs/FORK_SESSION_UX.md.
         from omnigent.claude_native import _ensure_local_claude_resume_transcript
 
         our_uuid = str(uuid.uuid4())

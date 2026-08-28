@@ -48,8 +48,15 @@ def install_providers(monkeypatch: pytest.MonkeyPatch):
     return install
 
 
+@pytest.fixture
+def allow_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Opt into key-backed routing for tests that exercise the API path."""
+    monkeypatch.setenv("OMNIGENT_FORK_COMPACT_ALLOW_API", "1")
+
+
 def test_source_pin_wins_over_target_and_spec(
     install_providers,
+    allow_api,
 ) -> None:
     """A source session pin is the default fork-compaction choice."""
     install_providers(_key_provider("openai", OPENAI_FAMILY, "sk-openai"))
@@ -68,6 +75,7 @@ def test_source_pin_wins_over_target_and_spec(
 def test_environment_override_wins_when_callable(
     monkeypatch: pytest.MonkeyPatch,
     install_providers,
+    allow_api,
 ) -> None:
     """A callable environment override wins over every session setting."""
     install_providers(_key_provider("anthropic", ANTHROPIC_FAMILY, "sk-anthropic"))
@@ -88,7 +96,10 @@ def test_environment_override_wins_when_callable(
     }
 
 
-def test_fable_maps_to_anthropic_key_provider(install_providers) -> None:
+def test_fable_maps_to_anthropic_key_provider(
+    install_providers,
+    allow_api,
+) -> None:
     """The Claude CLI alias becomes a concrete Anthropic model."""
     install_providers(_key_provider("anthropic", ANTHROPIC_FAMILY, "sk-anthropic"))
 
@@ -109,6 +120,7 @@ def test_fable_maps_to_anthropic_key_provider(install_providers) -> None:
 
 def test_fable_without_key_falls_through_to_callable_spec(
     install_providers,
+    allow_api,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """An uncallable Claude alias is skipped before a later OpenAI model."""
@@ -127,7 +139,10 @@ def test_fable_without_key_falls_through_to_callable_spec(
     assert "skipped" in caplog.text
 
 
-def test_prefixed_model_stays_unchanged(install_providers) -> None:
+def test_prefixed_model_stays_unchanged(
+    install_providers,
+    allow_api,
+) -> None:
     """An explicit provider prefix is retained while credentials are checked."""
     install_providers(_key_provider("anthropic", ANTHROPIC_FAMILY, "sk-anthropic"))
 
@@ -145,7 +160,10 @@ def test_prefixed_model_stays_unchanged(install_providers) -> None:
     }
 
 
-def test_codex_slug_maps_to_openai_key_provider(install_providers) -> None:
+def test_codex_slug_maps_to_openai_key_provider(
+    install_providers,
+    allow_api,
+) -> None:
     """A Codex CLI slug becomes a generic OpenAI model."""
     install_providers(_key_provider("openai", OPENAI_FAMILY, "sk-openai"))
 
@@ -165,6 +183,7 @@ def test_codex_slug_maps_to_openai_key_provider(install_providers) -> None:
 
 def test_anthropic_origin_url_does_not_override_adapter_v1(
     install_providers,
+    allow_api,
 ) -> None:
     """Vendor origin URLs without /v1 must not be forwarded as base_url."""
     install_providers(
@@ -186,11 +205,41 @@ def test_anthropic_origin_url_does_not_override_adapter_v1(
     assert resolved.connection == {"api_key": "sk-anthropic"}
 
 
-def test_no_callable_model_raises_before_summary(install_providers) -> None:
+def test_api_keys_are_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    install_providers,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Configured API keys are not callable without explicit opt-in."""
+    monkeypatch.delenv("OMNIGENT_FORK_COMPACT_ALLOW_API", raising=False)
+    install_providers(
+        _key_provider("anthropic", ANTHROPIC_FAMILY, "sk-anthropic"),
+        _key_provider("openai", OPENAI_FAMILY, "sk-openai"),
+    )
+
+    with pytest.raises(ValueError, match="API keys were not used") as error:
+        fork_compact.resolve_fork_compact_model(
+            source_model_override="fable",
+            target_model=None,
+            spec_model=None,
+        )
+
+    message = str(error.value)
+    assert "source_override model=fable" in message
+    assert "skipped (api disabled)" in message
+    assert "tried provider/model=" not in message
+    assert "skipped (api disabled)" in caplog.text
+
+
+def test_no_callable_model_raises_before_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    install_providers,
+) -> None:
     """No provider key produces a clear error instead of a generic LLM call."""
+    monkeypatch.delenv("OMNIGENT_FORK_COMPACT_ALLOW_API", raising=False)
     install_providers()
 
-    with pytest.raises(ValueError, match="callable"):
+    with pytest.raises(ValueError, match="API keys were not used"):
         fork_compact.resolve_fork_compact_model(
             source_model_override="fable",
             target_model=None,
@@ -202,6 +251,7 @@ def test_no_callable_model_raises_before_summary(install_providers) -> None:
 async def test_compaction_ready_callback_precedes_call_and_disables_inner_sse(
     monkeypatch: pytest.MonkeyPatch,
     install_providers,
+    allow_api,
 ) -> None:
     """Readiness fires after routing and compaction receives no conversation id."""
     install_providers(_key_provider("anthropic", ANTHROPIC_FAMILY, "sk-anthropic"))
@@ -215,6 +265,7 @@ async def test_compaction_ready_callback_precedes_call_and_disables_inner_sse(
         compaction=None,
     )
     monkeypatch.setattr(fork_compact, "_load_spec", lambda _cache, _agent: source_spec)
+    monkeypatch.setattr(fork_compact, "resolve_cli_runner", lambda _candidate: None)
     monkeypatch.setattr(
         "omnigent.runtime.workflow._prepare_messages",
         lambda *args, **kwargs: ("", [], 0),

@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 from omnigent.config import load_global_config
 from omnigent.db.utils import generate_item_id, generate_task_id, now_epoch
 from omnigent.entities import Agent, CompactionData, Conversation, ConversationItem
+from omnigent.fork_compact_cli import CliSummaryClient, resolve_cli_runner
 from omnigent.fork_compact_routing import (
     ResolvedForkCompactModel,
     list_fork_compact_candidates,
 )
-from omnigent.model_fallbacks import static_model_fallback
-from omnigent.onboarding.provider_config import KEY_KIND, load_providers
+from omnigent.onboarding.provider_config import load_providers
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.runtime.compaction import SummaryMetadata, _CompactionState, compact
 from omnigent.spec import AgentSpec
@@ -26,6 +27,7 @@ _logger = logging.getLogger(__name__)
 FORK_COMPACT_ENV = "OMNIGENT_FORK_COMPACT"
 FORK_COMPACT_MODEL_ENV = "OMNIGENT_FORK_COMPACT_MODEL"
 FORK_COMPACT_TARGET_BYTES_ENV = "OMNIGENT_FORK_COMPACT_TARGET_BYTES"
+FORK_COMPACT_ALLOW_API_ENV = "OMNIGENT_FORK_COMPACT_ALLOW_API"
 
 
 def fork_compact_enabled() -> bool:
@@ -54,15 +56,12 @@ def _fork_compact_candidate_rows(
     target_model: str | None,
     spec_model: str | None,
 ) -> tuple[tuple[str, str | None], ...]:
-    """Return the documented candidate list plus an OpenAI summary fallback."""
-    fallback = static_model_fallback(KEY_KIND, "fork_compact")
-    openai_fallback = fallback.model_ids[0] if fallback and fallback.model_ids else None
+    """Return the documented candidate list in precedence order."""
     return (
         ("env", os.environ.get(FORK_COMPACT_MODEL_ENV)),
         ("source_override", source_model_override),
         ("target_spec", target_model),
         ("source_spec", spec_model),
-        ("openai_fallback", openai_fallback),
     )
 
 
@@ -120,6 +119,8 @@ async def _compact_with_resolved(
     context_items: Sequence[ConversationItem],
     resolved: ResolvedForkCompactModel,
     on_llm_ready: Callable[[ResolvedForkCompactModel], None] | None,
+    cli_runner: str | None = None,
+    cli_model: str | None = None,
 ) -> list[ConversationItem]:
     """Run Layer-2 compact for one already-resolved callable model."""
     llm_config = _llm_config_for_model(
@@ -133,7 +134,24 @@ async def _compact_with_resolved(
         _route_bare_model_for_compaction,
     )
 
-    llm_config = _route_bare_model_for_compaction(llm_config)
+    if cli_runner is None:
+        llm_config = _route_bare_model_for_compaction(llm_config)
+        llm_client = _get_llm_client()
+        if on_llm_ready is not None:
+            on_llm_ready(resolved)
+    else:
+        on_started: Callable[[], None] | None = None
+        if on_llm_ready is not None:
+
+            def _on_started() -> None:
+                on_llm_ready(resolved)
+
+            on_started = _on_started
+        llm_client = CliSummaryClient(
+            cli_runner,
+            cli_model or resolved.model,
+            on_started=on_started,
+        )
     _logger.info(
         "Fork compaction model resolved: source=%s model=%s",
         resolved.source,
@@ -166,18 +184,17 @@ async def _compact_with_resolved(
         else get_model_context_window(llm_config.model)
     )
     task_id = generate_task_id()
-    if on_llm_ready is not None:
-        on_llm_ready(resolved)
     result = await compact(
         messages,
         history,
         config=state.config,
         context_window=context_window,
         system_token_budget=system_token_budget,
-        model=llm_config.model,
+        # CLI path records claude-cli/<pin> on the compaction item.
+        model=resolved.model if cli_runner is not None else llm_config.model,
         task_id=task_id,
-        llm_client=_get_llm_client(),
-        connection=llm_config.connection,
+        llm_client=llm_client,
+        connection=llm_config.connection if cli_runner is None else None,
         runner_client=None,
         force=True,
         fail_on_summary_error=True,
@@ -202,17 +219,73 @@ async def compact_fork_items(
     """Compact an in-memory fork prefix and return its replacement items."""
     source_spec = _load_spec(agent_cache, source_agent)
     target_spec = _load_spec(agent_cache, target_agent) if target_agent else None
-    providers = load_providers(load_global_config())
-    resolved_list = list_fork_compact_candidates(
-        _fork_compact_candidate_rows(
-            source_model_override=source.model_override,
-            target_model=_spec_model(target_spec) if target_spec else None,
-            spec_model=_spec_model(source_spec),
-        ),
-        providers,
+    candidate_rows = _fork_compact_candidate_rows(
+        source_model_override=source.model_override,
+        target_model=_spec_model(target_spec) if target_spec else None,
+        spec_model=_spec_model(source_spec),
     )
+    tried: list[str] = []
     last_error: BaseException | None = None
     published = False
+
+    def _on_llm_ready(resolved: ResolvedForkCompactModel) -> None:
+        nonlocal published
+        if published:
+            return
+        published = True
+        if on_llm_ready is not None:
+            on_llm_ready(resolved)
+
+    for source_name, raw_candidate in candidate_rows:
+        if not isinstance(raw_candidate, str) or not raw_candidate.strip():
+            tried.append(f"{source_name} model=<unset> -> skipped (empty)")
+            continue
+        candidate = raw_candidate.strip()
+        cli = resolve_cli_runner(candidate)
+        if cli is None:
+            tried.append(f"{source_name} model={candidate} -> skipped (no CLI mapping)")
+            continue
+        runner, argv_model, record_id = cli
+        if shutil.which(runner) is None:
+            message = f"{runner} CLI not found for model {argv_model!r}"
+            tried.append(f"{source_name} model={candidate} -> {message}")
+            last_error = FileNotFoundError(message)
+            continue
+        config_spec = target_spec if source_name == "target_spec" else source_spec
+        assert config_spec is not None
+        resolved = ResolvedForkCompactModel(
+            model=record_id,
+            source=source_name,
+            connection={},
+        )
+        tried.append(f"{source_name} model={candidate} -> tried {runner} model={argv_model}")
+        try:
+            replacement = await _compact_with_resolved(
+                source_id=source_id,
+                source_spec=source_spec,
+                config_spec=config_spec,
+                context_items=context_items,
+                resolved=resolved,
+                on_llm_ready=_on_llm_ready,
+                cli_runner=runner,
+                cli_model=argv_model,
+            )
+        except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+            last_error = exc
+            tried[-1] += f" -> failed: {exc}"
+            continue
+        return replacement
+
+    if os.environ.get(FORK_COMPACT_ALLOW_API_ENV) != "1":
+        message = (
+            "No fork compaction CLI succeeded; "
+            f"{FORK_COMPACT_ALLOW_API_ENV}=1 is required for API fallback; "
+            f"tried: {'; '.join(tried)}"
+        )
+        raise ValueError(message) from last_error
+
+    providers = load_providers(load_global_config())
+    resolved_list = list_fork_compact_candidates(candidate_rows, providers)
     for resolved in resolved_list:
         config_spec = target_spec if resolved.source == "target_spec" else source_spec
         assert config_spec is not None
@@ -223,7 +296,7 @@ async def compact_fork_items(
                 config_spec=config_spec,
                 context_items=context_items,
                 resolved=resolved,
-                on_llm_ready=on_llm_ready if not published else None,
+                on_llm_ready=_on_llm_ready,
             )
         except Exception as exc:
             last_error = exc
@@ -235,7 +308,6 @@ async def compact_fork_items(
                 "Fork compaction auth failed for %s; trying next candidate",
                 resolved.model,
             )
-            published = True
             continue
         return replacement
     assert last_error is not None

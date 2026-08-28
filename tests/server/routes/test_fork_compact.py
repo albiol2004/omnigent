@@ -149,6 +149,7 @@ def _patch_compaction_clients(
     model: str = "anthropic/claude-fable-5",
 ) -> None:
     """Keep route tests inside the mocked compaction boundary."""
+    monkeypatch.setenv("OMNIGENT_FORK_COMPACT_ALLOW_API", "1")
     monkeypatch.setattr("omnigent.runtime.workflow._get_llm_client", lambda: object())
     resolved = ResolvedForkCompactModel(
         model=model,

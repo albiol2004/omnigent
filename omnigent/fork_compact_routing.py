@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -17,6 +18,7 @@ from omnigent.onboarding.provider_config import (
 )
 
 _logger = logging.getLogger(__name__)
+_ALLOW_API_ENV = "OMNIGENT_FORK_COMPACT_ALLOW_API"
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,7 @@ def list_fork_compact_candidates(
     """Return every candidate the generic LLM client can call, in order."""
     attempts: list[str] = []
     resolved_list: list[ResolvedForkCompactModel] = []
+    allow_api = os.environ.get(_ALLOW_API_ENV) == "1"
 
     for source, raw_candidate in candidates:
         if not isinstance(raw_candidate, str) or not raw_candidate.strip():
@@ -146,6 +149,9 @@ def list_fork_compact_candidates(
                 f"{source} model={candidate} -> skipped provider/model={model} (no key)"
             )
             continue
+        if not allow_api:
+            attempts.append(f"{source} model={candidate} -> skipped (api disabled)")
+            continue
         attempts.append(f"{source} model={candidate} -> tried provider/model={model}")
         resolved_list.append(
             ResolvedForkCompactModel(
@@ -158,6 +164,12 @@ def list_fork_compact_candidates(
     chain = "; ".join(attempts)
     if not resolved_list:
         _logger.info("Fork compaction model resolution: chain=%s", chain)
+        if not allow_api:
+            raise ValueError(
+                "No callable model is configured for fork compaction; "
+                "API keys were not used because "
+                f"{_ALLOW_API_ENV}=1 is required; tried: {chain}"
+            )
         raise ValueError(f"No callable model is configured for fork compaction; tried: {chain}")
 
     resolved = resolved_list[0]

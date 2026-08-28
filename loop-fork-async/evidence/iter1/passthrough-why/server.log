@@ -1,0 +1,17 @@
+INFO  08-28 22:10:17.348 uvicorn.error                    _serve             | Started server process [29950]
+INFO  08-28 22:10:17.348 uvicorn.error                    startup            | Waiting for application startup.
+INFO  08-28 22:10:17.353 ...ime.harnesses.process_manager start              | HarnessProcessManager started; instance_dir=/tmp/omnigent-1000/ap-363ed262772d445aba89d7e99f7ffb25
+INFO  08-28 22:10:17.582 policies.registry                load_registry      | Policy registry loaded: 31 entries from 12 modules
+INFO  08-28 22:10:17.585 server.scheduled.scheduler       start              | ScheduledTaskScheduler started with 0 job(s)
+INFO  08-28 22:10:17.585 uvicorn.error                    startup            | Application startup complete.
+INFO  08-28 22:10:17.586 uvicorn.error                    ...started_message | Uvicorn running on http://127.0.0.1:18021 (Press CTRL+C to quit)
+INFO  08-28 22:10:17.613 uvicorn.access                   send               | 127.0.0.1:50922 - "GET /health HTTP/1.1" 200 OK 1.0ms rid=3d10de07a91a4d0db52f711d48325671 ua="python-httpx/0.28.1"
+INFO  08-28 22:10:17.750 uvicorn.access                   send               | 127.0.0.1:50932 - "POST /v1/sessions/e34847899b7d47b3ad322948d4ea6002/fork HTTP/1.1" 201 Created 133.9ms rid=905581b01a764c2090afbee9660ba289 ua="python-httpx/0.28.1" sid=e34847899b7d47b3ad322948d4ea6002
+INFO  08-28 22:10:17.771 server.routes.sessions           fork_session       | fork passthrough skipped: up_to_response_id set
+ERROR 08-28 22:10:17.777 inner.native_attachments         ...lize_attachment | Native executor received unresolved file_id 0d1a58e3abff412a9b5b87442879335d — content resolver may not have run
+ERROR 08-28 22:10:17.789 inner.native_attachments         ...lize_attachment | Native executor received unresolved file_id 0d1a58e3abff412a9b5b87442879335d — content resolver may not have run
+INFO  08-28 22:10:17.907 uvicorn.access                   send               | 127.0.0.1:50934 - "POST /v1/sessions/e34847899b7d47b3ad322948d4ea6002/fork HTTP/1.1" 413 Request Entity Too Large 147.5ms rid=3ee6df90e1ec4c25957ef3cd2faf3cd7 ua="python-httpx/0.28.1" sid=e34847899b7d47b3ad322948d4ea6002
+INFO  08-28 22:10:18.007 uvicorn.error                    shutdown           | Shutting down
+INFO  08-28 22:10:18.107 uvicorn.error                    shutdown           | Waiting for application shutdown.
+INFO  08-28 22:10:18.108 uvicorn.error                    shutdown           | Application shutdown complete.
+INFO  08-28 22:10:18.108 uvicorn.error                    _serve             | Finished server process [29950]

@@ -1,0 +1,32 @@
+INFO  08-28 22:53:50.519 uvicorn.error                    _serve             | Started server process [82429]
+INFO  08-28 22:53:50.519 uvicorn.error                    startup            | Waiting for application startup.
+INFO  08-28 22:53:50.522 ...ime.harnesses.process_manager start              | HarnessProcessManager started; instance_dir=/tmp/omnigent-1000/ap-4500442045a6434bb338d4cfe28e8c80
+INFO  08-28 22:53:50.758 policies.registry                load_registry      | Policy registry loaded: 31 entries from 12 modules
+INFO  08-28 22:53:50.761 server.scheduled.scheduler       start              | ScheduledTaskScheduler started with 0 job(s)
+INFO  08-28 22:53:50.761 uvicorn.error                    startup            | Application startup complete.
+INFO  08-28 22:53:50.761 uvicorn.error                    ...started_message | Uvicorn running on http://127.0.0.1:18241 (Press CTRL+C to quit)
+INFO  08-28 22:53:50.953 uvicorn.access                   send               | 127.0.0.1:35916 - "GET /health HTTP/1.1" 200 OK 1.1ms rid=6ee162dc64aa4ff79012e36059e46110 ua="python-httpx/0.28.1"
+INFO  08-28 22:53:51.010 server.routes.sessions           fork_session       | fork passthrough skipped: resume_source_native_session false
+WARN  08-28 22:53:51.136 server.routes.sessions           ...paction_failure | Fork compaction failed for session e34847899b7d47b3ad322948d4ea6002 (model=unknown, provider=unknown): No fork compaction CLI succeeded; OMNIGENT_FORK_COMPACT_ALLOW_API=1 is required for API fallback; tried: env model=<unset> -> skipped (empty); source_override model=opus -> claude CLI not found for model 'opus'; target_spec model=<unset> -> skipped (empty); source_spec model=<unset> -> skipped (empty)
+FileNotFoundError: claude CLI not found for model 'opus'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/alex/omnigent-fixes/omnigent/server/routes/sessions/routes_core.py", line 2627, in _finish_async_compaction
+    compacted = await _compact_and_validate()
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent-fixes/omnigent/server/routes/sessions/routes_core.py", line 2512, in _compact_and_validate
+    compacted = await compact_fork_items(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent-fixes/omnigent/fork_compact.py", line 285, in compact_fork_items
+    raise ValueError(message) from last_error
+ValueError: No fork compaction CLI succeeded; OMNIGENT_FORK_COMPACT_ALLOW_API=1 is required for API fallback; tried: env model=<unset> -> skipped (empty); source_override model=opus -> claude CLI not found for model 'opus'; target_spec model=<unset> -> skipped (empty); source_spec model=<unset> -> skipped (empty)
+INFO  08-28 22:53:51.136 uvicorn.access                   send               | 127.0.0.1:35930 - "POST /v1/sessions/e34847899b7d47b3ad322948d4ea6002/fork HTTP/1.1" 201 Created 173.9ms rid=e538356c20d54a98ad92d56d6331ed33 ua="python-httpx/0.28.1" sid=e34847899b7d47b3ad322948d4ea6002
+INFO  08-28 22:53:51.159 uvicorn.access                   send               | 127.0.0.1:35944 - "GET /v1/sessions/02818b887dda49eba6577f9ade2846cc HTTP/1.1" 200 OK 12.3ms rid=e00754e663764c53a47ddd85c96f8302 ua="python-httpx/0.28.1" sid=02818b887dda49eba6577f9ade2846cc
+INFO  08-28 22:53:51.167 server.routes.sessions           delete_session     | Skipping runner-side cleanup for 02818b887dda49eba6577f9ade2846cc; proceeding with server-side delete: conversation '02818b887dda49eba6577f9ade2846cc' is not bound to a runner; resume the session to bind a registered runner
+INFO  08-28 22:53:51.303 uvicorn.access                   send               | 127.0.0.1:35956 - "DELETE /v1/sessions/02818b887dda49eba6577f9ade2846cc HTTP/1.1" 200 OK 140.3ms rid=efd85fe78898434ea98149269389c1ee ua="python-httpx/0.28.1" sid=02818b887dda49eba6577f9ade2846cc
+INFO  08-28 22:53:51.405 uvicorn.error                    shutdown           | Shutting down
+INFO  08-28 22:53:51.506 uvicorn.error                    shutdown           | Waiting for application shutdown.
+INFO  08-28 22:53:51.506 uvicorn.error                    shutdown           | Application shutdown complete.
+INFO  08-28 22:53:51.506 uvicorn.error                    _serve             | Finished server process [82429]

@@ -1,0 +1,28 @@
+🤖 Implemented and committed as `901c9cf81`.
+
+Changed:
+- `omnigent/server/routes/sessions/routes_core.py`
+  - Full source prefixes now allow native passthrough.
+  - Truncated, SDK, cross-family, and guarded forks remain protected.
+- `tests/server/routes/test_fork_passthrough_skip.py`
+  - Added full-prefix passthrough and truncated-prefix guard regressions.
+
+Verification:
+- Focused suite: **21 passed**, 1 warning.
+- Ruff format/check: **passed**.
+- Pyrefly and test-quality hooks: **passed**.
+- Pre-commit only fails on unrelated `loop-fork-real/evidence` model IDs.
+- Mailbox files remain unstaged and untouched.
+
+Test command:
+```bash
+OMNIGENT_SKIP_WEB_UI=true PYTHONPATH=/home/alex/omnigent-fixes \
+uv run --group test --group lint pytest -q \
+tests/server/routes/test_fork_passthrough_skip.py \
+tests/server/routes/test_fork_oversize_guard.py \
+tests/server/routes/test_fork_compact.py \
+tests/runner/test_fork_clone_fallback.py
+```
+
+The commit includes the required Claude trailer plus an automatic Cursor
+co-author trailer.

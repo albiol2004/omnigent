@@ -1,1 +1,2 @@
 - iter 0 | coordinator | fork-async mailbox initialized (base c48533487; live fork took 56s + blocking modal; passthrough missed on same-family native)
+- iter 1 | lead | passthrough last-response fix + async preparing; e2e a/a2 <200ms, b 201 in 369ms then 49s compact, c failed+deletable

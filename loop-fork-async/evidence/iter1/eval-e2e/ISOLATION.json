@@ -1,0 +1,16 @@
+{
+  "before": {
+    "6767": 200,
+    "config_mtime": 1784710969.9506998,
+    "chat_db_mtime": 1787949839.0583587,
+    "projects_count": 1969
+  },
+  "after": {
+    "6767": 200,
+    "config_mtime": 1784710969.9506998,
+    "chat_db_mtime": 1787949839.0583587,
+    "projects_count": 1969
+  },
+  "ok": true,
+  "throwaway_port": 18241
+}

@@ -1,0 +1,1 @@
+- iter 0 | coordinator | cursor2 mailbox initialized (base 62d01838d; render order decided in ChatPage.mergePendingBubbles not the store; finalizedLiveMessageIds blacklist; picker composer-glyph collision)

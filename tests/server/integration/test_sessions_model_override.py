@@ -11,11 +11,16 @@ runner-path forwarding is verified here by stubbing
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 import pytest
 
+from omnigent.errors import ErrorCode, OmnigentError
+from omnigent.server.routes._sessions.helpers import (
+    _RunnerForwardResult,
+    _surface_model_change_forward_failure,
+)
 from tests.server.helpers import create_test_agent
 
 pytestmark = pytest.mark.asyncio
@@ -641,6 +646,31 @@ async def test_silent_patch_skips_claude_native_forward(
         f"AP server forwards model changes through /events. Got: "
         f"{legacy_forwards!r}"
     )
+
+
+async def test_native_model_forward_failure_names_model_and_raises() -> None:
+    """A rejected native model switch must reach the PATCH error surface."""
+    store = Mock()
+    with patch(
+        "omnigent.server.routes._sessions.helpers.get_conversation_store",
+        return_value=store,
+    ):
+        with pytest.raises(OmnigentError, match="bogus-model") as caught:
+            _surface_model_change_forward_failure(
+                "conv_native",
+                "bogus-model",
+                _RunnerForwardResult(
+                    status_code=503,
+                    body='{"detail":"model was not available"}',
+                ),
+            )
+
+    store.update_conversation.assert_called_once_with(
+        "conv_native",
+        model_override=None,
+        _unset_model_override=True,
+    )
+    assert caught.value.code == ErrorCode.RUNNER_UNAVAILABLE
 
 
 async def test_per_event_model_override_wins_over_persisted(

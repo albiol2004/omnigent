@@ -79,6 +79,7 @@ from omnigent.runner.routing import RunnerRouter
 from omnigent.runner.subagent_routing import ROUTING_DECISION_LABEL_KEY
 from omnigent.runner.transports.ws_tunnel.registry import TunnelRegistry
 from omnigent.runtime import (
+    get_conversation_store,
     get_policy_store,
     inflight_text,
     pending_elicitations,
@@ -5105,6 +5106,21 @@ def _publish_error_event(session_id: str, error: ErrorData) -> None:
     session_stream.publish(session_id, event.model_dump())
 
 
+def _rollback_failed_model_override(session_id: str) -> None:
+    """Clear a native override that the runner refused to apply."""
+    try:
+        get_conversation_store().update_conversation(
+            session_id,
+            model_override=None,
+            _unset_model_override=True,
+        )
+    except (ConversationNotFoundError, RuntimeError, SQLAlchemyError):
+        _logger.exception(
+            "Could not roll back failed model override for session=%s",
+            session_id,
+        )
+
+
 def _surface_model_change_forward_failure(
     session_id: str,
     model: str | None,
@@ -5117,8 +5133,8 @@ def _surface_model_change_forward_failure(
     runner, which types ``/model`` into the terminal. On a native terminal that
     injection is the ONLY thing that moves the model, so a dropped forward left
     the row (and the picker) claiming a model the pane was never on.
-    This does not roll the row back — the persisted value is still the
-    authoritative value for the next launch.
+    A reachable runner that rejects the change is a failed live operation, so
+    raise an API error instead of allowing the PATCH to return a false 200.
 
     Call only for native terminal sessions: every other harness re-reads the
     persisted value at its next turn boundary, so a dropped forward there is
@@ -5153,9 +5169,13 @@ def _surface_model_change_forward_failure(
         reason,
         runner_result.body,
     )
-    # A model re-pin is session configuration, not a turn failure. Do not emit
-    # ``response.error`` here: the web reducer renders that event as a
-    # transcript ErrorBanner even though no turn started.
+    _rollback_failed_model_override(session_id)
+    detail = runner_result.body[:500].strip()
+    suffix = f": {detail}" if detail else ""
+    raise OmnigentError(
+        f"Model change to {model!r} was not applied: {reason}{suffix}",
+        code=ErrorCode.RUNNER_UNAVAILABLE,
+    )
 
 
 async def _persist_native_policy_notice(

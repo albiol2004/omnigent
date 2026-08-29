@@ -170,8 +170,30 @@ def test_inject_user_message_clears_before_pasting(
     assert any("send-keys" in cmd and "Enter" in cmd for cmd in captured)
 
 
-# Real idle pane shape: the composer arrow appears before picker rows.
-_IDLE = "  → Add a follow-up"
+# Verbatim slices from a 41-column ``capture-pane -p`` on a real Cursor TUI.
+# The idle slice includes the composer arrow and a wrapped footer row.
+_IDLE = (
+    "  → Plan, search, build anything\n"
+    "\n"
+    "\n"
+    "  Cursor Grok 4.6        Run Everything\n"
+    "  Medium\n"
+    "  /tmp/omnigent-picker-repair-lPOnSf/wor\n"
+    "  kspace"
+)
+_REAL_PICKER_PANE = (
+    "  → /model grok\n"
+    "\n"
+    "\n"
+    ' Models matching "grok"    Max mode: OFF\n'
+    "\n"
+    " → Cursor Grok 4.6          Medi(Tab to\n"
+    "                            um  modify)\n"
+    "    Cursor Grok 4.5          High\n"
+    "\n"
+    " Edit prompt to filter • Enter to select\n"
+    " • Tab to edit"
+)
 
 
 def _prepare_bridge(tmp_path: Path) -> Path:
@@ -252,6 +274,72 @@ class TestInjectModelGate:
         tails = _send_keys_calls(captured)
         assert ["-t", _TARGET, "Enter"] not in tails  # wrong/no selection never committed
         assert ["-t", _TARGET, "Escape"] in tails  # picker dismissed
+
+    def test_retries_cursor_variant_with_family_query(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A backend-only Cursor id retries with the TUI's family query."""
+        bridge_dir = _prepare_bridge(tmp_path)
+        monkeypatch.setattr(
+            cursor_native_bridge,
+            "_live_cursor_model_options",
+            lambda: pytest.fail("cached display name must avoid a second CLI listing"),
+        )
+        no_match = (
+            "  → /model cursor-grok-4.6-medium\n"
+            ' Models matching "cursor-grok-4.6-medium" (no matches)'
+        )
+        captured = _install_fake_tmux(
+            monkeypatch,
+            pane_captures=[no_match] * 5 + [_REAL_PICKER_PANE],
+        )
+        monkeypatch.setattr(cursor_native_bridge, "_settle_pane", lambda *_a, **_k: None)
+        monkeypatch.setattr(cursor_native_bridge, "_clear_composer", lambda *_a, **_k: None)
+        monkeypatch.setattr(cursor_native_bridge.time, "sleep", lambda *_a, **_k: None)
+
+        cursor_native_bridge.inject_model_command(
+            bridge_dir,
+            model="cursor-grok-4.6-medium",
+            expected_display_name="Cursor Grok 4.6 Medium",
+        )
+
+        tails = _send_keys_calls(captured)
+        assert ["-t", _TARGET, "-l", "/model cursor-grok-4.6-medium"] in tails
+        assert ["-t", _TARGET, "-l", "/model grok-4.6"] in tails
+        assert ["-t", _TARGET, "Enter"] in tails
+
+    def test_edits_family_row_to_requested_effort(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A family row can be edited to the requested exact variant."""
+        editor = (
+            "Cursor Grok 4.6 — Edit Parameters\n"
+            "  Effort\n"
+            "    ○ Low\n"
+            "    ○ Medium\n"
+            "  → ● High ✓\n"
+            "    ○ Extra High\n"
+            "    ◉ Fast\n"
+        )
+        after_navigation = editor.replace("→ ● High ✓", "    ● Medium ✓").replace(
+            "    ◉ Fast", "  → ◉ Fast"
+        )
+        captured = _install_fake_tmux(
+            monkeypatch,
+            pane_captures=[editor, after_navigation],
+        )
+        monkeypatch.setattr(cursor_native_bridge.time, "sleep", lambda *_a, **_k: None)
+
+        assert cursor_native_bridge._picker_set_variant(
+            _SOCK,
+            _TARGET,
+            "cursor-grok-4.6-medium",
+        )
+
+        tails = _send_keys_calls(captured)
+        assert ["-t", _TARGET, "Tab"] in tails
+        assert ["-t", _TARGET, "Up"] in tails
+        assert ["-t", _TARGET, "Enter"] in tails
+        assert tails.count(["-t", _TARGET, "Down"]) == 3
+        assert tails[-1] == ["-t", _TARGET, "Escape"]
 
     def test_echoed_command_alone_does_not_satisfy_the_gate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -344,14 +432,11 @@ class TestInjectModelGate:
 
 def test_picker_highlight_ignores_composer_arrow() -> None:
     """The composer prompt is not a selected model row."""
-    pane = (
-        f"{_IDLE}\n"
-        'Models matching "cursor-grok-4.6-medium"\n'
-        " →  Cursor Grok 4.6 Medium\n"
-        "    Cursor Grok 4.6 High"
-    )
-    assert cursor_native_bridge._picker_highlighted_row(pane) == (
-        "Cursor Grok 4.6 Medium"
+    row = cursor_native_bridge._picker_highlighted_row(_REAL_PICKER_PANE)
+    assert row == ("Cursor Grok 4.6          Medi(Tab to\n                            um  modify)")
+    assert cursor_native_bridge._picker_row_matches_display(
+        row or "",
+        "Cursor Grok 4.6 Medium",
     )
 
 
@@ -359,8 +444,10 @@ def test_picker_highlight_ignores_composer_arrow() -> None:
     ("row", "display_name", "expected"),
     [
         ("Provider Model", "Provider Model", True),
-        ("Provider Mode", "Provider Model", True),
+        ("Provider Mode", "Provider Model", False),
         ("Provider Model\nMedium", "Provider Model Medium", True),
+        ("Provider Model\nMedi", "Provider Model Medium", False),
+        ("Provider Model (Tab to modify)", "Provider Model", True),
         ("Provider Model   High", "Provider Model", False),
         ("Provider Model   Fast", "Provider Model", False),
         ("Provider Modelish High", "Provider Model", False),
@@ -372,7 +459,7 @@ def test_picker_row_matches_complete_display_label(
     display_name: str,
     expected: bool,
 ) -> None:
-    """Truncation and wrapping are allowed without accepting sibling variants."""
+    """Wrapping and picker help are allowed, but truncation is rejected."""
     assert cursor_native_bridge._picker_row_matches_display(row, display_name) is expected
 
 

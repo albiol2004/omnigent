@@ -545,9 +545,14 @@ def _capture_pane(
     tmux_target: str,
     *,
     include_escape_sequences: bool = False,
+    join_wrapped_lines: bool = False,
 ) -> str:
     """Capture the visible pane contents; ``""`` on any failure."""
     capture_args = ["capture-pane"]
+    if join_wrapped_lines:
+        # Picker rows are split across screen lines in narrow panes. Joining
+        # soft-wrapped lines lets the exact display label be compared.
+        capture_args.append("-J")
     if include_escape_sequences:
         capture_args.append("-e")
     capture_args.extend(["-p", "-t", tmux_target])
@@ -846,41 +851,82 @@ def inject_model_command(
     # Backspace (see _clear_composer); a bare "/model <id>" is what opens the
     # picker, whereas "<draft>/model <id>" would not.
     _clear_composer(socket_path, tmux_target)
-    # ``-l`` sends the command as literal characters so ``/`` opens the slash
-    # menu and the id filters the picker rather than being parsed as key names.
-    _run_tmux(socket_path, "send-keys", "-t", tmux_target, "-l", f"/model {model}")
-    # Gate on the picker's *filter result*, not the echoed command: the composer
-    # line itself contains ``model``, so a naive ``model in pane`` check passes
-    # instantly off the echo and never confirms a match landed. Poll for cursor's
-    # "Models matching" header (≥1 match) or "No matches", then settle so the
-    # highlight stabilizes before Enter. The composer debounces input (~1.5s), so
-    # both the filter and the highlight need time to resolve.
-    deadline = time.monotonic() + _PASTE_COMMIT_TIMEOUT_S
-    while time.monotonic() < deadline:
-        pane = _capture_pane(socket_path, tmux_target)
-        if _PICKER_NO_MATCH_MARKER in pane or _PICKER_MATCH_MARKER in pane:
-            break
-        time.sleep(_POLL_INTERVAL_S)
-    time.sleep(_MODEL_PICKER_SETTLE_S)
-    # Re-read after the settle: a transient "No matches" can flash mid-filter,
-    # and a real match may only resolve once the debounce fires.
     settled_pane = ""
     highlighted_row = None
-    for check in range(_MODEL_PICKER_HIGHLIGHT_CHECKS):
-        if check:
+    picker_queries = list(_picker_filter_queries(model))
+    for query_index, picker_query in enumerate(picker_queries):
+        if query_index:
+            # Some Cursor releases filter on the friendly family id rather
+            # than on the backend id printed by ``cursor-agent models``.
+            _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Escape")
+            _clear_composer(socket_path, tmux_target)
+        # ``-l`` sends literal characters so ``/`` opens the slash menu and
+        # the query filters the picker rather than becoming key names.
+        _run_tmux(
+            socket_path,
+            "send-keys",
+            "-t",
+            tmux_target,
+            "-l",
+            f"/model {picker_query}",
+        )
+        # Gate on the picker's result, not the echoed command: the composer
+        # line itself contains ``model``, so a naive substring check passes
+        # before the picker has resolved. Join wrapped rows before comparing.
+        deadline = time.monotonic() + _PASTE_COMMIT_TIMEOUT_S
+        while time.monotonic() < deadline:
+            pane = _capture_pane(
+                socket_path,
+                tmux_target,
+                join_wrapped_lines=True,
+            )
+            if _picker_has_no_matches(pane) or _PICKER_MATCH_MARKER in pane:
+                break
             time.sleep(_POLL_INTERVAL_S)
-        settled_pane = _capture_pane(socket_path, tmux_target)
-        if _PICKER_NO_MATCH_MARKER in settled_pane:
+        time.sleep(_MODEL_PICKER_SETTLE_S)
+        # Re-read after the settle: a transient no-match state can flash
+        # mid-filter, and a real highlight may resolve only after debounce.
+        highlighted_row = None
+        for check in range(_MODEL_PICKER_HIGHLIGHT_CHECKS):
+            if check:
+                time.sleep(_POLL_INTERVAL_S)
+            settled_pane = _capture_pane(
+                socket_path,
+                tmux_target,
+                join_wrapped_lines=True,
+            )
+            if _picker_has_no_matches(settled_pane):
+                continue
+            highlighted_row = _picker_highlighted_row(settled_pane)
+            if (
+                _PICKER_MATCH_MARKER in settled_pane
+                and highlighted_row is not None
+                and _picker_row_matches_display(highlighted_row, expected_display_name)
+            ):
+                _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
+                return
+        # Retry once with the family query when the backend id is not accepted.
+        if query_index + 1 < len(picker_queries):
             continue
-        highlighted_row = _picker_highlighted_row(settled_pane)
-        if (
-            _PICKER_MATCH_MARKER in settled_pane
-            and highlighted_row is not None
-            and _picker_row_matches_display(highlighted_row, expected_display_name)
-        ):
-            _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
-            return
-    if _PICKER_NO_MATCH_MARKER in settled_pane:
+        if _picker_set_variant(socket_path, tmux_target, model):
+            for check in range(_MODEL_PICKER_HIGHLIGHT_CHECKS):
+                if check:
+                    time.sleep(_POLL_INTERVAL_S)
+                settled_pane = _capture_pane(
+                    socket_path,
+                    tmux_target,
+                    join_wrapped_lines=True,
+                )
+                highlighted_row = _picker_highlighted_row(settled_pane)
+                if (
+                    _PICKER_MATCH_MARKER in settled_pane
+                    and highlighted_row is not None
+                    and _picker_row_matches_display(highlighted_row, expected_display_name)
+                ):
+                    _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
+                    return
+        break
+    if _picker_has_no_matches(settled_pane):
         # Dismiss the picker and clear the composer so the literal "/model <id>"
         # can't be submitted as a chat message, then fail loudly so the web
         # surfaces an honest error instead of silently selecting nothing.
@@ -904,6 +950,121 @@ def inject_model_command(
     _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
 
 
+_PICKER_QUERY_VARIANT_SUFFIXES = (
+    "-low-fast",
+    "-medium-fast",
+    "-high-fast",
+    "-xhigh-fast",
+    "-low",
+    "-medium",
+    "-high",
+    "-xhigh",
+)
+
+
+def _picker_filter_queries(model: str) -> tuple[str, ...]:
+    """Return the backend id followed by Cursor's family-query fallback."""
+    base_model = model.removeprefix("cursor-")
+    for suffix in _PICKER_QUERY_VARIANT_SUFFIXES:
+        if base_model.endswith(suffix):
+            base_model = base_model[: -len(suffix)]
+            break
+    return (model, base_model) if base_model != model else (model,)
+
+
+def _picker_has_no_matches(pane: str) -> bool:
+    """Return whether Cursor reports an empty model-picker result."""
+    return _PICKER_NO_MATCH_MARKER.casefold() in pane.casefold()
+
+
+_PICKER_EFFORT_INDEX = {
+    "low": 0,
+    "medium": 1,
+    "high": 2,
+    "xhigh": 3,
+    "extra-high": 3,
+}
+
+
+def _picker_variant_settings(model: str) -> tuple[int, bool] | None:
+    """Return the picker effort index and fast flag encoded in *model*."""
+    normalized = model.casefold()
+    fast = normalized.endswith("-fast")
+    if fast:
+        normalized = normalized[: -len("-fast")]
+    for suffix, effort_index in _PICKER_EFFORT_INDEX.items():
+        if normalized.endswith(f"-{suffix}"):
+            return effort_index, fast
+    return None
+
+
+def _picker_editor_cursor_index(pane: str) -> int | None:
+    """Return the currently highlighted parameter row in the editor."""
+    labels = {
+        "Low": 0,
+        "Medium": 1,
+        "High": 2,
+        "Extra High": 3,
+        "Fast": 4,
+    }
+    for line in pane.splitlines():
+        if "→" not in line:
+            continue
+        for label, index in sorted(labels.items(), key=lambda item: -len(item[0])):
+            if label in line:
+                return index
+    return None
+
+
+def _picker_set_variant(socket_path: str, tmux_target: str, model: str) -> bool:
+    """Use Cursor's parameter editor when the family row has another effort."""
+    settings = _picker_variant_settings(model)
+    if settings is None:
+        return False
+    effort_index, want_fast = settings
+    _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Tab")
+    deadline = time.monotonic() + _MODEL_PICKER_SETTLE_S
+    editor_pane = ""
+    while time.monotonic() < deadline:
+        editor_pane = _capture_pane(socket_path, tmux_target)
+        if "Edit Parameters" in editor_pane:
+            break
+        time.sleep(_POLL_INTERVAL_S)
+    if "Edit Parameters" not in editor_pane:
+        _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Escape")
+        return False
+    cursor_index = _picker_editor_cursor_index(editor_pane)
+    if cursor_index is None:
+        _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Escape")
+        return False
+    direction = "Down" if effort_index > cursor_index else "Up"
+    for _ in range(abs(effort_index - cursor_index)):
+        _run_tmux(socket_path, "send-keys", "-t", tmux_target, direction)
+        time.sleep(_POLL_INTERVAL_S)
+    _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
+    time.sleep(_POLL_INTERVAL_S)
+    for _ in range(4 - effort_index):
+        _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Down")
+        time.sleep(_POLL_INTERVAL_S)
+    editor_pane = _capture_pane(socket_path, tmux_target)
+    fast_enabled = "◉ Fast" in editor_pane or "● Fast" in editor_pane
+    if fast_enabled != want_fast:
+        _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
+        time.sleep(_POLL_INTERVAL_S)
+    _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Escape")
+    return True
+
+
+def _picker_continuation(line: str) -> bool:
+    """Return whether a pane line is a wrapped part of a picker row."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped.startswith(("→", "Models matching", "No matches", "Filter:")):
+        return False
+    return len(line) - len(line.lstrip()) >= 8
+
+
 def _live_cursor_model_options() -> list[CursorModelOption]:
     """Read the same live catalog that supplies Cursor's Web picker."""
     from omnigent.cursor_native import list_cursor_cli_model_options
@@ -914,7 +1075,8 @@ def _live_cursor_model_options() -> list[CursorModelOption]:
 def _picker_highlighted_row(pane: str) -> str | None:
     """Return the highlighted row below the picker marker, not the composer."""
     in_picker = False
-    for line in pane.splitlines():
+    lines = pane.splitlines()
+    for index, line in enumerate(lines):
         if _PICKER_MATCH_MARKER in line:
             in_picker = True
             continue
@@ -922,45 +1084,34 @@ def _picker_highlighted_row(pane: str) -> str | None:
             continue
         stripped = line.strip()
         if stripped.startswith("→"):
-            return stripped.removeprefix("→").strip()
+            row_lines = [stripped.removeprefix("→").strip()]
+            for continuation in lines[index + 1 :]:
+                if not _picker_continuation(continuation):
+                    break
+                row_lines.append(continuation)
+            return "\n".join(row_lines)
     return None
 
 
-_PICKER_VARIANT_SUFFIXES = (
-    "low",
-    "medium",
-    "high",
-    "fast",
-    "xhigh",
-    "x-high",
-    "extra high",
-    "extra-high",
-)
+def _picker_row_compact(row: str) -> str:
+    """Normalize a picker row while removing its wrapped action hint."""
+    compact = "".join(row.casefold().split())
+    hint_start = compact.find("(tab")
+    if hint_start == -1:
+        return compact
+    prefix = compact[:hint_start]
+    suffix = compact[hint_start + len("(tab") :]
+    suffix = suffix.replace("to", "", 1)
+    suffix = suffix.replace("modify", "", 1)
+    suffix = suffix.replace(")", "", 1)
+    return prefix + suffix
 
 
 def _picker_row_matches_display(row: str, display_name: str) -> bool:
-    """Match a display label without accepting a sibling effort variant."""
-    normalized_row = " ".join(row.casefold().split())
-    normalized_display = " ".join(display_name.casefold().split())
-    if not normalized_row or not normalized_display:
-        return False
-    if normalized_row == normalized_display:
-        return True
-    # A right-truncated screen row can be a prefix of the full display label.
-    if normalized_display.startswith(normalized_row):
-        return True
-    # Only concatenated wrapped lines may carry harmless trailing text. A
-    # visible effort suffix still identifies a different picker row.
-    if "\n" not in row or not normalized_row.startswith(normalized_display):
-        return False
-    suffix = normalized_row[len(normalized_display) :]
-    if not suffix.startswith(" "):
-        return False
-    suffix = suffix.strip()
-    return not any(
-        suffix == variant or suffix.startswith(f"{variant} ")
-        for variant in _PICKER_VARIANT_SUFFIXES
-    )
+    """Match the complete display label, including its exact variant."""
+    normalized_row = _picker_row_compact(row)
+    normalized_display = _picker_row_compact(display_name)
+    return bool(normalized_row and normalized_row == normalized_display)
 
 
 def _wait_for_pane_settle(socket_path: str, tmux_target: str, *, timeout_s: float) -> None:

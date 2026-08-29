@@ -1,0 +1,1 @@
+- iter 0 | coordinator | cursor3 mailbox initialized (base 15db28694; GLM 5.2 unresolvable in picker, UI shows rejected model, pane-diff preview wrong mid-stream; ~/.cursor must stay byte-identical)

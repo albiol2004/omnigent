@@ -5,7 +5,7 @@ Target repo: /home/alex/omnigent-cursor3 (git WORKTREE, branch `cursor-picker-gl
 ## User report after deploying 15db28694 (server restarted 11:13, bundle built 10:59 — the fixes ARE live)
 1. **Model switch to GLM 5.2 failed.** The web UI still displays "GLM 5.2" while the CLI pane stayed on Grok. The honest-503 work is functioning (see evidence), so the residual bugs are (a) the picker cannot resolve this model and (b) the UI keeps showing a selection the server rejected.
 2. **Live preview is wrong until the stream ends.** Forking a cursor session now renders content (the loop-cursor2 fixes work), but the text shown *during* streaming is wrong; once SSE ends the transcript is perfect.
-3. The user prefers `Cursor Grok 4.6 Medium` as the cursor default. **Already handled outside this loop** — `~/.cursor/cli-config.json` was restored to Medium by the coordinator; do not touch it (see isolation).
+3. The user prefers `Cursor Grok 4.6` at effort high as the cursor default. **Already handled outside this loop** — `~/.cursor/cli-config.json` was restored to Medium by the coordinator; do not touch it (see isolation).
 
 ## Evidence gathered read-only before this loop (do not re-derive; reproduce)
 Server log `~/.omnigent/logs/server/server-20260829-111357-588969.log` lines 1123-1142, session `bc02cb1a43d6465fa56bcadf0343b3f7`:

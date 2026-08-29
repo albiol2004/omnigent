@@ -208,16 +208,6 @@ def _inject_mode_arg(
 
 
 _CURSOR_MODEL_LINE_RE = re.compile(r"^(?P<id>\S+)\s+-\s+(?P<name>.+?)(?:\s+\((?P<tags>[^)]*)\))?$")
-_CURSOR_VARIANT_SUFFIX_RE = re.compile(
-    r"(?:-(?:extra-high|thinking|xhigh|medium|high|low|none|max|fast))+$"
-)
-_CURSOR_DOTTED_CLAUDE_RE = re.compile(
-    r"^claude-(?P<major>\d+)\.(?P<minor>\d+)-(?P<family>[a-z][a-z0-9-]*)$"
-)
-_CURSOR_UNMAPPED_CLAUDE_RE = re.compile(r"^claude-\d+(?:\.\d+)?-[a-z][a-z0-9-]*$")
-_CURSOR_DISPLAY_SUFFIXES = frozenset(
-    {"1m", "none", "low", "medium", "high", "max", "thinking", "extra", "fast"}
-)
 
 
 class CursorModelOption(TypedDict):
@@ -239,52 +229,30 @@ class _CursorSessionMetadata(TypedDict, total=False):
     terminal_launch_args: list[str]
 
 
-def _cursor_base_model_id(compound_id: str) -> str:
-    """Normalize a Cursor model/variant id to its injectable base id."""
-    base_id = _CURSOR_VARIANT_SUFFIX_RE.sub("", compound_id)
-    dotted_claude = _CURSOR_DOTTED_CLAUDE_RE.fullmatch(base_id)
-    if dotted_claude is None:
-        return base_id
-    return "claude-{family}-{major}-{minor}".format(**dotted_claude.groupdict())
-
-
-def _cursor_base_display_name(display_name: str) -> str:
-    """Remove variant labels from a Cursor model display name."""
-    words = display_name.split()
-    while words and words[-1].lower() in _CURSOR_DISPLAY_SUFFIXES:
-        words.pop()
-    return " ".join(words)
-
-
 def parse_cursor_cli_model_options(output: str) -> list[CursorModelOption]:
-    """Parse ``cursor-agent models`` output into base-model picker rows."""
-    options_by_id: dict[str, CursorModelOption] = {}
+    """Parse ``cursor-agent models`` output into picker rows."""
+    options: list[CursorModelOption] = []
     default_model_id: str | None = None
     current_model_id: str | None = None
     for raw_line in output.splitlines():
         match = _CURSOR_MODEL_LINE_RE.fullmatch(raw_line.strip())
         if match is None:
             continue
-        model_id = _cursor_base_model_id(match.group("id"))
-        if _CURSOR_UNMAPPED_CLAUDE_RE.fullmatch(model_id):
-            _logger.warning("Skipping non-injectable Cursor model id %r", model_id)
-            continue
-        display_name = _cursor_base_display_name(match.group("name")) or model_id
+        model_id = match.group("id")
+        display_name = match.group("name")
         tags = {tag.strip().lower() for tag in (match.group("tags") or "").split(",")}
-        options_by_id.setdefault(
-            model_id,
+        options.append(
             {
                 "id": model_id,
                 "displayName": display_name,
                 "isDefault": False,
                 "isCurrent": False,
-            },
+            }
         )
         if "default" in tags and default_model_id is None:
             default_model_id = model_id
         if "current" in tags and current_model_id is None:
             current_model_id = model_id
-    options = list(options_by_id.values())
     if not options:
         raise ValueError("cursor-agent model list did not contain any valid models")
     for option in options:

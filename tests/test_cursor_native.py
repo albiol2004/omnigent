@@ -169,32 +169,50 @@ gpt-5.3-codex-high-fast - Codex 5.3 High Fast
 gpt-5.1-high - GPT-5.1 High
 claude-4.6-opus-high - Opus 4.6 1M
 claude-4.6-opus-high-thinking - Opus 4.6 1M Thinking
-claude-4-sonnet-thinking - Sonnet 4 Thinking
+claude-4-sonnet - Sonnet 4
 composer-2.5 - Composer 2.5 (current)
 """
 
 
-def test_parse_cursor_cli_model_options_normalizes_base_ids() -> None:
-    """Live compound variants collapse to injectable base ids in CLI order."""
+def test_parse_cursor_cli_model_options_preserves_printed_ids_and_names() -> None:
+    """Each picker row keeps the exact id and name printed by the CLI."""
     models = cursor_native.parse_cursor_cli_model_options(_CURSOR_MODELS_OUTPUT)
 
     assert models == [
         {"id": "auto", "displayName": "Auto", "isDefault": True, "isCurrent": False},
         {
-            "id": "gpt-5.3-codex",
-            "displayName": "Codex 5.3",
+            "id": "gpt-5.3-codex-low",
+            "displayName": "Codex 5.3 Low",
             "isDefault": False,
             "isCurrent": False,
         },
         {
-            "id": "gpt-5.1",
-            "displayName": "GPT-5.1",
+            "id": "gpt-5.3-codex-high-fast",
+            "displayName": "Codex 5.3 High Fast",
             "isDefault": False,
             "isCurrent": False,
         },
         {
-            "id": "claude-opus-4-6",
-            "displayName": "Opus 4.6",
+            "id": "gpt-5.1-high",
+            "displayName": "GPT-5.1 High",
+            "isDefault": False,
+            "isCurrent": False,
+        },
+        {
+            "id": "claude-4.6-opus-high",
+            "displayName": "Opus 4.6 1M",
+            "isDefault": False,
+            "isCurrent": False,
+        },
+        {
+            "id": "claude-4.6-opus-high-thinking",
+            "displayName": "Opus 4.6 1M Thinking",
+            "isDefault": False,
+            "isCurrent": False,
+        },
+        {
+            "id": "claude-4-sonnet",
+            "displayName": "Sonnet 4",
             "isDefault": False,
             "isCurrent": False,
         },
@@ -207,6 +225,25 @@ def test_parse_cursor_cli_model_options_normalizes_base_ids() -> None:
     ]
 
 
+def test_parse_cursor_cli_model_options_keeps_grok_effort_variants() -> None:
+    """Grok effort variants remain distinct picker rows."""
+    models = cursor_native.parse_cursor_cli_model_options(
+        """Available models
+cursor-grok-4.6-low - Cursor Grok 4.6 Low
+cursor-grok-4.6-medium - Cursor Grok 4.6 Medium
+cursor-grok-4.6-high - Cursor Grok 4.6
+cursor-grok-4.6-xhigh - Cursor Grok 4.6 Xhigh
+"""
+    )
+
+    assert [(model["id"], model["displayName"]) for model in models] == [
+        ("cursor-grok-4.6-low", "Cursor Grok 4.6 Low"),
+        ("cursor-grok-4.6-medium", "Cursor Grok 4.6 Medium"),
+        ("cursor-grok-4.6-high", "Cursor Grok 4.6"),
+        ("cursor-grok-4.6-xhigh", "Cursor Grok 4.6 Xhigh"),
+    ]
+
+
 def test_parse_cursor_cli_model_options_keeps_one_default_and_current() -> None:
     """Conflicting CLI tags resolve deterministically in catalog order."""
     models = cursor_native.parse_cursor_cli_model_options(
@@ -216,18 +253,21 @@ second-low - Second Low (default, current)
 """
     )
 
-    assert [model["id"] for model in models if model["isDefault"]] == ["first"]
-    assert [model["id"] for model in models if model["isCurrent"]] == ["first"]
+    assert [model["id"] for model in models if model["isDefault"]] == ["first-high"]
+    assert [model["id"] for model in models if model["isCurrent"]] == ["first-high"]
 
 
-def test_parse_cursor_cli_model_options_logs_unmapped_claude_ids(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Reversed Claude ids that cannot round-trip never reach the picker."""
+def test_parse_cursor_cli_model_options_keeps_printed_claude_ids() -> None:
+    """Printed Claude ids remain available for model selection."""
     models = cursor_native.parse_cursor_cli_model_options(_CURSOR_MODELS_OUTPUT)
 
-    assert all(model["id"] != "claude-4-sonnet" for model in models)
-    assert "Skipping non-injectable Cursor model id 'claude-4-sonnet'" in caplog.text
+    assert [
+        model["id"] for model in models if model["id"].startswith("claude-")
+    ] == [
+        "claude-4.6-opus-high",
+        "claude-4.6-opus-high-thinking",
+        "claude-4-sonnet",
+    ]
 
 
 def test_parse_cursor_cli_model_options_rejects_empty_catalog() -> None:

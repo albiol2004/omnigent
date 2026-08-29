@@ -335,6 +335,7 @@ describe("Composer slash-command submit routing", () => {
   // the real action after each test so the mock can't bleed into later
   // tests in this file (zustand state is module-global).
   const realSetModel = useChatStore.getState().setModel;
+  const realRefreshSessionOverrides = useChatStore.getState().refreshSessionOverrides;
 
   beforeEach(() => {
     useChatStore.setState({
@@ -349,7 +350,10 @@ describe("Composer slash-command submit routing", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
-    useChatStore.setState({ setModel: realSetModel });
+    useChatStore.setState({
+      setModel: realSetModel,
+      refreshSessionOverrides: realRefreshSessionOverrides,
+    });
   });
 
   it("routes a known skill through onSendSlashCommand with parsed args", () => {
@@ -669,6 +673,53 @@ describe("Composer slash-command submit routing", () => {
 
     expect(setModel).toHaveBeenCalledWith("gpt-5.4");
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a rejected cursor-native pick without changing the displayed model", async () => {
+    const previousModel = "cursor-grok-4.6-medium";
+    const attemptedModel = "glm-5.2-high";
+    const errorMessage = `Failed to set model to ${attemptedModel}: cursor_native_model_failed`;
+    const setModel = vi.fn().mockRejectedValue(new Error(errorMessage));
+    useChatStore.setState({
+      setModel,
+      refreshSessionOverrides: vi.fn().mockResolvedValue(undefined),
+      nativeVendorOwnsModel: true,
+      selectedModel: previousModel,
+      sessionModelOverride: previousModel,
+      selectedEffort: null,
+      llmModel: "cursor-default",
+    });
+    renderWithTooltips(
+      <Composer
+        {...composerProps({
+          isNativeWrapper: true,
+          showEffort: false,
+          showModels: true,
+          modelPickerKind: "cursor",
+          codexModelOptions: [
+            { id: previousModel, displayName: previousModel },
+            { id: attemptedModel, displayName: attemptedModel },
+          ],
+        })}
+      />,
+    );
+
+    const ta = textarea();
+    fireEvent.change(ta, { target: { value: `/model ${attemptedModel}` } });
+    fireEvent.keyDown(ta, { key: "Enter" });
+    await waitFor(() => {
+      expect(setModel).toHaveBeenCalledWith(attemptedModel);
+      expect(screen.getByText(errorMessage)).toBeVisible();
+    });
+
+    const status = screen.getByTestId("composer-model-effort-label");
+    expect(status).toHaveTextContent(previousModel);
+    expect(status).not.toHaveTextContent(attemptedModel);
+
+    fireEvent.click(screen.getByTestId("composer-config-gear"));
+    const picker = await screen.findByTestId("composer-config-model");
+    expect(picker).toHaveTextContent(previousModel);
+    expect(picker).not.toHaveTextContent(attemptedModel);
   });
 });
 

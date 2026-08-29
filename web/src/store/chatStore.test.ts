@@ -6542,6 +6542,59 @@ describe("chatStore — bindStream sticky-pref handoff", () => {
     );
   });
 
+  it("rolls back a rejected model pick and its sticky preference", async () => {
+    const conversationId = "conv_model_rejected";
+    const previousModel = "cursor-grok-4.6-medium";
+    const attemptedModel = "glm-5.2-high";
+    const previousStoredModel = window.localStorage.getItem("omnigent.picker.model");
+    seedSession(conversationId, []);
+    withSnapshot(conversationId, {
+      labels: { "omnigent.wrapper": "cursor-native-ui" },
+      model_override: previousModel,
+      model_options: [
+        { id: previousModel, displayName: previousModel },
+        { id: attemptedModel, displayName: attemptedModel },
+      ],
+    });
+    useChatStore.setState({ selectedModel: previousModel });
+    window.localStorage.setItem("omnigent.picker.model", previousModel);
+
+    const snapshotHandler = fetchMock.getMockImplementation();
+    if (snapshotHandler === undefined) throw new Error("snapshot handler not installed");
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === `/v1/sessions/${conversationId}` && init?.method === "PATCH") {
+        return mockResponse(
+          {
+            error: {
+              code: "cursor_native_model_failed",
+              message: "native model switch failed",
+            },
+          },
+          { ok: false, status: 503 },
+        );
+      }
+      return snapshotHandler(input, init);
+    });
+
+    try {
+      await useChatStore.getState().switchTo(conversationId);
+      await expect(useChatStore.getState().setModel(attemptedModel)).rejects.toThrow(
+        attemptedModel,
+      );
+
+      expect(useChatStore.getState().sessionModelOverride).toBe(previousModel);
+      expect(useChatStore.getState().selectedModel).toBe(previousModel);
+      expect(window.localStorage.getItem("omnigent.picker.model")).toBe(previousModel);
+    } finally {
+      if (previousStoredModel === null) {
+        window.localStorage.removeItem("omnigent.picker.model");
+      } else {
+        window.localStorage.setItem("omnigent.picker.model", previousStoredModel);
+      }
+    }
+  });
+
   it("does not move the app-global picker when a bind lands after a switch away", async () => {
     // `selectedModel` / `selectedEffort` are app-global sticky picks, not
     // conversation state, so a cold bind that finishes in the background must

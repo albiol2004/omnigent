@@ -1090,6 +1090,7 @@ function savePickerPref(key: string, value: string | null): void {
 // have A's slower PATCH land last — and two reordered picks WITHIN one
 // conversation share an id. Only the newest pick may settle the sticky pref.
 let modelPickRevision = 0;
+const modelPickRevisionByConversation = new Map<string, number>();
 
 /**
  * Make `id` the live, active conversation and return setters bound to its entry.
@@ -2089,27 +2090,54 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
   setModel: async (model) => {
     // `selectedModel` is the sticky pick; `sessionModelOverride` is this
     // session's applied override. An explicit `/model` sets both.
+    const previousSelectedModel = get().selectedModel;
+    const previousSessionModelOverride = get().sessionModelOverride;
+    const previousPickerPref = loadPickerPref(PICKER_PREF_MODEL_KEY);
     modelPickRevision += 1;
     const pickRevision = modelPickRevision;
+    const { conversationId } = get();
+    if (conversationId !== null) {
+      modelPickRevisionByConversation.set(conversationId, pickRevision);
+    }
     setActive({ selectedModel: model, sessionModelOverride: model });
     savePickerPref(PICKER_PREF_MODEL_KEY, model);
-    const { conversationId } = get();
     if (conversationId) {
-      const session = await updateSession(conversationId, { modelOverride: model });
-      // Server-canonical may differ from the optimistic write (e.g.
-      // when a clear alias was sent) — refresh local state to match.
-      const canonical = session.modelOverride ?? null;
-      // The override belongs to the session that was PATCHed, so apply it there
-      // even if the user has since switched away.
-      setterFor(conversationId)({ sessionModelOverride: canonical });
-      // The sticky pref (root + localStorage) is app-global and must reflect the
-      // NEWEST pick, so a slower PATCH that resolves last cannot overwrite it —
-      // otherwise the superseded model returns on reload or in a new chat. Both
-      // writes are gated together: persisting without the root write would leave
-      // them disagreeing until the next reload.
-      if (pickRevision === modelPickRevision) {
-        rootSetState({ selectedModel: canonical });
-        savePickerPref(PICKER_PREF_MODEL_KEY, canonical);
+      try {
+        const session = await updateSession(conversationId, { modelOverride: model });
+        // Server-canonical may differ from the optimistic write (e.g.
+        // when a clear alias was sent) — refresh local state to match.
+        const canonical = session.modelOverride ?? null;
+        // The override belongs to the session that was PATCHed, so apply it there
+        // even if the user has since switched away.
+        setterFor(conversationId)({ sessionModelOverride: canonical });
+        // The sticky pref (root + localStorage) is app-global and must reflect
+        // the NEWEST pick, so a slower PATCH that resolves last cannot overwrite
+        // it — otherwise the superseded model returns on reload or in a new chat.
+        // Both writes are gated together: persisting without the root write would
+        // leave them disagreeing until the next reload.
+        if (pickRevision === modelPickRevision) {
+          rootSetState({ selectedModel: canonical });
+          savePickerPref(PICKER_PREF_MODEL_KEY, canonical);
+        }
+      } catch (err) {
+        // A late failure must roll back the conversation that was PATCHed, not
+        // whichever conversation is currently visible.
+        if (modelPickRevisionByConversation.get(conversationId) === pickRevision) {
+          setterFor(conversationId)({
+            sessionModelOverride: previousSessionModelOverride,
+          });
+        }
+        // Only the newest pick owns the app-global sticky value. The equality
+        // guard also avoids fighting an authoritative SSE model update.
+        if (pickRevision === modelPickRevision && useChatStore.getState().selectedModel === model) {
+          rootSetState({ selectedModel: previousSelectedModel });
+          savePickerPref(PICKER_PREF_MODEL_KEY, previousPickerPref);
+        }
+        const attemptedModel = model ?? "default";
+        const detail = err instanceof Error ? err.message : String(err);
+        throw new Error(`Failed to set model to ${attemptedModel}: ${detail}`, {
+          cause: err,
+        });
       }
     }
   },

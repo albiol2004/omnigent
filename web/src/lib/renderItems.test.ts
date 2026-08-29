@@ -2929,6 +2929,42 @@ describe("buildBubbles — incremental reuse cache", () => {
     expect(second).toEqual(buildBubbles(blocks3, streaming));
   });
 
+  it("rebuilds around a user inserted before a live preview", () => {
+    const cache = createBubbleCache();
+    const active: ActiveResponse = {
+      responseId: "resp_live",
+      state: "streaming",
+      error: null,
+    };
+    const livePreview: AnyBlock = {
+      type: "text_done",
+      ctx: ctx({ itemId: "live:m1", responseId: "resp_live" }),
+      fullText: "live preview",
+      hasCodeBlocks: false,
+    };
+    const responseStart: AnyBlock = {
+      type: "response_start",
+      ctx: ctx({ responseId: "resp_live" }),
+      model: "test",
+      responseId: "resp_live",
+      conversationId: null,
+    };
+    const blocksWithLivePreviewOnly: AnyBlock[] = [responseStart, livePreview];
+
+    buildBubbles(blocksWithLivePreviewOnly, active, cache);
+    expect(cache.lastBubbleStart).toBe(1);
+
+    const insertedUser = userBlock("u2", "");
+    const spliced = [responseStart, insertedUser, livePreview];
+    expect(spliced[2]).toBe(livePreview);
+
+    const bubbles = buildBubbles(spliced, active, cache);
+    expect(bubbles.map((bubble) => bubble.kind)).toEqual(["user", "assistant"]);
+    const assistant = bubbles[1] as Extract<Bubble, { kind: "assistant" }>;
+    const text = assistant.items[0] as Extract<RenderItem, { kind: "text" }>;
+    expect(text.text).toBe("live preview");
+  });
+
   it("falls back to a full rebuild when blocks are not an append-only extension", () => {
     const cache = createBubbleCache();
     const sessionA = [userBlock("u1", "resp_1"), doneBlock("a1", "resp_1", "A answer")];

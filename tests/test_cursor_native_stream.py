@@ -50,6 +50,35 @@ def test_redraw_with_the_same_text_is_empty() -> None:
     assert stream.observe(viewport) is None
 
 
+def test_non_overlapping_redraw_does_not_concatenate_snapshots() -> None:
+    stream = CursorNativeStream("session-redraw")
+    first_pane = "  🤖 First snapshot\n\n ⠼ Working"
+    later_pane = "  🤖 Later snapshot\n\n ⠼ Working"
+
+    first = stream.observe(first_pane)
+    later = stream.observe(later_pane)
+
+    assert first is not None
+    assert later is None
+    joined_emitted = stream.emitted
+    later_region = extract_assistant_region(later_pane)
+    assert joined_emitted == first.delta
+    assert first.delta + later_region not in joined_emitted
+
+
+def test_redraw_waits_for_a_snapshot_that_reconnects_to_emitted() -> None:
+    stream = CursorNativeStream("session-reconnect")
+    first = stream.observe("  🤖 First Z\n\n ⠼ Working")
+    assert first is not None
+
+    assert stream.observe("  🤖 Different text\n\n ⠼ Working") is None
+    assert stream.observe("  Z continuation\n\n ⠼ Working") is None
+
+    reconnected = stream.observe("  🤖 First Z continuation\n\n ⠼ Working")
+    assert reconnected is not None
+    assert reconnected.delta == " continuation"
+
+
 def test_ansi_is_removed_before_extracting_assistant_text() -> None:
     pane = "\x1b[32m  🤖 Hello\x1b[0m\n\x1b[2m ⠼ Working\x1b[0m"
 

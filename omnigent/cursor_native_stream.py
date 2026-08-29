@@ -103,9 +103,9 @@ def suffix_after(emitted: str, viewport: str) -> str:
         if emitted[-size:] == viewport[:size]:
             return viewport[size:]
 
-    # A large scroll jump may have no overlapping characters. Treat its
-    # viewport as new text; redraws that repeat old text were handled above.
-    return viewport
+    # An unrelated redraw cannot be proven to continue the emitted text.
+    # Keep the existing preview until a later snapshot reconnects to it.
+    return ""
 
 
 @dataclass(frozen=True)
@@ -131,6 +131,7 @@ class CursorNativeStream:
     _completed_region: str = field(default="", init=False, repr=False)
     _last_working: bool = field(default=False, init=False, repr=False)
     _force_new_turn: bool = field(default=False, init=False, repr=False)
+    _awaiting_reconnect: bool = field(default=False, init=False, repr=False)
 
     def observe(self, viewport: str) -> CursorTextDelta | None:
         """Convert a pane snapshot into one new transient delta, if any."""
@@ -156,8 +157,19 @@ class CursorNativeStream:
             viewport,
             has_emitted=bool(self.emitted),
         )
+        if self._awaiting_reconnect:
+            # A redraw replaced the pane reconstruction. Partial overlaps with
+            # old text are ambiguous; only a full prefix reconnects the stream.
+            if not region.startswith(self.emitted):
+                self._last_working = working
+                return None
+            self._awaiting_reconnect = False
         delta = suffix_after(self.emitted, region)
         if not delta:
+            if self.emitted and region and region not in self.emitted:
+                # Keep the visible preview, but do not append an unrelated
+                # snapshot until a later one extends the emitted prefix.
+                self._awaiting_reconnect = True
             self._last_working = working
             return None
         if self.message_id is None:
@@ -193,6 +205,7 @@ class CursorNativeStream:
         self._awaiting_new_turn = False
         self._force_new_turn = False
         self._completed_region = ""
+        self._awaiting_reconnect = False
         self.emitted = region if stale else ""
         self.message_id = None
         self.next_index = 0
@@ -202,6 +215,7 @@ class CursorNativeStream:
         self._completed_region = self.emitted
         self._awaiting_new_turn = True
         self._force_new_turn = False
+        self._awaiting_reconnect = False
         self.emitted = ""
         self.message_id = None
         self.next_index = 0

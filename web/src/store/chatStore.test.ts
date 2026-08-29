@@ -9119,7 +9119,9 @@ describe("chatStore — live delta streaming (claude-native)", () => {
     manual.fire();
     expect(provisional()).toBeUndefined();
     expect(
-      useChatStore.getState().blocks.some((b) => b.type === "text_done" && b.fullText === "finished"),
+      useChatStore
+        .getState()
+        .blocks.some((b) => b.type === "text_done" && b.fullText === "finished"),
     ).toBe(true);
 
     controller.abort();

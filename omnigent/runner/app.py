@@ -896,7 +896,42 @@ def _is_context_overflow_error(event: _JsonObject) -> tuple[int, int] | None:
     return 128000, 128001
 
 
-def _response_failed_event(error: Mapping[str, object]) -> bytes:
+def _response_failed_dict(
+    error: Mapping[str, object],
+    *,
+    response_id: str | None = None,
+) -> dict[str, object]:
+    """Build a ``response.failed`` event the session tagged-union accepts.
+
+    ``FailedEvent.response`` is a full ``ResponseObject`` (``id``, ``model``,
+    ``created_at`` required). Incomplete payloads 500 the ASGI stream and
+    never reach the client.
+    """
+    raw = dict(error)
+    code = raw.get("code") or raw.get("type") or "error"
+    message = raw.get("message")
+    if message is None:
+        message = str(raw.get("status", code))
+    detail = {"code": str(code), "message": str(message)}
+    return {
+        "type": "response.failed",
+        "response": {
+            "id": response_id or "resp_failed",
+            "object": "response",
+            "status": "failed",
+            "model": "unknown",
+            "created_at": int(time.time()),
+            "error": detail,
+        },
+        "error": raw,
+    }
+
+
+def _response_failed_event(
+    error: Mapping[str, object],
+    *,
+    response_id: str | None = None,
+) -> bytes:
     """
     Encode one ``response.failed`` SSE frame.
 
@@ -907,8 +942,7 @@ def _response_failed_event(error: Mapping[str, object]) -> bytes:
         e.g. ``{"code": "connection_error", "message": "dropped"}``.
     :returns: UTF-8 encoded SSE frame bytes.
     """
-    response = {"status": "failed", "error": error}
-    payload = json.dumps({"type": "response.failed", "response": response, "error": error})
+    payload = json.dumps(_response_failed_dict(error, response_id=response_id))
     return f"event: response.failed\ndata: {payload}\n\n".encode()
 
 
@@ -6250,19 +6284,11 @@ def create_runner_app(
 
             if _eager_spec_error is not None:
                 _err_type, _err_msg = _eager_spec_error
-                _fail = {
-                    "type": "response.failed",
-                    "error": {
-                        "message": _err_msg,
-                        "type": _err_type,
-                    },
-                }
+                _fail_err = {"message": _err_msg, "type": _err_type}
+                _fail = _response_failed_dict(_fail_err)
                 _publish_event(conv_id, _fail)
-                _on_proxy_stream_end(
-                    conv_id,
-                    error={"message": _err_msg, "type": _err_type},
-                )
-                yield _response_failed_event({"message": _err_msg, "type": _err_type})
+                _on_proxy_stream_end(conv_id, error=_fail_err)
+                yield _response_failed_event(_fail_err)
                 return
 
             event_body = _wrap_as_message_event(body)
@@ -6276,21 +6302,11 @@ def create_runner_app(
                     timeout=None,
                 ) as harness_resp:
                     if harness_resp.status_code != 200:
-                        _fail_status = {
-                            "type": "response.failed",
-                            "error": {
-                                "status": harness_resp.status_code,
-                            },
-                        }
-                        _publish_event(
-                            conv_id,
-                            _fail_status,
-                        )
-                        _on_proxy_stream_end(
-                            conv_id,
-                            error={"status": harness_resp.status_code},
-                        )
-                        yield _response_failed_event({"status": harness_resp.status_code})
+                        _fail_err = {"status": harness_resp.status_code}
+                        _fail_status = _response_failed_dict(_fail_err)
+                        _publish_event(conv_id, _fail_status)
+                        _on_proxy_stream_end(conv_id, error=_fail_err)
+                        yield _response_failed_event(_fail_err)
                         return
 
                     _omnigent_task_id = cast(str | None, body.get("task_id"))
@@ -6448,24 +6464,21 @@ def create_runner_app(
                                         ) = await _resolve_turn_spec_lazy()
                                         if _lazy_err is not None:
                                             _err_type, _err_msg = _lazy_err
-                                            _fail = {
-                                                "type": "response.failed",
-                                                "error": {
-                                                    "message": _err_msg,
-                                                    "type": _err_type,
-                                                },
+                                            _fail_err = {
+                                                "message": _err_msg,
+                                                "type": _err_type,
                                             }
+                                            _fail = _response_failed_dict(
+                                                _fail_err, response_id=_response_id
+                                            )
                                             _publish_event(conv_id, _fail)
                                             _on_proxy_stream_end(
                                                 conv_id,
-                                                error={
-                                                    "message": _err_msg,
-                                                    "type": _err_type,
-                                                },
+                                                error=_fail_err,
                                                 owner_response_id=_response_id,
                                             )
                                             yield _response_failed_event(
-                                                {"message": _err_msg, "type": _err_type}
+                                                _fail_err, response_id=_response_id
                                             )
                                             return
                                         _dispatch_workdir = (
@@ -6573,14 +6586,10 @@ def create_runner_app(
                     ),
                     "type": "_ContextWindowOverflow",
                 }
-                _overflow_fail = {
-                    "type": "response.failed",
-                    "response": {"status": "failed", "error": _error},
-                    "error": _error,
-                }
+                _overflow_fail = _response_failed_dict(_error, response_id=_response_id)
                 _publish_event(conv_id, _overflow_fail)
                 _on_proxy_stream_end(conv_id, error=_error, owner_response_id=_response_id)
-                yield _response_failed_event(_error)
+                yield _response_failed_event(_error, response_id=_response_id)
 
             except (httpx.HTTPError, RuntimeError) as exc:
                 _logger.warning(
@@ -6594,14 +6603,10 @@ def create_runner_app(
                     "message": "Harness stream connection error.",
                     "type": type(exc).__name__,
                 }
-                _http_fail = {
-                    "type": "response.failed",
-                    "response": {"status": "failed", "error": _error},
-                    "error": _error,
-                }
+                _http_fail = _response_failed_dict(_error, response_id=_response_id)
                 _publish_event(conv_id, _http_fail)
                 _on_proxy_stream_end(conv_id, error=_error, owner_response_id=_response_id)
-                yield _response_failed_event(_error)
+                yield _response_failed_event(_error, response_id=_response_id)
 
         return StreamingResponse(
             proxy_stream(),

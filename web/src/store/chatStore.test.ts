@@ -9097,7 +9097,7 @@ describe("chatStore — live delta streaming (claude-native)", () => {
     controller.abort();
   });
 
-  it("does not recreate a preview after its message was cleaned up", async () => {
+  it("does not append a late delta after an unreplaced preview ends", async () => {
     useChatStore.setState({
       conversationId: "conv_live_cleanup",
       blocks: [],
@@ -9118,9 +9118,9 @@ describe("chatStore — live delta streaming (claude-native)", () => {
     await tick();
     manual.fire();
     expect(provisional()).toBeUndefined();
-    expect(useChatStore.getState().blocks.some((b) => b.ctx.itemId === "live:m_cleanup")).toBe(
-      false,
-    );
+    expect(
+      useChatStore.getState().blocks.some((b) => b.type === "text_done" && b.fullText === "finished"),
+    ).toBe(true);
 
     controller.abort();
   });
@@ -9512,7 +9512,7 @@ describe("chatStore — live delta streaming (claude-native)", () => {
     controller.abort();
   });
 
-  it("drops an unfinalized provisional on response_end (interrupt / drop)", async () => {
+  it("keeps an unfinalized provisional visible on response_end", async () => {
     useChatStore.setState({
       conversationId: "conv_live5",
       blocks: [],
@@ -9533,8 +9533,14 @@ describe("chatStore — live delta streaming (claude-native)", () => {
     await tick();
     await tick();
 
-    // The dangling preview is dropped — no forever-streaming bubble.
+    // No committed replacement arrived, so the visible partial remains
+    // without a `live:` key (the next turn can reuse the vendor id).
     expect(provisional()).toBeUndefined();
+    expect(
+      useChatStore
+        .getState()
+        .blocks.some((b) => b.type === "text_done" && b.fullText === "partial answer"),
+    ).toBe(true);
 
     controller.abort();
   });

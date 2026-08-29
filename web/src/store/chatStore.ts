@@ -4265,9 +4265,27 @@ function insertCommittedUserBeforeLiveTail(
   blocks: AnyBlock[],
   user: ReturnType<typeof committedUserBlock>,
 ): AnyBlock[] {
-  let at = blocks.length;
-  while (at > 0 && isLiveProvisionalBlock(blocks[at - 1]!)) at -= 1;
+  const firstLive = blocks.findIndex(isLiveProvisionalBlock);
+  const at = firstLive === -1 ? blocks.length : firstLive;
   return [...blocks.slice(0, at), user, ...blocks.slice(at)];
+}
+
+/** Freeze an unreplaced live preview so the next turn can reuse its id. */
+function promoteUnreplacedLivePreviews(blocks: AnyBlock[]): AnyBlock[] {
+  let changed = false;
+  const next = blocks.map((block) => {
+    if (block.type !== "text_done" || !isLiveProvisionalBlock(block)) {
+      return block;
+    }
+    const messageId = liveMessageIdFromBlock(block);
+    if (messageId === null) return block;
+    changed = true;
+    return {
+      ...block,
+      ctx: { ...block.ctx, itemId: `promoted:${messageId}` },
+    };
+  });
+  return changed ? next : blocks;
 }
 
 /** Extract the vendor message id from a provisional live block. */
@@ -4346,7 +4364,7 @@ function applyLiveDelta(
   set((s) => {
     let blocks = s.blocks;
     for (const { messageId, delta } of deltas) {
-      if (finalizedLiveMessageIds.has(messageId)) continue;
+      if (finalizedLiveMessageIds.has(messageId) && !isCursorLiveMessageId(messageId)) continue;
       const itemId = LIVE_ITEM_PREFIX + messageId;
       const at = blocks.findIndex((b) => b.ctx.itemId === itemId);
       if (at === -1) {
@@ -4642,6 +4660,23 @@ export async function pumpStreamEvents(
       return { ...(extra ?? {}), blocks: [...s.blocks, ...fresh] };
     });
   };
+  const removeLivePreview = (matches: (preview: TextDone) => boolean): boolean => {
+    const candidate = get().blocks.find(
+      (b): b is TextDone => b.type === "text_done" && isLiveProvisionalBlock(b) && matches(b),
+    );
+    if (candidate === undefined) return false;
+    flush();
+    if (get().blocks.findIndex((b) => b === candidate) === -1) return false;
+    rememberFinalizedLiveBlock(candidate);
+    set((s) => {
+      const at = s.blocks.findIndex((b) => b === candidate);
+      if (at === -1) return {};
+      const next = s.blocks.slice();
+      next.splice(at, 1);
+      return { blocks: next };
+    });
+    return true;
+  };
   let removeWakeListeners = (): void => {};
   if (typeof document !== "undefined") {
     const onVisible = (): void => {
@@ -4711,19 +4746,7 @@ export async function pumpStreamEvents(
         (seenItemIds.has(block.ctx.itemId) ||
           get().blocks.some((b) => b.ctx.itemId === block.ctx.itemId))
       ) {
-        const provIdx = get().blocks.findIndex(isLiveProvisionalBlock);
-        if (provIdx !== -1) {
-          flush();
-          const preview = get().blocks.find(isLiveProvisionalBlock);
-          if (preview !== undefined) rememberFinalizedLiveBlock(preview);
-          set((s) => {
-            const at = s.blocks.findIndex(isLiveProvisionalBlock);
-            if (at === -1) return {};
-            const next = s.blocks.slice();
-            next.splice(at, 1);
-            return { blocks: next };
-          });
-        }
+        removeLivePreview(() => true);
       }
 
       // Stream → snapshot dedup: skip if this itemId is already committed
@@ -4749,6 +4772,17 @@ export async function pumpStreamEvents(
           revivePendingElicitationBlock(set, eid);
           continue;
         }
+      }
+
+      // A relay may publish a committed copy without the native-terminal
+      // marker. Match its text before item-id dedup can strand the preview.
+      if (
+        block.type === "text_done" &&
+        block.ctx.itemId &&
+        !isLiveProvisionalBlock(block) &&
+        !get().isNativeTerminalSession
+      ) {
+        removeLivePreview((preview) => preview.fullText === block.fullText);
       }
 
       if (block.type === "text_done" && block.ctx.itemId && !isLiveProvisionalBlock(block)) {
@@ -4796,21 +4830,9 @@ export async function pumpStreamEvents(
       }
 
       if (block.type === "text_done" && get().isNativeTerminalSession) {
-        const provIdx = get().blocks.findIndex(isLiveProvisionalBlock);
-        if (provIdx !== -1) {
-          // The done item has no message id. Native messages are sequential,
-          // so remove the oldest preview and let the committed item follow
-          // the normal reducer path.
-          flush();
-          const preview = get().blocks.find(isLiveProvisionalBlock);
-          if (preview !== undefined) rememberFinalizedLiveBlock(preview);
-          set((s) => {
-            const at = s.blocks.findIndex(isLiveProvisionalBlock);
-            if (at === -1) return {};
-            const next = s.blocks.slice();
-            next.splice(at, 1);
-            return { blocks: next };
-          });
+        // The done item has no message id. Native messages are sequential, so
+        // remove the oldest preview and let the committed item follow.
+        if (removeLivePreview(() => true)) {
           paintedFirstContent = false;
         }
       }
@@ -4839,17 +4861,14 @@ export async function pumpStreamEvents(
           const errorMsg = block.response?.error?.message ?? null;
           finalizeActive(set, block.status as ActiveResponse["state"], errorMsg);
         }
-        // Turn over: drop any provisional preview never finalized by a
-        // committed item (e.g. an interrupt where the partial item lands
-        // after this event, or a stream drop). Normal messages already
-        // had their preview replaced when their `text_done` committed, so
-        // this is usually a no-op.
+        // An authoritative item already removed its preview above. Keep an
+        // unreplaced preview visible when a native mirror ends without one,
+        // but drop the `live:` key so a later turn with the same cursor-live
+        // id cannot append onto this text.
         rememberFinalizedLiveBlocks(get().blocks);
         set((s) => ({
           status: "idle",
-          blocks: s.blocks.some(isLiveProvisionalBlock)
-            ? s.blocks.filter((b) => !isLiveProvisionalBlock(b))
-            : s.blocks,
+          blocks: promoteUnreplacedLivePreviews(s.blocks),
         }));
         const convId = get().conversationId;
         if (convId) {

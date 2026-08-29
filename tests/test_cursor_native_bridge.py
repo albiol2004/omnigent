@@ -170,8 +170,8 @@ def test_inject_user_message_clears_before_pasting(
     assert any("send-keys" in cmd and "Enter" in cmd for cmd in captured)
 
 
-# Idle marker so _settle_pane returns and _clear_composer settles at once.
-_IDLE = "Add a follow-up"
+# Real idle pane shape: the composer arrow appears before picker rows.
+_IDLE = "  → Add a follow-up"
 
 
 def _prepare_bridge(tmp_path: Path) -> Path:
@@ -208,7 +208,7 @@ class TestInjectModelGate:
         cursor_native_bridge.inject_model_command(
             bridge_dir,
             model="gpt-5.2",
-            expected_display_name="GPT-5.2",
+            expected_display_name="GPT-5.2 High",
         )
 
         tails = _send_keys_calls(captured)
@@ -303,12 +303,66 @@ class TestInjectModelGate:
         assert ["-t", _TARGET, "Enter"] not in tails
         assert ["-t", _TARGET, "Escape"] in tails
 
+    def test_rechecks_until_the_highlighted_row_is_ready(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A late picker highlight gets another chance before failing."""
+        bridge_dir = _prepare_bridge(tmp_path)
+        monkeypatch.setattr(
+            cursor_native_bridge,
+            "_live_cursor_model_options",
+            lambda: pytest.fail("cached display name must avoid a second CLI listing"),
+        )
+        pane_prefix = f'{_IDLE}\nModels matching "requested-model"\n'
+        panes = iter(
+            [
+                f"{pane_prefix} →  Wrong Model",
+                f"{pane_prefix} →  Wrong Model",
+                f"{pane_prefix} →  Requested Model",
+            ]
+        )
+        monkeypatch.setattr(
+            cursor_native_bridge,
+            "_capture_pane",
+            lambda *_args, **_kwargs: next(panes),
+        )
+        monkeypatch.setattr(cursor_native_bridge, "_settle_pane", lambda *_a, **_k: None)
+        monkeypatch.setattr(cursor_native_bridge, "_clear_composer", lambda *_a, **_k: None)
+        monkeypatch.setattr(cursor_native_bridge.time, "sleep", lambda *_a, **_k: None)
+
+        captured = _install_fake_tmux(monkeypatch, pane_captures=["unused"])
+        cursor_native_bridge.inject_model_command(
+            bridge_dir,
+            model="requested-model",
+            expected_display_name="Requested Model",
+        )
+
+        tails = _send_keys_calls(captured)
+        assert ["-t", _TARGET, "Enter"] in tails
+        assert ["-t", _TARGET, "Escape"] not in tails
+
+
+def test_picker_highlight_ignores_composer_arrow() -> None:
+    """The composer prompt is not a selected model row."""
+    pane = (
+        f"{_IDLE}\n"
+        'Models matching "cursor-grok-4.6-medium"\n'
+        " →  Cursor Grok 4.6 Medium\n"
+        "    Cursor Grok 4.6 High"
+    )
+    assert cursor_native_bridge._picker_highlighted_row(pane) == (
+        "Cursor Grok 4.6 Medium"
+    )
+
 
 @pytest.mark.parametrize(
     ("row", "display_name", "expected"),
     [
         ("Provider Model", "Provider Model", True),
-        ("Provider Model   High", "Provider Model", True),
+        ("Provider Mode", "Provider Model", True),
+        ("Provider Model\nMedium", "Provider Model Medium", True),
+        ("Provider Model   High", "Provider Model", False),
+        ("Provider Model   Fast", "Provider Model", False),
         ("Provider Modelish High", "Provider Model", False),
         ("Other Provider Model", "Provider Model", False),
     ],
@@ -318,7 +372,7 @@ def test_picker_row_matches_complete_display_label(
     display_name: str,
     expected: bool,
 ) -> None:
-    """Variant suffixes are allowed, but longer-name prefixes are not."""
+    """Truncation and wrapping are allowed without accepting sibling variants."""
     assert cursor_native_bridge._picker_row_matches_display(row, display_name) is expected
 
 

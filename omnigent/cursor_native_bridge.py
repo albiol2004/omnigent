@@ -82,6 +82,8 @@ _PASTE_COMMIT_TIMEOUT_S = 5.0
 # composer debounces input (~1.5s); an Enter fired too soon selects a stale
 # picker highlight. See the cursor-native e2e_ui TUI-driving notes.
 _MODEL_PICKER_SETTLE_S = 1.5
+# The filter result can render before cursor-agent moves the selected row.
+_MODEL_PICKER_HIGHLIGHT_CHECKS = 4
 # ``/model`` picker filter-result markers. cursor prints ``Models matching
 # "<query>"`` above the matched rows, or ``No matches`` when the id resolves to
 # nothing. These distinguish a landed filter from the echoed ``/model <id>``
@@ -862,7 +864,22 @@ def inject_model_command(
     time.sleep(_MODEL_PICKER_SETTLE_S)
     # Re-read after the settle: a transient "No matches" can flash mid-filter,
     # and a real match may only resolve once the debounce fires.
-    settled_pane = _capture_pane(socket_path, tmux_target)
+    settled_pane = ""
+    highlighted_row = None
+    for check in range(_MODEL_PICKER_HIGHLIGHT_CHECKS):
+        if check:
+            time.sleep(_POLL_INTERVAL_S)
+        settled_pane = _capture_pane(socket_path, tmux_target)
+        if _PICKER_NO_MATCH_MARKER in settled_pane:
+            continue
+        highlighted_row = _picker_highlighted_row(settled_pane)
+        if (
+            _PICKER_MATCH_MARKER in settled_pane
+            and highlighted_row is not None
+            and _picker_row_matches_display(highlighted_row, expected_display_name)
+        ):
+            _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
+            return
     if _PICKER_NO_MATCH_MARKER in settled_pane:
         # Dismiss the picker and clear the composer so the literal "/model <id>"
         # can't be submitted as a chat message, then fail loudly so the web
@@ -873,7 +890,6 @@ def inject_model_command(
             f"cursor model {model!r} is not available in the picker (no match); "
             "the model was not switched"
         )
-    highlighted_row = _picker_highlighted_row(settled_pane)
     if (
         _PICKER_MATCH_MARKER not in settled_pane
         or highlighted_row is None
@@ -896,20 +912,54 @@ def _live_cursor_model_options() -> list[CursorModelOption]:
 
 
 def _picker_highlighted_row(pane: str) -> str | None:
-    """Return the text of Cursor's currently highlighted picker row."""
+    """Return the highlighted row below the picker marker, not the composer."""
+    in_picker = False
     for line in pane.splitlines():
+        if _PICKER_MATCH_MARKER in line:
+            in_picker = True
+            continue
+        if not in_picker:
+            continue
         stripped = line.strip()
         if stripped.startswith("→"):
             return stripped.removeprefix("→").strip()
     return None
 
 
+_PICKER_VARIANT_SUFFIXES = (
+    "low",
+    "medium",
+    "high",
+    "fast",
+    "xhigh",
+    "x-high",
+    "extra high",
+    "extra-high",
+)
+
+
 def _picker_row_matches_display(row: str, display_name: str) -> bool:
-    """Match a base display name without accepting a longer-name prefix."""
+    """Match a display label without accepting a sibling effort variant."""
     normalized_row = " ".join(row.casefold().split())
     normalized_display = " ".join(display_name.casefold().split())
-    return normalized_row == normalized_display or normalized_row.startswith(
-        f"{normalized_display} "
+    if not normalized_row or not normalized_display:
+        return False
+    if normalized_row == normalized_display:
+        return True
+    # A right-truncated screen row can be a prefix of the full display label.
+    if normalized_display.startswith(normalized_row):
+        return True
+    # Only concatenated wrapped lines may carry harmless trailing text. A
+    # visible effort suffix still identifies a different picker row.
+    if "\n" not in row or not normalized_row.startswith(normalized_display):
+        return False
+    suffix = normalized_row[len(normalized_display) :]
+    if not suffix.startswith(" "):
+        return False
+    suffix = suffix.strip()
+    return not any(
+        suffix == variant or suffix.startswith(f"{variant} ")
+        for variant in _PICKER_VARIANT_SUFFIXES
     )
 
 

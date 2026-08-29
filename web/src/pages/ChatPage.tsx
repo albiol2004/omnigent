@@ -92,7 +92,7 @@ import { useAutoGrowTextarea } from "@/hooks/useAutoGrowTextarea";
 import { useDictationInsert } from "@/hooks/useDictationInsert";
 import { useIOSNativeKeyboardVisible } from "@/hooks/useIOSNativeKeyboardInset";
 import type { MessageContentBlock } from "@/lib/blocks";
-import { ELICITATION_RESPONSE_PREFIX } from "@/lib/blocks";
+import { ELICITATION_RESPONSE_PREFIX, LIVE_ITEM_PREFIX } from "@/lib/blocks";
 import {
   derivePermissionLevel,
   isOwnerLevel,
@@ -452,6 +452,17 @@ function isStandaloneElicitationBubble(bubble: Bubble): boolean {
   );
 }
 
+/** Whether an assistant bubble contains only provisional live text. */
+function isLivePreviewBubble(bubble: Bubble): boolean {
+  return (
+    bubble.kind === "assistant" &&
+    bubble.items.length > 0 &&
+    bubble.items.every(
+      (item) => item.kind === "text" && item.itemId?.startsWith(LIVE_ITEM_PREFIX) === true,
+    )
+  );
+}
+
 // Pull a committed REQUEST-phase elicitation card below the user message
 // it gated.
 //
@@ -510,13 +521,17 @@ function liftAboveCreateRoutingChips(committed: Bubble[], end: number): number {
 //     decides is still pending, and `buildBubbles` cannot see a pending
 //     message. Splicing above the chip renders it below the prompt from the
 //     first paint, where the persisted message will pair it anyway.
+//   • a trailing live-only assistant preview — Cursor can stream its text
+//     without a committed assistant item before the next input is consumed.
 //
-// When the timeline ends in a run of either, splice the pending bubbles in
+// When the timeline ends in a run of one of these, splice pending bubbles in
 // just before that run so the prompt stays on top.
 export function mergePendingBubbles(committed: Bubble[], pending: Bubble[]): Bubble[] {
   if (pending.length === 0) return committed;
   let insertAt = committed.length;
-  while (insertAt > 0 && isStandaloneElicitationBubble(committed[insertAt - 1]!)) {
+  while (insertAt > 0) {
+    const trailing = committed[insertAt - 1]!;
+    if (!isStandaloneElicitationBubble(trailing) && !isLivePreviewBubble(trailing)) break;
     insertAt -= 1;
   }
   insertAt = liftAboveCreateRoutingChips(committed, insertAt);

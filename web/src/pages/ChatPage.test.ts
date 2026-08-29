@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bubble, RenderItem } from "@/lib/renderItems";
 import type { RoutingScope } from "@/lib/routingDecision";
-import type { ToolExecution } from "@/lib/blocks";
+import { buildBubbles } from "@/lib/renderItems";
+import type { AnyBlock, ToolExecution } from "@/lib/blocks";
 import type { ServerInfo } from "@/lib/capabilities";
 import type { Session } from "@/lib/types";
 import {
@@ -525,6 +526,40 @@ describe("mergePendingBubbles", () => {
       "a1",
       "pend_1",
     ]);
+  });
+
+  it("does not lift a pending user above a completed assistant bubble", () => {
+    const blocks: AnyBlock[] = [
+      {
+        type: "user_message",
+        ctx: {
+          agent: null,
+          depth: 0,
+          turn: 0,
+          timestamp: 0,
+          responseId: "resp_done",
+          itemId: "u1",
+        },
+        content: [{ type: "input_text", text: "first prompt" }],
+      },
+      {
+        type: "text_done",
+        ctx: {
+          agent: null,
+          depth: 0,
+          turn: 0,
+          timestamp: 0,
+          responseId: "resp_done",
+          itemId: "real_assistant_item",
+        },
+        fullText: "completed answer",
+        hasCodeBlocks: false,
+      },
+    ];
+    const committed = buildBubbles(blocks, null);
+    const merged = mergePendingBubbles(committed, [userBubble("pend_1")]);
+
+    expect(bubbleIds(merged)).toEqual(["u1", "real_assistant_item", "pend_1"]);
   });
 
   it("returns committed unchanged when there are no pending bubbles", () => {

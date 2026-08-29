@@ -1,0 +1,1 @@
+port=18600 conv=a7032669a17c461699b8802c8c60adfe bogus=200 change=200 model=cursor-grok-4.6-medium

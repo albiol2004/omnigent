@@ -1,0 +1,102 @@
+INFO  08-29 10:18:48.213 httpx                            ..._single_request | HTTP Request: POST http://127.0.0.1:18600/v1/runners/runner_token_e3a0aea0017aa2e60c5050cd8d908ebd/token "HTTP/1.1 400 Bad Request"
+INFO  08-29 10:18:48.220 httpx                            ..._single_request | HTTP Request: POST http://127.0.0.1:18600/v1/runners/runner_token_e3a0aea0017aa2e60c5050cd8d908ebd/token "HTTP/1.1 400 Bad Request"
+INFO  08-29 10:18:48.225 httpx                            ..._single_request | HTTP Request: POST http://127.0.0.1:18600/v1/runners/runner_token_e3a0aea0017aa2e60c5050cd8d908ebd/token "HTTP/1.1 400 Bad Request"
+INFO  08-29 10:18:48.232 httpx                            ..._single_request | HTTP Request: POST http://127.0.0.1:18600/v1/runners/runner_token_e3a0aea0017aa2e60c5050cd8d908ebd/token "HTTP/1.1 400 Bad Request"
+INFO  08-29 10:18:48.242 runtime.filesystem_registry      ...ache_is_enabled | git untracked-cache config checked: git_root=/home/alex/omnigent-cursor2 elapsed_ms=2.0 enabled=True
+INFO  08-29 10:18:48.265 ...ime.harnesses.process_manager start              | HarnessProcessManager started; instance_dir=/tmp/omnigent-1000/ap-7a28624a4b3d4e6a9b8e271ace77666f
+INFO  08-29 10:18:48.265 terminals.pane_reaper            start              | native pane reaper started (idle_timeout=3600.0s, interval=60.0s)
+INFO  08-29 10:18:48.279 runner.direct_attach             ...attach_listener | direct-attach listener on 127.0.0.1:36407
+INFO  08-29 10:18:48.284 ...er.transports.ws_tunnel.serve _serve_tunnel_once | runner runner_token_e3a0aea0017aa2e60c5050cd8d908ebd connected to ws://127.0.0.1:18600/v1/runners/runner_token_e3a0aea0017aa2e60c5050cd8d908ebd/tunnel
+INFO  08-29 10:18:48.299 httpx                            ..._single_request | HTTP Request: GET http://127.0.0.1:18600/v1/sessions/a7032669a17c461699b8802c8c60adfe/agent/contents "HTTP/1.1 200 OK"
+INFO  08-29 10:18:48.406 httpx                            ..._single_request | HTTP Request: GET http://127.0.0.1:18600/v1/sessions/a7032669a17c461699b8802c8c60adfe "HTTP/1.1 200 OK"
+INFO  08-29 10:18:48.422 httpx                            ..._single_request | HTTP Request: GET http://127.0.0.1:18600/v1/sessions/a7032669a17c461699b8802c8c60adfe "HTTP/1.1 200 OK"
+INFO  08-29 10:18:48.450 httpx                            ..._single_request | HTTP Request: POST http://127.0.0.1:18600/v1/runners/runner_token_e3a0aea0017aa2e60c5050cd8d908ebd/token "HTTP/1.1 400 Bad Request"
+INFO  08-29 10:18:48.458 httpx                            ..._single_request | HTTP Request: POST http://127.0.0.1:18600/v1/runners/runner_token_e3a0aea0017aa2e60c5050cd8d908ebd/token "HTTP/1.1 400 Bad Request"
+WARN  08-29 10:18:48.467 spec.parser                      _discover_skills   | Skipping skill with bad frontmatter: /home/alex/.claude/skills/trio-ship/SKILL.md: SKILL.md has invalid YAML frontmatter: /home/alex/.claude/skills/trio-ship/SKILL.md: mapping values are not allowed here
+  in "<unicode string>", line 2, column 131:
+     ...  + mailbox) when a SHIP's commit: lines are missing. No subagent ... 
+                                         ^
+WARN  08-29 10:18:48.468 spec.parser                      _discover_skills   | Skipping skill with bad frontmatter: /home/alex/.agents/skills/trio-ship/SKILL.md: SKILL.md has invalid YAML frontmatter: /home/alex/.agents/skills/trio-ship/SKILL.md: mapping values are not allowed here
+  in "<unicode string>", line 2, column 131:
+     ...  + mailbox) when a SHIP's commit: lines are missing. No subagent ... 
+                                         ^
+WARN  08-29 10:18:48.470 spec.parser                      _discover_skills   | Skipping skill with bad frontmatter: /home/alex/.claude/skills/trio-ship/SKILL.md: SKILL.md has invalid YAML frontmatter: /home/alex/.claude/skills/trio-ship/SKILL.md: mapping values are not allowed here
+  in "<unicode string>", line 2, column 131:
+     ...  + mailbox) when a SHIP's commit: lines are missing. No subagent ... 
+                                         ^
+WARN  08-29 10:18:48.471 spec.parser                      _discover_skills   | Skipping skill with bad frontmatter: /home/alex/.agents/skills/trio-ship/SKILL.md: SKILL.md has invalid YAML frontmatter: /home/alex/.agents/skills/trio-ship/SKILL.md: mapping values are not allowed here
+  in "<unicode string>", line 2, column 131:
+     ...  + mailbox) when a SHIP's commit: lines are missing. No subagent ... 
+                                         ^
+Warning: skipped 4 skill(s) with frontmatter errors:
+  - /home/alex/.claude/skills/trio-ship/SKILL.md: SKILL.md has invalid YAML frontmatter: /home/alex/.claude/skills/trio-ship/SKILL.md: mapping values are not allowed here
+  in "<unicode string>", line 2, column 131:
+     ...  + mailbox) when a SHIP's commit: lines are missing. No subagent ... 
+                                         ^
+  - /home/alex/.agents/skills/trio-ship/SKILL.md: SKILL.md has invalid YAML frontmatter: /home/alex/.agents/skills/trio-ship/SKILL.md: mapping values are not allowed here
+  in "<unicode string>", line 2, column 131:
+     ...  + mailbox) when a SHIP's commit: lines are missing. No subagent ... 
+                                         ^
+  - /home/alex/.claude/skills/trio-ship/SKILL.md: SKILL.md has invalid YAML frontmatter: /home/alex/.claude/skills/trio-ship/SKILL.md: mapping values are not allowed here
+  in "<unicode string>", line 2, column 131:
+     ...  + mailbox) when a SHIP's commit: lines are missing. No subagent ... 
+                                         ^
+  - /home/alex/.agents/skills/trio-ship/SKILL.md: SKILL.md has invalid YAML frontmatter: /home/alex/.agents/skills/trio-ship/SKILL.md: mapping values are not allowed here
+  in "<unicode string>", line 2, column 131:
+     ...  + mailbox) when a SHIP's commit: lines are missing. No subagent ... 
+                                         ^
+Fix the YAML frontmatter in the above SKILL.md file(s) to load them.
+INFO  08-29 10:18:48.892 runner.app                       ...cursor_terminal | Auto-created cursor terminal + forwarder/approval-mirror for session a7032669a17c461699b8802c8c60adfe; task=cursor-bridges-a7032669a17c461699b8802c8c60adfe
+INFO  08-29 10:18:48.910 httpx                            ..._single_request | HTTP Request: GET http://127.0.0.1:18600/v1/sessions/a7032669a17c461699b8802c8c60adfe/items?limit=1&order=desc "HTTP/1.1 200 OK"
+INFO  08-29 10:18:48.957 httpx                            ..._single_request | HTTP Request: GET http://127.0.0.1:18600/v1/sessions/a7032669a17c461699b8802c8c60adfe "HTTP/1.1 200 OK"
+INFO  08-29 10:18:48.959 runner.app                       ...native_terminal | Cursor terminal ensure returning existing resource: session=a7032669a17c461699b8802c8c60adfe terminal_id=terminal_cursor_main
+INFO  08-29 10:18:51.095 runner.app                       ..._session_events | post_session_events: conv=a7032669a17c461699b8802c8c60adfe type=model_change active=False buffer_len=0 content_types=[] model_override=None
+WARN  08-29 10:18:52.257 runner.app                       ...fe_error_detail | cursor-native model change failed: cursor model 'definitely-not-a-cursor-model-zzz' is not available in the live catalog
+Traceback (most recent call last):
+  File "/home/alex/omnigent-cursor2/omnigent/cursor_native_bridge.py", line 825, in inject_model_command
+    expected_display_name = next(
+                            ^^^^^
+StopIteration
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/alex/omnigent-cursor2/omnigent/runner/app.py", line 4485, in _handle_cursor_native_model_change
+    await asyncio.to_thread(
+  File "/home/alex/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/concurrent/futures/thread.py", line 59, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent-cursor2/omnigent/cursor_native_bridge.py", line 833, in inject_model_command
+    raise RuntimeError(
+RuntimeError: cursor model 'definitely-not-a-cursor-model-zzz' is not available in the live catalog
+INFO  08-29 10:18:54.283 runner.app                       ..._session_events | post_session_events: conv=a7032669a17c461699b8802c8c60adfe type=model_change active=False buffer_len=0 content_types=[] model_override=None
+WARN  08-29 10:19:01.469 runner.app                       ...fe_error_detail | cursor-native model change failed: cursor model 'cursor-grok-4.6-medium' did not resolve to its exact picker row; the model was not switched
+Traceback (most recent call last):
+  File "/home/alex/omnigent-cursor2/omnigent/runner/app.py", line 4485, in _handle_cursor_native_model_change
+    await asyncio.to_thread(
+  File "/home/alex/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/concurrent/futures/thread.py", line 59, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alex/omnigent-cursor2/omnigent/cursor_native_bridge.py", line 900, in inject_model_command
+    raise RuntimeError(
+RuntimeError: cursor model 'cursor-grok-4.6-medium' did not resolve to its exact picker row; the model was not switched
+INFO  08-29 10:19:04.589 ...er.transports.ws_tunnel.serve serve_tunnel       | runner tunnel disconnected: server recycled the tunnel (close 1012); reconnecting promptly; retrying in 0.50s (jittered from 0.50s)
+INFO  08-29 10:19:05.087 runner.resource_registry         ...ession_statuses | Re-arming session status after tunnel reconnect: cleared_edges=1 pollers=0 sessions=['a7032669a17c461699b8802c8c60adfe']
+INFO  08-29 10:19:05.088 ...er.transports.ws_tunnel.serve serve_tunnel       | runner tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 18600); retrying in 0.74s (jittered from 0.50s)
+INFO  08-29 10:19:05.826 runner.resource_registry         ...ession_statuses | Re-arming session status after tunnel reconnect: cleared_edges=1 pollers=0 sessions=['a7032669a17c461699b8802c8c60adfe']
+INFO  08-29 10:19:05.827 ...er.transports.ws_tunnel.serve serve_tunnel       | runner tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 18600); retrying in 1.48s (jittered from 1.00s)
+INFO  08-29 10:19:07.303 ...er.transports.ws_tunnel.serve serve_tunnel       | runner tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 18600); retrying in 2.48s (jittered from 2.00s)
+INFO  08-29 10:19:09.785 ...er.transports.ws_tunnel.serve serve_tunnel       | runner tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 18600); retrying in 4.06s (jittered from 4.00s)
+INFO  08-29 10:19:13.844 ...er.transports.ws_tunnel.serve serve_tunnel       | runner tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 18600); retrying in 6.25s (jittered from 8.00s)
+INFO  08-29 10:19:20.096 ...er.transports.ws_tunnel.serve serve_tunnel       | runner tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 18600); retrying in 7.39s (jittered from 10.00s)
+INFO  08-29 10:19:27.492 ...er.transports.ws_tunnel.serve serve_tunnel       | runner tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 18600); retrying in 8.13s (jittered from 10.00s)
+INFO  08-29 10:19:35.619 ...er.transports.ws_tunnel.serve serve_tunnel       | runner tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 18600); retrying in 6.41s (jittered from 10.00s)
+INFO  08-29 10:19:42.026 ...er.transports.ws_tunnel.serve serve_tunnel       | runner tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 18600); retrying in 12.58s (jittered from 10.00s)
+INFO  08-29 10:19:54.610 ...er.transports.ws_tunnel.serve serve_tunnel       | runner tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 18600); retrying in 5.33s (jittered from 10.00s)
+INFO  08-29 10:19:59.944 ...er.transports.ws_tunnel.serve serve_tunnel       | runner tunnel disconnected: [Errno 111] Connect call failed ('127.0.0.1', 18600); retrying in 13.99s (jittered from 10.00s)

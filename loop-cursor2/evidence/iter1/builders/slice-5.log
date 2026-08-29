@@ -1,0 +1,21 @@
+🤖 DONE
+
+Files changed:
+- `omnigent/cursor_native.py`
+- `tests/test_cursor_native.py`
+
+Summary:
+- Preserve exact CLI model ids and display names.
+- Keep Claude ids and distinct Grok effort variants.
+- Preserve default/current tags.
+- Keep empty-catalog rejection.
+
+Verification:
+- Focused tests: `21 passed in 0.15s`
+- `git diff --check`: passed.
+- Exact command was blocked because `pnpm` is unavailable.
+- No commit or push performed.
+
+Concerns: unrelated working-tree changes were preserved.🤖 Focused verification succeeded: **21 tests passed in 0.15s**.
+
+No follow-up action is needed. The literal command remains blocked by missing `pnpm`; no commit or push was performed.

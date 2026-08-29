@@ -1,0 +1,21 @@
+20:WARN  08-29 10:49:07.319 runner.app                       ...fe_error_detail | cursor-native model change failed: cursor model 'cursor-not-a-real-model-repair1' is not available in the live catalog
+21-Traceback (most recent call last):
+22-  File "/home/alex/omnigent-cursor2/omnigent/cursor_native_bridge.py", line 830, in inject_model_command
+23-    expected_display_name = next(
+24-                            ^^^^^
+25-StopIteration
+26-
+27-The above exception was the direct cause of the following exception:
+28-
+29-Traceback (most recent call last):
+30-  File "/home/alex/omnigent-cursor2/omnigent/runner/app.py", line 4485, in _handle_cursor_native_model_change
+31-    await asyncio.to_thread(
+32-  File "/home/alex/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+33-    return await loop.run_in_executor(None, func_call)
+34-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+35-  File "/home/alex/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/concurrent/futures/thread.py", line 59, in run
+36-    result = self.fn(*self.args, **self.kwargs)
+37-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+38-  File "/home/alex/omnigent-cursor2/omnigent/cursor_native_bridge.py", line 838, in inject_model_command
+39-    raise RuntimeError(
+40-RuntimeError: cursor model 'cursor-not-a-real-model-repair1' is not available in the live catalog

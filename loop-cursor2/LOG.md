@@ -1,1 +1,2 @@
 - iter 0 | coordinator | cursor2 mailbox initialized (base 62d01838d; render order decided in ChatPage.mergePendingBubbles not the store; finalizedLiveMessageIds blacklist; picker composer-glyph collision)
+- iter 1 | lead | render-path fixes + picker units + H6 payload; two-turn SSE markers on :18500; live picker PATCH 200 did not move pane

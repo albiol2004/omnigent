@@ -1,0 +1,15 @@
+🤖 The picker now ignores the composer arrow, rejects sibling effort variants,
+and retries highlight resolution after filtering.
+
+DONE
+
+Files changed:
+- `omnigent/cursor_native_bridge.py`
+- `tests/test_cursor_native_bridge.py`
+
+Verification:
+- Focused pytest: **21 passed**
+- Ruff: **All checks passed**
+- `git diff --check`: **passed**
+
+No commit or push performed. Live TUI testing was not run per isolation rules.

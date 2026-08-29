@@ -1,0 +1,209 @@
+event: session.heartbeat
+data: {"sequence_number": null, "type": "session.heartbeat", "server_time": null}
+
+event: session.resource.created
+data: {"sequence_number": null, "type": "session.resource.created", "resource": {"id": "terminal_cursor_main", "object": "session.resource", "type": "terminal", "session_id": "07bf622576fb47fcbfece3b3073de9da", "name": "cursor:main", "metadata": {"terminal_name": "cursor", "session_key": "main", "running": true, "tmux_socket": "/tmp/omnigent-terminal-xzycgs7_/tmux.sock", "tmux_target": "main", "terminal_transport": "control"}, "environment": "env_terminal_cursor_main"}}
+
+event: session.changed_files.invalidated
+data: {"sequence_number": null, "type": "session.changed_files.invalidated", "session_id": "07bf622576fb47fcbfece3b3073de9da", "environment_id": "default"}
+
+event: session.presence
+data: {"sequence_number": null, "type": "session.presence", "conversation_id": "07bf622576fb47fcbfece3b3073de9da", "viewers": []}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.status
+data: {"sequence_number": null, "type": "session.status", "conversation_id": "07bf622576fb47fcbfece3b3073de9da", "status": "running", "response_id": null, "error": null, "background_task_count": null, "blocked_on": null}
+
+event: session.model_options
+data: {"sequence_number": null, "type": "session.model_options", "conversation_id": "07bf622576fb47fcbfece3b3073de9da"}
+
+event: response.in_progress
+data: {"sequence_number": 1, "type": "response.in_progress", "response": {"id": "resp_5cbe440b841b47cd88bc98df", "object": "response", "status": "in_progress", "model": "cursor-native-ui", "created_at": 1787990754, "completed_at": null, "output": [], "background": false, "store": true, "usage": null, "previous_response_id": null, "conversation": null, "instructions": null, "reasoning": null, "error": null, "incomplete_details": null}}
+
+event: response.completed
+data: {"sequence_number": 2, "type": "response.completed", "response": {"id": "resp_5cbe440b841b47cd88bc98df", "object": "response", "status": "completed", "model": "cursor-native-ui", "created_at": 1787990755, "completed_at": null, "output": [], "background": false, "store": true, "usage": null, "previous_response_id": null, "conversation": null, "instructions": null, "reasoning": null, "error": null, "incomplete_details": null}}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.model
+data: {"sequence_number": null, "type": "session.model", "conversation_id": "07bf622576fb47fcbfece3b3073de9da", "model": "gpt-5.6-luna"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 0, "final": false}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": " I am ready.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 1, "final": false}
+
+event: response.in_progress
+data: {"sequence_number": 1, "type": "response.in_progress", "response": {"id": "resp_68f321e38cca43839dda4d1c", "object": "response", "status": "in_progress", "model": "cursor-native-ui", "created_at": 1787990787, "completed_at": null, "output": [], "background": false, "store": true, "usage": null, "previous_response_id": null, "conversation": null, "instructions": null, "reasoning": null, "error": null, "incomplete_details": null}}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\n\n\n\n\nBETATWO and a short sentence.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 2, "final": false}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: response.completed
+data: {"sequence_number": 2, "type": "response.completed", "response": {"id": "resp_68f321e38cca43839dda4d1c", "object": "response", "status": "completed", "model": "cursor-native-ui", "created_at": 1787990787, "completed_at": null, "output": [], "background": false, "store": true, "usage": null, "previous_response_id": null, "conversation": null, "instructions": null, "reasoning": null, "error": null, "incomplete_details": null}}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\nSpend at least twenty seconds thinking, then reply with exactly the word BETATWO and a short sentence.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 3, "final": false}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\n\n\n\n  Waiting 20s", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 4, "final": false}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply with exactly the  word BETATWO and a short sentence.\n\n\n\n   Waiting 20s\n\n\u2830\u2830 Waiting  6 tokens    Tip: Use /mcp to connect Cursor to your tools and data sources.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 5, "final": false}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply with exactly the  word BETATWO and a short sentence.\n\n\n\n   Waiting 20s\n\n\u2818\u2824 Waiting  6 tokens    Tip: Use /mcp to connect Cursor to your tools and data sources.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 6, "final": false}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply with exactly the  word BETATWO and a short sentence.\n\n\n\n   Waiting 19s\n\n\u2830\u2833 Waiting  6 tokens    Tip: Use /mcp to connect Cursor to your tools and data sources.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 7, "final": false}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply with exactly the  word BETATWO and a short sentence.\n\n\n\n   Waiting 19s\n\n\u2820\u281b Waiting  6 tokens    Tip: Use /mcp to connect Cursor to your tools and data sources.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 8, "final": false}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply with exactly the  word BETATWO and a short sentence.\n\n\n\n   Waiting 18s\n\n\u2830\u2830 Waiting  6 tokens    Tip: Use /mcp to connect Cursor to your tools and data sources.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 9, "final": false}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply with exactly the  word BETATWO and a short sentence.\n\n\n\n   Waiting 18s\n\n\u2818\u2824 Waiting  6 tokens    Tip: Use /mcp to connect Cursor to your tools and data sources.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 10, "final": false}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply with exactly the  word BETATWO and a short sentence.\n\n\n\n   Waiting 17s\n\n\u2830\u2833 Waiting  6 tokens    Tip: Use /mcp to connect Cursor to your tools and data sources.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 11, "final": false}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply with exactly the  word BETATWO and a short sentence.\n\n\n\n   Waiting 17s\n\n\u2820\u281b Waiting  6 tokens    Tip: Use /mcp to connect Cursor to your tools and data sources.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 12, "final": false}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply with exactly the  word BETATWO and a short sentence.\n\n\n\n   Waiting 17s\n\n\u2800\u281e Waiting  6 tokens    Tip: Use /mcp to connect Cursor to your tools and data sources.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 13, "final": false}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply with exactly the  word BETATWO and a short sentence.\n\n\n\n   Waiting 16s\n\n\u2818\u2824 Waiting  6 tokens    Tip: Use /mcp to connect Cursor to your tools and data sources.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 14, "final": false}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply with exactly the  word BETATWO and a short sentence.\n\n\n\n   Waiting 16s\n\n\u2818\u2806 Waiting  6 tokens    Tip: Use /mcp to connect Cursor to your tools and data sources.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 15, "final": false}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply with exactly the  word BETATWO and a short sentence.\n\n\n\n   Waiting 15s\n\n\u2820\u281b Waiting  6 tokens    Tip: Use /mcp to connect Cursor to your tools and data sources.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 16, "final": false}
+
+event: response.output_text.delta
+data: {"sequence_number": null, "type": "response.output_text.delta", "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply with exactly the  word BETATWO and a short sentence.\n\n\n\n   Waiting 15s\n\n\u2800\u281e Waiting  6 tokens    Tip: Use /mcp to connect Cursor to your tools and data sources.", "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da", "index": 17, "final": false}
+
+event: session.terminal.activity
+data: {"sequence_number": null, "type": "session.terminal.activity", "session_id": "07bf622576fb47fcbfece3b3073de9da", "terminal_id": "terminal_cursor_main"}
+
+data: [DONE]
+

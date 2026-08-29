@@ -1,0 +1,1 @@
+port=18500 conv=07bf622576fb47fcbfece3b3073de9da turn1=ALPHAONE turn2=BETATWO bogus=200 change=200 model=cursor-grok-4.6-medium

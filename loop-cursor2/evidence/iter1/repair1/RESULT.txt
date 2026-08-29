@@ -1,0 +1,1 @@
+before_footer="Cursor Grok 4.6 Medium"; requested="cursor-grok-4.6-low"; after_footer="Cursor Grok 4.6 Low"; real_status=200; bogus_model="cursor-not-a-real-model-repair1"; bogus_status=503; model_override_after_bogus=None

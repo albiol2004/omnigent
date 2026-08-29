@@ -1,0 +1,116 @@
+🤖 Ask mode prevented writes, so I did not create `DECISION.md` or copy
+evidence files. The findings below are paste-ready.
+
+The 42 count is the initial burst from 09:31:27–09:31:58 (server log lines
+627–749). The same log contains seven later posts, so 42 is windowed.
+
+The missing transcript rows were not caused by failed `/events` posts. Native
+web messages are intentionally not persisted by AP; the Cursor store
+forwarder is the single writer. That forwarder then yielded the shared Cursor
+store to the earlier session, while the remaining requests were transient
+stream or metadata events.
+
+## Event classification
+
+| Count | Event type | Evidence |
+|---:|---|---|
+| 2 | `message` | Server lines 627, 694; runner lines 52, 96 |
+| 1 | `external_model_change` | Server line 652; forwarder lines 621–660 |
+| 33 | `external_output_text_delta` | Server lines 658, 696, 698–734; forwarder lines 917–949 |
+| 4 | `external_session_status` | Server lines 665, 678, 738, 749; runner lines 87, 90, 133, 136 |
+| 2 | `external_session_usage` | Server lines 676, 747; two usage records in the bridge state |
+| 0 | `external_conversation_item` | No accepted item POST is present |
+
+Total: `2 + 1 + 33 + 4 + 2 = 42`.
+
+All 42 access-log entries returned `202 Accepted`. There is no evidence of a
+failed `external_conversation_item` POST, wrong session ID, or validation
+rejection for session `52d47c71...`.
+
+## Why only the resource row persisted
+
+- The resource row was created separately by the terminal resource endpoint:
+  `server/routes/sessions/routes_resources.py:1006-1013`, not by one of the
+  42 `/events` calls.
+- Native web messages intentionally bypass AP persistence:
+  `orchestration.py:5289-5304` and `4054-4069`.
+- The Cursor forwarder detected the shared store and paused:
+
+  `runner-52...log:85`:
+  `cursor chat .../bbd9fc85-.../store.db already mirrored by another session;
+  pausing mirror for session=52d47c71...`
+
+- The guard is implemented in `cursor_native_forwarder.py:295-331` and
+  `1083-1102`. The sibling session `6511d339...` owns the same store and has
+  the earlier launch timestamp.
+- The 33 output deltas are explicitly live-only:
+  `routes_events.py:404-407` and `947-959`.
+- Status and usage calls update live state/session metadata, not transcript
+  items. Model change updates `model_override`, not a conversation item.
+
+Therefore the primary Cause 7 diagnosis is:
+
+> Duplicate Cursor-store ownership caused session 52’s transcript mirror to
+> pause. The user messages remained pending/in-memory, and assistant output
+> was streamed only as transient deltas. No durable user or assistant item was
+> created.
+
+## Epoch-stall relationship
+
+**Partial yes as a general mechanism; not demonstrated as the cause here.**
+
+After an assistant item, `CursorNativeStream.reset()` sets
+`_awaiting_new_turn=True` (`cursor_native_stream.py:200-207`). For a rejected
+user-row POST, the forwarder executes `break` before reaching
+`live_stream.start_new_turn()` (`cursor_native_forwarder.py:1177-1228`).
+That can leave the stream waiting and prevent `_start_new_epoch()` from being
+reached (`cursor_native_stream.py:138-153, 183-198`).
+
+The fifth bounded rejection is quarantined and advances the rowid, while a
+connection failure retries indefinitely. In this incident, no item POST
+rejection is logged; the mirror was paused before item mirroring. Thus this is
+a latent follow-up issue, not the observed Cause 7 trigger.
+
+## Hypothesis 6
+
+**CONFIRMED, with one qualification:** the evidence proves an unhandled SSE
+validation exception. It does not show a 500 response for session 52’s
+`/events` calls.
+
+The server log contains:
+
+- Lines 178–187 and 377–386:
+  `Unhandled exception: 3 validation errors for tagged-union[...]`
+- Missing fields:
+  `response.failed.response.id`
+  `response.failed.response.model`
+  `response.failed.response.created_at`
+
+The stream validator is `helpers.py:7485-7494`. The schema requires those
+fields in `schemas.py:1092-1096`; `FailedEvent.response` is a required
+`ResponseObject` at `schemas.py:3787-3801`.
+
+The producer constructs incomplete failure objects in
+`runner/app.py:6576-6583` and `6597-6604`, supplying only
+`status` and `error`.
+
+## Priority
+
+- **Fix now:** normalize all runner-generated `response.failed` events into a
+  complete `ResponseObject` before publishing them, with a regression test.
+  This prevents unhandled ASGI stream failures.
+- **Follow up:** define ownership/transfer behavior when two Cursor sessions
+  share a working directory, and decouple rejected item delivery from epoch
+  advancement. No item-POST fix is evidenced for this specific trace.
+
+Useful read-only commands:
+
+```bash
+sid=52d47c71e54b4f61a2563bbaefe6ad34
+rg -n "POST /v1/sessions/$sid/events" \
+  /home/alex/.omnigent/logs/server/server-20260829-093025-885548.log
+rg -n "post_session_events: conv=$sid|already mirrored" \
+  /home/alex/.omnigent/logs/runner/runner-$sid-20260829-093127-151120.log
+```
+
+No tests were run because this was a read-only reconnaissance task.

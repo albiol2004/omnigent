@@ -1,0 +1,19 @@
+🤖 Implemented the requested lifecycle and pending-bubble ordering fixes.
+
+Changed:
+- `web/src/store/chatStore.ts`
+- `web/src/store/chatStore.test.ts`
+- `web/src/pages/ChatPage.tsx`
+- `web/src/pages/ChatPage.test.ts`
+- Added `web/src/pages/ChatPage.cursorRender.test.ts`
+
+Verification:
+- Vitest: **533/533 passed**
+- TypeScript: **passed**
+- Prettier checks: **passed**
+- New-test Oxlint: **passed**
+- Diff whitespace check: **passed**
+
+Concern: broader Oxlint still reports existing React Compiler diagnostics in
+`ChatPage.tsx`. No commits, pushes, servers, mailbox files, or forbidden files were
+modified.

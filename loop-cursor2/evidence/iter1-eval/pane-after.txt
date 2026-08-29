@@ -1,0 +1,23 @@
+
+
+  Cursor Agent
+  v2026.08.25-3e8eec8
+  Tip: Try Cursor Grok 4.5 via /model, frontier intelligence at a fraction of
+  the cost.
+
+
+
+
+  → Plan, search, build anything
+
+
+  Cursor Grok 4.6 Medium                                        Run Everything
+  ~/omnigent-cursor2/loop-cursor2/evidence/iter1-eval/scratch-ws ·
+  cursor-render-picker
+
+
+
+
+
+
+

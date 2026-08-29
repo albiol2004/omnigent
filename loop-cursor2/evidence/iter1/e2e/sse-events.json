@@ -1,0 +1,345 @@
+[
+  {
+    "event": "session.model_options",
+    "keys": [
+      "sequence_number",
+      "type",
+      "conversation_id"
+    ],
+    "message_id": null,
+    "delta": "",
+    "type": "session.model_options",
+    "model": null
+  },
+  {
+    "event": "response.in_progress",
+    "keys": [
+      "sequence_number",
+      "type",
+      "response"
+    ],
+    "message_id": "resp_5cbe440b841b47cd88bc98df",
+    "delta": "",
+    "type": "response.in_progress",
+    "model": null
+  },
+  {
+    "event": "response.completed",
+    "keys": [
+      "sequence_number",
+      "type",
+      "response"
+    ],
+    "message_id": "resp_5cbe440b841b47cd88bc98df",
+    "delta": "",
+    "type": "response.completed",
+    "model": null
+  },
+  {
+    "event": "session.model",
+    "keys": [
+      "sequence_number",
+      "type",
+      "conversation_id",
+      "model"
+    ],
+    "message_id": null,
+    "delta": "",
+    "type": "session.model",
+    "model": "gpt-5.6-luna"
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE.",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": " I am ready.",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.in_progress",
+    "keys": [
+      "sequence_number",
+      "type",
+      "response"
+    ],
+    "message_id": "resp_68f321e38cca43839dda4d1c",
+    "delta": "",
+    "type": "response.in_progress",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\n\n\n\n\nBETATWO and a short sentence.",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.completed",
+    "keys": [
+      "sequence_number",
+      "type",
+      "response"
+    ],
+    "message_id": "resp_68f321e38cca43839dda4d1c",
+    "delta": "",
+    "type": "response.completed",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\nSpend at least twenty seconds thinking, then reply wit",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\n\n\n\n  Waiting 20s",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply wi",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply wi",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply wi",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply wi",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply wi",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply wi",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply wi",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply wi",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply wi",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply wi",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply wi",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply wi",
+    "type": "response.output_text.delta",
+    "model": null
+  },
+  {
+    "event": "response.output_text.delta",
+    "keys": [
+      "sequence_number",
+      "type",
+      "delta",
+      "message_id",
+      "index",
+      "final"
+    ],
+    "message_id": "cursor-live-07bf622576fb47fcbfece3b3073de9da",
+    "delta": "\ud83e\udd16 ALPHAONE. I am ready.\n\n\n Spend at least twenty seconds thinking, then reply wi",
+    "type": "response.output_text.delta",
+    "model": null
+  }
+]

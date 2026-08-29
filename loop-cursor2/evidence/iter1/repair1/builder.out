@@ -1,0 +1,25 @@
+🤖 The scoped repair is complete. The picker now handles wrapped rows, exact variant matching, family-query fallback, and Cursor’s effort editor. Native runner failures now clear the failed override and return an honest `503`.
+
+Live proof passed in isolation:
+- Before: `Cursor Grok 4.6 Medium`
+- Requested/after: `cursor-grok-4.6-low` → `Cursor Grok 4.6 Low`
+- Real PATCH: `200`
+- Bogus PATCH: `503`, named the model
+- Persisted override after failure: `None`
+
+Changed:
+- `omnigent/cursor_native_bridge.py`
+- `omnigent/server/routes/_sessions/helpers.py`
+- `tests/test_cursor_native_bridge.py`
+- `tests/server/integration/test_sessions_model_override.py`
+- Evidence saved under `loop-cursor2/evidence/iter1/repair1/`
+
+Verification:
+- Bridge tests: `25 passed`
+- Route tests: `20 passed`
+- Scoped pre-commit checks: passed
+- Full pre-commit: only blocked by pre-existing hardcoded-model entries in
+  `loop-fork-real/evidence`
+
+All throwaway services and tmux sockets were stopped. No commit or push was performed.🤖 No follow-up is needed. The final proof and tests succeeded. The `143` exits were intentional shutdowns of throwaway servers, and all throwaway processes and tmux sockets were cleaned up.
+exit=0

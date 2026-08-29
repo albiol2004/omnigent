@@ -1,0 +1,41 @@
+INFO  08-29 09:31:02.952 server.routes.sessions           ...re_runner_relay | Relay: reusing existing for session=6511d33969cb45d9a6af3c85fec3b856 runner=runner_token_2dc10d369252a3f3147810c51e1bcac4
+INFO  08-29 09:31:02.952 server.routes.sessions           ...ner_stream_once | Relay: connecting to runner GET /stream for session=6511d33969cb45d9a6af3c85fec3b856
+INFO  08-29 09:31:02.953 httpx                            ..._single_request | HTTP Request: GET http://runner/v1/sessions/6511d33969cb45d9a6af3c85fec3b856/stream "HTTP/1.1 200 OK"
+INFO  08-29 09:31:02.954 server.routes.sessions           ...ner_stream_once | Relay: connected to runner GET /stream for session=6511d33969cb45d9a6af3c85fec3b856
+INFO  08-29 09:31:02.970 uvicorn.access                   send               | 127.0.0.1:59238 - "GET /v1/sessions/6511d33969cb45d9a6af3c85fec3b856 HTTP/1.1" 200 OK 12.9ms rid=cdfd5b0a40de4846b78a25cbc68e354b ua="python-httpx/0.28.1" sid=6511d33969cb45d9a6af3c85fec3b856
+INFO  08-29 09:31:02.976 httpx                            ..._single_request | HTTP Request: POST http://runner/v1/sessions/6511d33969cb45d9a6af3c85fec3b856/resources/terminals "HTTP/1.1 200 OK"
+INFO  08-29 09:31:02.976 server.routes.sessions           ...erminal_message | Cursor terminal message forward starting: session=6511d33969cb45d9a6af3c85fec3b856 block_types=['input_text'] model_override=None
+INFO  08-29 09:31:02.986 uvicorn.access                   send               | 127.0.0.1:59238 - "GET /v1/sessions/6511d33969cb45d9a6af3c85fec3b856/items?limit=100&order=asc HTTP/1.1" 200 OK 5.7ms rid=6b13d388331d40758db4b376f91aaf35 ua="python-httpx/0.28.1" sid=6511d33969cb45d9a6af3c85fec3b856
+INFO  08-29 09:31:02.994 httpx                            ..._single_request | HTTP Request: POST http://runner/v1/sessions/6511d33969cb45d9a6af3c85fec3b856/events "HTTP/1.1 202 Accepted"
+INFO  08-29 09:31:02.994 server.routes.sessions           ...erminal_message | Cursor terminal message runner response: session=6511d33969cb45d9a6af3c85fec3b856 status=202 body={"status":"accepted","detail":"Turn started."}
+INFO  08-29 09:31:02.994 uvicorn.access                   send               | 100.126.226.36:0 - "POST /v1/sessions/6511d33969cb45d9a6af3c85fec3b856/events HTTP/1.1" 202 Accepted 790.9ms rid=1e7946d44ca34377aaaef6d7008836de ua="Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHT" sid=6511d33969cb45d9a6af3c85fec3b856
+INFO  08-29 09:31:03.038 uvicorn.access                   send               | 100.126.226.36:0 - "GET /v1/sessions?order=desc&sort_by=updated_at&limit=30&include_archived=true HTTP/1.1" 200 OK 12.2ms rid=2bb62bdabe9945268556da976b37c540 ua="Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHT"
+INFO  08-29 09:31:03.571 httpx                            ..._single_request | HTTP Request: GET http://runner/v1/sessions/6511d33969cb45d9a6af3c85fec3b856/cursor-model-options "HTTP/1.1 200 OK"
+INFO  08-29 09:31:03.651 uvicorn.access                   send               | 100.126.226.36:0 - "GET /v1/sessions/6511d33969cb45d9a6af3c85fec3b856?include_items=false&include_liveness=false HTTP/1.1" 200 OK 10.5ms rid=a0a5691df7ab41729c1a85cc0b19a840 ua="Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHT" sid=6511d33969cb45d9a6af3c85fec3b856
+INFO  08-29 09:31:03.806 httpx                            ..._single_request | HTTP Request: GET http://runner/v1/sessions/6511d33969cb45d9a6af3c85fec3b856/skills "HTTP/1.1 200 OK"
+INFO  08-29 09:31:03.809 uvicorn.access                   send               | 100.126.226.36:0 - "GET /v1/sessions/6511d33969cb45d9a6af3c85fec3b856?include_items=false&include_liveness=false&refresh_state=true HTTP/1.1" 200 OK 16.0ms rid=855946bda311449aad7f7cbb96338e9e ua="Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHT" sid=6511d33969cb45d9a6af3c85fec3b856
+INFO  08-29 09:31:03.834 uvicorn.error                    send               | 100.126.226.36:0 - "WebSocket /v1/sessions/6511d33969cb45d9a6af3c85fec3b856/resources/terminals/terminal_cursor_main/attach?transport=control" [accepted]
+INFO  08-29 09:31:03.834 uvicorn.error                    send_response      | connection open
+ERROR 08-29 09:31:04.395 server.app                       ...ndled_exception | Unhandled exception: 3 validation errors for tagged-union[SessionStatusEvent,SessionUsageEvent,SessionModelEvent,SessionReasoningEffortEvent,SessionCollaborationModeEvent,SessionAgentChangedEvent,SessionTodosEvent,SessionTerminalPendingEvent,SessionSandboxStatusEvent,SessionMcpStartupEvent,SessionSkillsEvent,SessionModelOptionsEvent,SessionInputConsumedEvent,SessionInterruptedEvent,SessionCreatedEvent,SessionSupersededEvent,SessionPresenceEvent,SessionResourceCreatedEvent,SessionResourceDeletedEvent,SessionChildSessionUpdatedEvent,SessionChangedFilesInvalidatedEvent,SessionTerminalActivityEvent,OutputTextDeltaEvent,ToolOutputDeltaEvent,ReasoningStartedEvent,ReasoningTextDeltaEvent,ReasoningSummaryTextDeltaEvent,OutputItemDoneEvent,OutputFileDoneEvent,HeartbeatEvent,SessionHeartbeatEvent,ElicitationRequestEvent,ElicitationResolvedEvent,BrowserActionRequestEvent,PolicyDeniedEvent,CreatedEvent,QueuedEvent,InProgressEvent,CompletedEvent,FailedEvent,CancelledEvent,IncompleteEvent,RetryEvent,ErrorEvent,CompactionInProgressEvent,CompactionCompletedEvent,CompactionFailedEvent,ClientTaskCancelEvent,TurnStartedEvent,TurnCompletedEvent,TurnFailedEvent,TurnCancelledEvent]
+`response.failed`.response.id
+  Field required [type=missing, input_value={'status': 'failed', 'err...', 'type': 'ReadError'}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+`response.failed`.response.model
+  Field required [type=missing, input_value={'status': 'failed', 'err...', 'type': 'ReadError'}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+`response.failed`.response.created_at
+  Field required [type=missing, input_value={'status': 'failed', 'err...', 'type': 'ReadError'}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+Traceback (most recent call last):
+  File "/home/alex/.local/share/uv/tools/omnigent/lib/python3.12/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/home/alex/.local/share/uv/tools/omnigent/lib/python3.12/site-packages/starlette/middleware/base.py", line 198, in __call__
+    raise app_exc
+  File "/home/alex/.local/share/uv/tools/omnigent/lib/python3.12/site-packages/starlette/middleware/base.py", line 144, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "/home/alex/omnigent/omnigent/server/ws_origin.py", line 219, in __call__
+    await self._app(scope, receive, send)
+  File "/home/alex/omnigent/omnigent/server/app.py", line 264, in __call__
+    await self._app(scope, receive, send)
+  File "/home/alex/.local/share/uv/tools/omnigent/lib/python3.12/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)

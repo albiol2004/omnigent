@@ -1,0 +1,17 @@
+Tip: You can start the Cursor CLI with `agent` (same as `cursor-agent`).
+
+
+  Cursor Agent
+  v2026.08.25-3e8eec8
+  Tip: Use /plan to plan execution and
+  reach the right outcome faster.
+
+
+
+
+  → Plan, search, build anything
+
+
+  Cursor Grok 4.6        Run Everything
+  Medium
+  ~/ws

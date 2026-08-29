@@ -1,0 +1,23 @@
+Tip: You can start the Cursor CLI with `agent` (same as `cursor-agent`).
+
+
+  Cursor Agent
+  v2026.08.25-3e8eec8
+  Tip: Use subagents to parallelize work and preserve context.
+
+
+
+                                                                               
+  → Plan, search, build anything                                               
+                                                                               
+
+  GLM 5.2 Max                                                   Run Everything
+  /home/alex/omnigent-cursor3/loop-cursor3/evidence/iter1/e2e/scratch-ws · 
+  cursor-picker-glm
+
+
+
+
+
+
+

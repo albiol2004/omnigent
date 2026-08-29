@@ -1,0 +1,14 @@
+{
+  "sha256": "8261934efea8fa235ec5520c2a5c2cfedac8a83ce8c19fb1198f41d1847779de",
+  "displayName": "Cursor Grok 4.6 Medium",
+  "grok-4.6": [
+    {
+      "id": "effort",
+      "value": "high"
+    },
+    {
+      "id": "fast",
+      "value": "false"
+    }
+  ]
+}

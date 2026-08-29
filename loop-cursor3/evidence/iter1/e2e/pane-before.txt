@@ -1,0 +1,23 @@
+Tip: You can start the Cursor CLI with `agent` (same as `cursor-agent`).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

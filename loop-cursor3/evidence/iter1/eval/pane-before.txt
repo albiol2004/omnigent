@@ -1,0 +1,23 @@
+Tip: You can start the Cursor CLI with `agent` (same as `cursor-agent`).
+
+
+  Cursor Agent
+  v2026.08.25-3e8eec8
+  Tip: Hit shift+tab to enable Plan Mode for large or complex changes.
+
+
+
+                                                                               
+  → Plan, search, build anything                                               
+                                                                               
+
+  Cursor Grok 4.6 Medium                                        Run Everything
+  /home/alex/omnigent-cursor3/loop-cursor3/evidence/iter1/eval/scratch-ws · 
+  cursor-picker-glm
+
+
+
+
+
+
+

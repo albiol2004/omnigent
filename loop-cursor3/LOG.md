@@ -1,1 +1,2 @@
 - iter 0 | coordinator | cursor3 mailbox initialized (base 15db28694; GLM 5.2 unresolvable in picker, UI shows rejected model, pane-diff preview wrong mid-stream; ~/.cursor must stay byte-identical)
+- iter 1 | lead | GLM picker navigates exact variants; rejected PATCH rolls back; pane-diff preview no longer concatenates; live e2e Grok→GLM 5.2 High / Max + 503 bogus; cli-config restored to start sha256

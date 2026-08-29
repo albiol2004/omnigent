@@ -1,0 +1,23 @@
+Tip: You can start the Cursor CLI with `agent` (same as `cursor-agent`).
+
+
+  Cursor Agent
+  v2026.08.25-3e8eec8
+  Tip: Use /plan to plan execution and
+  reach the right outcome faster.
+
+
+
+
+  → /model GLM 5.2
+
+
+ Models matching "GLM 5.2" Max mode: OFF
+
+ → GLM 5.2                  Hig(Tab to
+                            h  modify)
+
+ Edit prompt to filter • Enter to select
+ • Tab to edit
+
+

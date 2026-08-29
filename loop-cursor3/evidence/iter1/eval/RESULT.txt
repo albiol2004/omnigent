@@ -1,0 +1,7 @@
+port=19050 conv=e12bf07c321247d7b6963c93fff43fc7 glm=200 max=200 bogus=503 glm_ok=True max_ok=True bogus_ok=True switched_away=True
+footer_before='Cursor Grok 4.6 Medium                                        Run Everything'
+footer_glm='GLM 5.2 High                                                  Run Everything'
+footer_max='GLM 5.2 Max                                                   Run Everything'
+footer_bogus='GLM 5.2 Max                                                   Run Everything'
+override_before_bogus='glm-5.2-max'
+override_after_bogus=None

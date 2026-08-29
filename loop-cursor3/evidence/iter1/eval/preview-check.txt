@@ -1,0 +1,2 @@
+elapsed=20.26 live_len=5010 asst_len=5010 deltas=46 bad_prefix_points=0 live_is_prefix=True equal=True
+samples=[{'n': 1, 'len': 32, 'prefix_ok': True}, {'n': 5, 'len': 470, 'prefix_ok': True}, {'n': 10, 'len': 1119, 'prefix_ok': True}, {'n': 20, 'len': 2087, 'prefix_ok': True}, {'n': 45, 'len': 4958, 'prefix_ok': True}]

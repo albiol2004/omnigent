@@ -194,6 +194,31 @@ _REAL_PICKER_PANE = (
     " Edit prompt to filter • Enter to select\n"
     " • Tab to edit"
 )
+# Captured from an isolated 41-column throwaway pane for `/model GLM 5.2`.
+_REAL_GLM_PICKER_PANE = (
+    "Tip: You can start the Cursor CLI with `agent` (same as `cursor-agent`).\n"
+    "\n"
+    "\n"
+    "  Cursor Agent\n"
+    "  v2026.08.25-3e8eec8\n"
+    "  Tip: Use /plan to plan execution and\n"
+    "  reach the right outcome faster.\n"
+    "\n"
+    "\n"
+    "\n"
+    "\n"
+    "\n"
+    "  → /model GLM 5.2\n"
+    "\n"
+    "\n"
+    ' Models matching "GLM 5.2" Max mode: OFF\n'
+    "\n"
+    " → GLM 5.2                  Hig(Tab to\n"
+    "                            h  modify)\n"
+    "\n"
+    " Edit prompt to filter • Enter to select\n"
+    " • Tab to edit\n"
+)
 
 
 def _prepare_bridge(tmp_path: Path) -> Path:
@@ -237,6 +262,39 @@ class TestInjectModelGate:
         assert ["-t", _TARGET, "-l", "/model gpt-5.2"] in tails  # the filter command
         assert ["-t", _TARGET, "Enter"] in tails  # selection committed
         assert ["-t", _TARGET, "Escape"] not in tails  # no dismiss on a real match
+
+    def test_navigates_sibling_row_to_exact_glm_variant(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sibling highlight moves down to the catalogued GLM variant."""
+        bridge_dir = _prepare_bridge(tmp_path)
+        sibling_pane = _REAL_GLM_PICKER_PANE.replace(
+            "GLM 5.2                  Hig(Tab to\n                            h  modify)",
+            "GLM 5.2                  Max",
+        )
+        captured = _install_fake_tmux(
+            monkeypatch,
+            pane_captures=[sibling_pane] * 5 + [_REAL_GLM_PICKER_PANE],
+        )
+        monkeypatch.setattr(
+            cursor_native_bridge,
+            "_live_cursor_model_options",
+            lambda: pytest.fail("cached display name must avoid a second CLI listing"),
+        )
+        monkeypatch.setattr(cursor_native_bridge, "_settle_pane", lambda *_a, **_k: None)
+        monkeypatch.setattr(cursor_native_bridge, "_clear_composer", lambda *_a, **_k: None)
+        monkeypatch.setattr(cursor_native_bridge.time, "sleep", lambda *_a, **_k: None)
+
+        cursor_native_bridge.inject_model_command(
+            bridge_dir,
+            model="glm-5.2-high",
+            expected_display_name="GLM 5.2",
+        )
+
+        tails = _send_keys_calls(captured)
+        assert tails.count(["-t", _TARGET, "Down"]) == 1
+        assert ["-t", _TARGET, "Enter"] in tails
+        assert ["-t", _TARGET, "Tab"] not in tails
 
     def test_missing_cli_catalog_raises_clean_runtime_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -341,6 +399,32 @@ class TestInjectModelGate:
         assert tails.count(["-t", _TARGET, "Down"]) == 3
         assert tails[-1] == ["-t", _TARGET, "Escape"]
 
+    def test_understands_max_editor_label(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A non-Grok editor can commit its already-highlighted Max row."""
+        editor = (
+            "GLM 5.2 — Edit Parameters\n"
+            "  Effort\n"
+            "    ○ Low\n"
+            "    ○ Medium\n"
+            "    ○ High\n"
+            "  → ● Max ✓\n"
+        )
+        captured = _install_fake_tmux(monkeypatch, pane_captures=[editor])
+        monkeypatch.setattr(cursor_native_bridge.time, "sleep", lambda *_a, **_k: None)
+
+        assert cursor_native_bridge._picker_set_variant(
+            _SOCK,
+            _TARGET,
+            "glm-5.2-max",
+        )
+
+        tails = _send_keys_calls(captured)
+        assert ["-t", _TARGET, "Tab"] in tails
+        assert ["-t", _TARGET, "Enter"] in tails
+        assert tails[-1] == ["-t", _TARGET, "Escape"]
+        assert ["-t", _TARGET, "Down"] not in tails
+        assert ["-t", _TARGET, "Up"] not in tails
+
     def test_echoed_command_alone_does_not_satisfy_the_gate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -428,6 +512,56 @@ class TestInjectModelGate:
         tails = _send_keys_calls(captured)
         assert ["-t", _TARGET, "Enter"] in tails
         assert ["-t", _TARGET, "Escape"] not in tails
+
+
+def test_picker_highlight_reads_real_glm_fixture() -> None:
+    """The captured narrow pane joins the split High label."""
+    row = cursor_native_bridge._picker_highlighted_row(_REAL_GLM_PICKER_PANE)
+    assert row == ("GLM 5.2                  Hig(Tab to\n                            h  modify)")
+
+
+@pytest.mark.parametrize(
+    ("row", "model", "expected"),
+    [
+        ("GLM 5.2 High", "glm-5.2-high", True),
+        ("GLM 5.2", "glm-5.2-high", False),
+        ("GLM 5.2 Max", "glm-5.2-high", False),
+        ("GLM 5.2 Max", "glm-5.2-max", True),
+        ("GLM 5.2 High", "glm-5.2-max", False),
+    ],
+)
+def test_picker_row_matches_requested_glm_variant(
+    row: str,
+    model: str,
+    expected: bool,
+) -> None:
+    """A catalog base name only gains the requested, never a sibling, suffix."""
+    assert (
+        cursor_native_bridge._picker_row_matches_display(
+            row,
+            "GLM 5.2",
+            model=model,
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "model-low",
+        "model-medium-fast",
+        "model-high",
+        "model-xhigh-fast",
+        "model-extra-high",
+        "model-max-fast",
+        "model-none",
+        "model-fast",
+    ],
+)
+def test_picker_filter_strips_every_catalog_variant_suffix(model: str) -> None:
+    """Family fallback removes effort and fast suffix combinations."""
+    assert cursor_native_bridge._picker_filter_queries(model) == (model, "model")
 
 
 def test_picker_highlight_ignores_composer_arrow() -> None:

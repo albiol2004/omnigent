@@ -84,6 +84,8 @@ _PASTE_COMMIT_TIMEOUT_S = 5.0
 _MODEL_PICKER_SETTLE_S = 1.5
 # The filter result can render before cursor-agent moves the selected row.
 _MODEL_PICKER_HIGHLIGHT_CHECKS = 4
+# Bound list navigation if a pane never exposes a changed highlight.
+_MODEL_PICKER_NAVIGATION_MAX_STEPS = 128
 # ``/model`` picker filter-result markers. cursor prints ``Models matching
 # "<query>"`` above the matched rows, or ``No matches`` when the id resolves to
 # nothing. These distinguish a landed filter from the echoed ``/model <id>``
@@ -901,7 +903,26 @@ def inject_model_command(
             if (
                 _PICKER_MATCH_MARKER in settled_pane
                 and highlighted_row is not None
-                and _picker_row_matches_display(highlighted_row, expected_display_name)
+                and _picker_row_matches_display(
+                    highlighted_row,
+                    expected_display_name,
+                    model=model,
+                )
+            ):
+                _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
+                return
+        if _PICKER_MATCH_MARKER in settled_pane and not _picker_has_no_matches(settled_pane):
+            settled_pane, highlighted_row = _picker_navigate_to_display(
+                socket_path,
+                tmux_target,
+                settled_pane,
+                expected_display_name,
+                model=model,
+            )
+            if highlighted_row is not None and _picker_row_matches_display(
+                highlighted_row,
+                expected_display_name,
+                model=model,
             ):
                 _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
                 return
@@ -921,7 +942,11 @@ def inject_model_command(
                 if (
                     _PICKER_MATCH_MARKER in settled_pane
                     and highlighted_row is not None
-                    and _picker_row_matches_display(highlighted_row, expected_display_name)
+                    and _picker_row_matches_display(
+                        highlighted_row,
+                        expected_display_name,
+                        model=model,
+                    )
                 ):
                     _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
                     return
@@ -939,7 +964,11 @@ def inject_model_command(
     if (
         _PICKER_MATCH_MARKER not in settled_pane
         or highlighted_row is None
-        or not _picker_row_matches_display(highlighted_row, expected_display_name)
+        or not _picker_row_matches_display(
+            highlighted_row,
+            expected_display_name,
+            model=model,
+        )
     ):
         _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Escape")
         _clear_composer(socket_path, tmux_target)
@@ -950,15 +979,54 @@ def inject_model_command(
     _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
 
 
+def _picker_navigate_to_display(
+    socket_path: str,
+    tmux_target: str,
+    pane: str,
+    display_name: str,
+    *,
+    model: str,
+) -> tuple[str, str | None]:
+    """Move the model-list highlight until the requested row is selected."""
+    seen_rows: set[str] = set()
+    for _ in range(_MODEL_PICKER_NAVIGATION_MAX_STEPS):
+        if _picker_has_no_matches(pane):
+            return pane, None
+        row = _picker_highlighted_row(pane)
+        if row is None:
+            return pane, None
+        if _picker_row_matches_display(row, display_name, model=model):
+            return pane, row
+        compact_row = _picker_row_compact(row)
+        if not compact_row or compact_row in seen_rows:
+            return pane, row
+        seen_rows.add(compact_row)
+        _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Down")
+        time.sleep(_POLL_INTERVAL_S)
+        pane = _capture_pane(
+            socket_path,
+            tmux_target,
+            join_wrapped_lines=True,
+        )
+    return pane, _picker_highlighted_row(pane)
+
+
 _PICKER_QUERY_VARIANT_SUFFIXES = (
+    "-extra-high-fast",
     "-low-fast",
     "-medium-fast",
     "-high-fast",
     "-xhigh-fast",
+    "-max-fast",
+    "-none-fast",
+    "-fast",
+    "-extra-high",
     "-low",
     "-medium",
     "-high",
     "-xhigh",
+    "-max",
+    "-none",
 )
 
 
@@ -978,41 +1046,115 @@ def _picker_has_no_matches(pane: str) -> bool:
 
 
 _PICKER_EFFORT_INDEX = {
+    "none": 0,
     "low": 0,
     "medium": 1,
     "high": 2,
     "xhigh": 3,
     "extra-high": 3,
+    "max": 4,
 }
 
 
-def _picker_variant_settings(model: str) -> tuple[int, bool] | None:
-    """Return the picker effort index and fast flag encoded in *model*."""
+_PICKER_VARIANT_LABELS = {
+    "none": "None",
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "xhigh": "Extra High",
+    "extra-high": "Extra High",
+    "max": "Max",
+}
+
+
+def _picker_variant_parts(model: str) -> tuple[str | None, bool]:
+    """Return the catalogued effort suffix and fast flag from *model*."""
     normalized = model.casefold()
     fast = normalized.endswith("-fast")
     if fast:
         normalized = normalized[: -len("-fast")]
-    for suffix, effort_index in _PICKER_EFFORT_INDEX.items():
-        if normalized.endswith(f"-{suffix}"):
-            return effort_index, fast
+    for variant in ("extra-high", "xhigh", "low", "medium", "high", "max", "none"):
+        if normalized.endswith(f"-{variant}"):
+            return variant, fast
+    return None, fast
+
+
+def _picker_variant_settings(model: str) -> tuple[int | None, bool] | None:
+    """Return the picker effort index and fast flag encoded in *model*."""
+    variant, fast = _picker_variant_parts(model)
+    if variant is None:
+        return (None, True) if fast else None
+    effort_index = _PICKER_EFFORT_INDEX.get(variant)
+    if effort_index is None:
+        return None
+    return effort_index, fast
+
+
+_PICKER_EDITOR_LABELS = (
+    "Extra High",
+    "Medium",
+    "None",
+    "Low",
+    "High",
+    "Max",
+    "XHigh",
+    "Fast",
+)
+
+
+def _picker_editor_option_label(line: str) -> str | None:
+    """Return a known parameter label from one editor option line."""
+    stripped = line.strip()
+    if not stripped.startswith(("→", "○", "●", "◉", "◌", "•")):
+        return None
+    content = stripped.removeprefix("→").strip().lstrip("○●◉◌•").strip()
+    for label in sorted(_PICKER_EDITOR_LABELS, key=len, reverse=True):
+        if content.casefold().startswith(label.casefold()):
+            return label
+    return None
+
+
+def _picker_editor_option_labels(pane: str) -> list[str]:
+    """Return parameter labels in their visible editor order."""
+    labels: list[str] = []
+    for line in pane.splitlines():
+        label = _picker_editor_option_label(line)
+        if label is not None:
+            labels.append(label)
+    return labels
+
+
+def _picker_editor_label_key(label: str) -> str:
+    """Normalize editor aliases such as ``XHigh`` to a catalog suffix."""
+    normalized = label.casefold().replace(" ", "-")
+    return "extra-high" if normalized == "xhigh" else normalized
+
+
+def _picker_editor_cursor_position(pane: str) -> int | None:
+    """Return the selected editor option's position in the visible list."""
+    labels: list[str] = []
+    for line in pane.splitlines():
+        label = _picker_editor_option_label(line)
+        if label is None:
+            continue
+        labels.append(label)
+        if "→" in line:
+            return len(labels) - 1
     return None
 
 
 def _picker_editor_cursor_index(pane: str) -> int | None:
     """Return the currently highlighted parameter row in the editor."""
-    labels = {
-        "Low": 0,
-        "Medium": 1,
-        "High": 2,
-        "Extra High": 3,
-        "Fast": 4,
-    }
     for line in pane.splitlines():
         if "→" not in line:
             continue
-        for label, index in sorted(labels.items(), key=lambda item: -len(item[0])):
-            if label in line:
-                return index
+        label = _picker_editor_option_label(line)
+        if label is None:
+            continue
+        key = _picker_editor_label_key(label)
+        if key == "fast":
+            return 4
+        return _PICKER_EFFORT_INDEX.get(key)
     return None
 
 
@@ -1021,7 +1163,7 @@ def _picker_set_variant(socket_path: str, tmux_target: str, model: str) -> bool:
     settings = _picker_variant_settings(model)
     if settings is None:
         return False
-    effort_index, want_fast = settings
+    _effort_index, want_fast = settings
     _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Tab")
     deadline = time.monotonic() + _MODEL_PICKER_SETTLE_S
     editor_pane = ""
@@ -1033,24 +1175,56 @@ def _picker_set_variant(socket_path: str, tmux_target: str, model: str) -> bool:
     if "Edit Parameters" not in editor_pane:
         _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Escape")
         return False
-    cursor_index = _picker_editor_cursor_index(editor_pane)
-    if cursor_index is None:
+    editor_labels = _picker_editor_option_labels(editor_pane)
+    cursor_position = _picker_editor_cursor_position(editor_pane)
+    if cursor_position is None:
         _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Escape")
         return False
-    direction = "Down" if effort_index > cursor_index else "Up"
-    for _ in range(abs(effort_index - cursor_index)):
-        _run_tmux(socket_path, "send-keys", "-t", tmux_target, direction)
-        time.sleep(_POLL_INTERVAL_S)
+    selected_position = cursor_position
+    variant, _ = _picker_variant_parts(model)
+    target_label = _PICKER_VARIANT_LABELS.get(variant or "")
+    if target_label is not None:
+        target_key = _picker_editor_label_key(target_label)
+        target_position = next(
+            (
+                index
+                for index, label in enumerate(editor_labels)
+                if _picker_editor_label_key(label) == target_key
+            ),
+            None,
+        )
+        if target_position is None:
+            _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Escape")
+            return False
+        direction = "Down" if target_position > cursor_position else "Up"
+        for _ in range(abs(target_position - cursor_position)):
+            _run_tmux(socket_path, "send-keys", "-t", tmux_target, direction)
+            time.sleep(_POLL_INTERVAL_S)
+        selected_position = target_position
     _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
     time.sleep(_POLL_INTERVAL_S)
-    for _ in range(4 - effort_index):
-        _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Down")
-        time.sleep(_POLL_INTERVAL_S)
-    editor_pane = _capture_pane(socket_path, tmux_target)
-    fast_enabled = "◉ Fast" in editor_pane or "● Fast" in editor_pane
-    if fast_enabled != want_fast:
-        _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
-        time.sleep(_POLL_INTERVAL_S)
+    fast_position = next(
+        (
+            index
+            for index, label in enumerate(editor_labels)
+            if _picker_editor_label_key(label) == "fast"
+        ),
+        None,
+    )
+    if fast_position is None:
+        if want_fast:
+            _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Escape")
+            return False
+    else:
+        direction = "Down" if fast_position > selected_position else "Up"
+        for _ in range(abs(fast_position - selected_position)):
+            _run_tmux(socket_path, "send-keys", "-t", tmux_target, direction)
+            time.sleep(_POLL_INTERVAL_S)
+        editor_pane = _capture_pane(socket_path, tmux_target)
+        fast_enabled = "◉ Fast" in editor_pane or "● Fast" in editor_pane
+        if fast_enabled != want_fast:
+            _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
+            time.sleep(_POLL_INTERVAL_S)
     _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Escape")
     return True
 
@@ -1107,11 +1281,53 @@ def _picker_row_compact(row: str) -> str:
     return prefix + suffix
 
 
-def _picker_row_matches_display(row: str, display_name: str) -> bool:
+def _picker_display_candidates(display_name: str, model: str) -> tuple[str, ...]:
+    """Return strict row spellings allowed by a catalog display and model id."""
+    normalized = _picker_row_compact(display_name)
+    variant, want_fast = _picker_variant_parts(model)
+    effort_label = _PICKER_VARIANT_LABELS.get(variant or "")
+    candidates: list[str] = []
+    if effort_label is not None:
+        effort = _picker_row_compact(effort_label)
+        has_effort = normalized.endswith(effort) or any(
+            normalized.endswith(effort + marker) for marker in ("fast", "thinking")
+        )
+        if has_effort and normalized.endswith("fast") == want_fast:
+            candidates.append(normalized)
+        candidates.extend(
+            (
+                normalized + effort,
+                normalized + effort + ("fast" if want_fast else ""),
+            )
+        )
+        if want_fast:
+            candidates.append(normalized + "fast")
+        for marker in ("fast", "thinking"):
+            if normalized.endswith(marker):
+                prefix = normalized[: -len(marker)]
+                candidates.append(prefix + effort + marker)
+    elif want_fast:
+        if normalized.endswith("fast"):
+            candidates.append(normalized)
+        else:
+            candidates.append(normalized + "fast")
+    else:
+        candidates.append(normalized)
+    return tuple(dict.fromkeys(candidates))
+
+
+def _picker_row_matches_display(
+    row: str,
+    display_name: str,
+    model: str | None = None,
+) -> bool:
     """Match the complete display label, including its exact variant."""
     normalized_row = _picker_row_compact(row)
-    normalized_display = _picker_row_compact(display_name)
-    return bool(normalized_row and normalized_row == normalized_display)
+    if not normalized_row:
+        return False
+    if model is None:
+        return normalized_row == _picker_row_compact(display_name)
+    return normalized_row in _picker_display_candidates(display_name, model)
 
 
 def _wait_for_pane_settle(socket_path: str, tmux_target: str, *, timeout_s: float) -> None:

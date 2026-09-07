@@ -350,6 +350,22 @@ def test_kill_tree_does_not_adopt_reused_reaped_leader_pid(
     reused.kill.assert_not_called()
 
 
+@pytest.mark.posix_only
+def test_killpg_refuses_own_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The SIGKILL helper must never signal the test runner's process group."""
+    killed: list[tuple[int, int]] = []
+    current_pgid = os.getpgrp()
+    monkeypatch.setattr(_proc, "_getpgid_fn", lambda _pid: current_pgid)
+    monkeypatch.setattr(
+        _proc,
+        "_killpg_fn",
+        lambda pgid, sig: killed.append((pgid, sig)),
+    )
+
+    assert _proc._killpg(os.getpid(), _proc._SIGKILL) is False
+    assert killed == []
+
+
 def test_terminate_tree_stops_the_process() -> None:
     proc = subprocess.Popen(_spin_cmd(), **_proc.spawn_kwargs())
     # Bind to the live PID so psutil pins its creation time; a recycled PID

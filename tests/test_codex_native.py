@@ -10240,6 +10240,53 @@ def test_rollout_records_includes_compacted_entry_from_compaction_item() -> None
     assert len(post_items) == 1
 
 
+def test_rollout_records_summary_only_compaction_replays_summary() -> None:
+    """Summary-only compaction markers produce Codex replacement messages."""
+    items: list[dict[str, Any]] = [
+        {
+            "id": "msg_1",
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hello"}],
+            "response_id": "resp_1",
+        },
+        {
+            "id": "cmp_1",
+            "type": "compaction",
+            "summary": "summary-only compaction",
+            "compacted_messages": [],
+            "last_item_id": "msg_1",
+        },
+    ]
+    records = codex_native._codex_rollout_records_from_session_items(
+        items,
+        session_id="conv_test",
+        external_session_id="019f-thread",
+        cwd=Path("/tmp/test"),
+        model_provider="openai",
+        cli_version="0.140.0",
+    )
+
+    compacted = next(r for r in records if r["type"] == "compacted")
+    assert compacted["payload"]["replacement_history"] == [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "[Previous conversation summary]",
+                }
+            ],
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "summary-only compaction"}],
+        },
+    ]
+
+
 def test_codex_event_msg_record_ignores_non_list_content() -> None:
     """Malformed message content is skipped as it was before type narrowing."""
     assert (

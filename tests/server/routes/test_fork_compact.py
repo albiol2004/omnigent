@@ -213,6 +213,46 @@ async def test_oversized_fork_uses_compacted_replacement_items(
 
 
 @pytest.mark.asyncio
+async def test_one_turn_oversized_fork_creates_summary_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A short oversized fork summarizes its first completed turn."""
+    response_id = "response_1"
+    items = [
+        _make_item("user_1", "x" * 300, response_id=response_id),
+        _make_assistant_item("assistant_1", "done", response_id=response_id),
+    ]
+    store = _ConversationStore(
+        conversations={_SOURCE_ID: _make_conversation()},
+        items_by_conv={_SOURCE_ID: items},
+    )
+    actual = estimate_fork_context_bytes([item.to_api_dict() for item in items])
+    monkeypatch.setenv("OMNIGENT_FORK_MAX_CONTEXT_BYTES", str(actual - 1))
+    monkeypatch.setenv("OMNIGENT_FORK_COMPACT_TARGET_BYTES", str(actual))
+    _patch_compaction_clients(monkeypatch)
+
+    async def _summarize(*args: object, **kwargs: object) -> dict[str, object]:
+        del args, kwargs
+        return {"text": "one-turn summary", "token_count": 2}
+
+    monkeypatch.setattr("omnigent.runtime.compaction.summarize_history", _summarize)
+
+    response = TestClient(_build_app(store, agent_cache=_spec_cache())).post(
+        f"/v1/sessions/{_SOURCE_ID}/fork",
+        json={},
+    )
+
+    assert response.status_code == 201, response.text
+    fork_items = store._items[response.json()["id"]]
+    assert [item.type for item in fork_items] == ["compaction", "message"]
+    summary_item = fork_items[0]
+    assert isinstance(summary_item.data, CompactionData)
+    assert summary_item.data.summary == "one-turn summary"
+    assert summary_item.data.last_item_id == items[0].id
+    assert fork_items[1].id == items[1].id
+
+
+@pytest.mark.asyncio
 async def test_rendered_claude_size_triggers_compaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

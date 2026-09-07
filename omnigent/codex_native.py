@@ -2086,6 +2086,24 @@ def _codex_rollout_records_from_session_items(
             if not isinstance(compacted_msgs, list):
                 compacted_msgs = []
             summary = item.get("summary")
+            if not compacted_msgs and isinstance(summary, str) and summary:
+                compacted_msgs = [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "[Previous conversation summary]",
+                            }
+                        ],
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": summary}],
+                    },
+                ]
             if compacted_msgs or isinstance(summary, str):
                 compacted_payload: _JsonObject = {
                     "message": summary if isinstance(summary, str) else "",

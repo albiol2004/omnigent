@@ -10,7 +10,13 @@ from dataclasses import replace
 
 from omnigent.config import load_global_config
 from omnigent.db.utils import generate_item_id, generate_task_id, now_epoch
-from omnigent.entities import Agent, CompactionData, Conversation, ConversationItem
+from omnigent.entities import (
+    Agent,
+    CompactionData,
+    Conversation,
+    ConversationItem,
+    MessageData,
+)
 from omnigent.fork_compact_cli import CliSummaryClient, resolve_cli_runner
 from omnigent.fork_compact_routing import (
     ResolvedForkCompactModel,
@@ -20,7 +26,7 @@ from omnigent.onboarding.provider_config import load_providers
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.runtime.compaction import SummaryMetadata, _CompactionState, compact
 from omnigent.spec import AgentSpec
-from omnigent.spec.types import LLMConfig
+from omnigent.spec.types import CompactionConfig, LLMConfig
 
 _logger = logging.getLogger(__name__)
 
@@ -111,6 +117,25 @@ def _llm_config_for_model(
     )
 
 
+def _fork_compaction_config(
+    config: CompactionConfig | None,
+    history: Sequence[ConversationItem],
+) -> CompactionConfig:
+    """Cap the protected window to response boundaries in the fork."""
+    base = config or CompactionConfig()
+    response_groups = sum(
+        1
+        for item in history
+        if item.type == "function_call"
+        or (
+            item.type == "message"
+            and isinstance(item.data, MessageData)
+            and item.data.role == "assistant"
+        )
+    )
+    return replace(base, recent_window=min(base.recent_window, response_groups))
+
+
 async def _compact_with_resolved(
     *,
     source_id: str,
@@ -161,7 +186,7 @@ async def _compact_with_resolved(
     state = _CompactionState(
         context_window=None,
         last_summary=None,
-        config=source_spec.compaction,
+        config=_fork_compaction_config(source_spec.compaction, history),
         model=llm_config.model,
         connection=llm_config.connection,
         conversation_id=source_id,

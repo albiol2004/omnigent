@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextlib
 import hashlib
@@ -3065,14 +3066,31 @@ async def preload_codex_thread_for_resume(
     )
     await client.connect()
     try:
-        await client.request(
-            "thread/resume",
-            {
-                "threadId": thread_id,
-                "excludeTurns": True,
-                **_codex_resume_permission_params(terminal_launch_args),
-            },
-        )
+        try:
+            await client.request(
+                "thread/resume",
+                {
+                    "threadId": thread_id,
+                    "excludeTurns": True,
+                    **_codex_resume_permission_params(terminal_launch_args),
+                },
+            )
+        except RuntimeError as error:
+            # An active writer has already loaded this thread.
+            try:
+                error_payload = ast.literal_eval(str(error))
+            except (SyntaxError, ValueError):
+                raise
+            if isinstance(error_payload, dict):
+                error_code = error_payload.get("code")
+                error_message = error_payload.get("message", "")
+            else:
+                error_code = None
+                error_message = ""
+            if error_code != -32600:
+                raise
+            if "already has an active writer" not in str(error_message):
+                raise
     finally:
         await client.close()
 

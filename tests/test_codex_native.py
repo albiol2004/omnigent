@@ -793,6 +793,73 @@ def test_preload_codex_thread_for_resume_resumes_and_closes(
     assert fake_client.closed is True
 
 
+def test_preload_codex_thread_for_resume_accepts_existing_writer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    An already-loaded thread is successful when another writer owns it.
+
+    Codex reports this race as a JSON-RPC error, but the existing writer has
+    already performed the required thread load.
+    """
+    fake_client = _FakeCodexAppServerClient(
+        error=RuntimeError(
+            "{'code': -32600, 'message': 'thread 01a07b94-6560-7623-af8b-"
+            "ddfec31fee57 already has an active writer'}"
+        )
+    )
+
+    def fake_client_factory(*_args: Any, **_kwargs: Any) -> _FakeCodexAppServerClient:
+        """Return the fake client used by this preload attempt."""
+        return fake_client
+
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server.CodexAppServerClient",
+        fake_client_factory,
+    )
+
+    asyncio.run(
+        codex_native_app_server.preload_codex_thread_for_resume(
+            "ws://127.0.0.1:1234",
+            "019e96aa-0be2-7343-8d3b-6f914d60936b",
+        )
+    )
+
+    assert fake_client.connected is True
+    assert fake_client.closed is True
+    assert fake_client.requests[0][0] == "thread/resume"
+
+
+def test_preload_codex_thread_for_resume_raises_other_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unrelated resume errors still propagate after the client closes."""
+    fake_client = _FakeCodexAppServerClient(
+        error=RuntimeError("{'code': -32601, 'message': 'thread not found'}")
+    )
+
+    def fake_client_factory(*_args: Any, **_kwargs: Any) -> _FakeCodexAppServerClient:
+        """Return the fake client used by this preload attempt."""
+        return fake_client
+
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server.CodexAppServerClient",
+        fake_client_factory,
+    )
+
+    with pytest.raises(RuntimeError, match="thread not found"):
+        asyncio.run(
+            codex_native_app_server.preload_codex_thread_for_resume(
+                "ws://127.0.0.1:1234",
+                "019e96aa-0be2-7343-8d3b-6f914d60936b",
+            )
+        )
+
+    assert fake_client.connected is True
+    assert fake_client.closed is True
+    assert fake_client.requests[0][0] == "thread/resume"
+
+
 def test_codex_resume_permission_params_parse_legacy_flags() -> None:
     """Legacy approval and sandbox flags become preload overrides."""
     assert codex_native_app_server._codex_resume_permission_params(

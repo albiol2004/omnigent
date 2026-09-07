@@ -96,6 +96,16 @@ from omnigent.stores.file_store import FileStore
 from omnigent.stores.permission_store import PermissionStore
 
 
+_INLINE_RASTER_CONTENT_TYPES = frozenset(
+    {
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+    }
+)
+
+
 def register_resources_routes(
     router: APIRouter,
     *,
@@ -1379,20 +1389,23 @@ def register_resources_routes(
                 },
             )
         content = await asyncio.to_thread(artifact_store.get, stored.id)
-        media_type = mimetypes.guess_type(stored.filename)[0] or "application/octet-stream"
-        # The filename and bytes are fully user-controlled. Serving the
-        # content inline lets a browser navigating directly to this URL
-        # render an uploaded ``evil.html`` as ``text/html`` and execute
-        # its script in the server's own origin (stored XSS — acute on
-        # the OSS/local server, which has no CSRF/apiproxy boundary).
-        # Force a download with ``Content-Disposition: attachment`` and
-        # disable MIME sniffing so the response cannot be reinterpreted
-        # as an active type.
+        media_type = (
+            stored.content_type
+            or mimetypes.guess_type(stored.filename)[0]
+            or "application/octet-stream"
+        )
+        # Only vetted raster types may render inline. All other user-controlled
+        # content is forced to download, while nosniff blocks type reinterpretation.
+        content_disposition = (
+            "inline"
+            if media_type in _INLINE_RASTER_CONTENT_TYPES
+            else _attachment_disposition(stored.filename)
+        )
         return Response(
             content=content,
             media_type=media_type,
             headers={
-                "Content-Disposition": _attachment_disposition(stored.filename),
+                "Content-Disposition": content_disposition,
                 "X-Content-Type-Options": "nosniff",
                 "ETag": etag,
                 "Cache-Control": FILE_CONTENT_CACHE_CONTROL,

@@ -1796,6 +1796,10 @@ async def file_client(
         yield c
 
 
+_SESSION_ID = "79b22ebd2309e48fdeb450c65611d51b"
+_SESSION_FILES_URL = f"/v1/sessions/{_SESSION_ID}/resources/files"
+
+
 @pytest.mark.asyncio
 async def test_upload_and_list_session_files(
     file_client: httpx.AsyncClient,
@@ -1900,6 +1904,38 @@ async def test_download_session_file_content_is_revalidatable(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "content_type"),
+    [
+        ("extensionless", "image/png"),
+        ("photo.txt", "image/jpeg"),
+        ("animation", "image/gif"),
+        ("image", "image/webp"),
+    ],
+)
+async def test_download_session_file_content_raster_images_are_inline(
+    file_client: httpx.AsyncClient,
+    filename: str,
+    content_type: str,
+) -> None:
+    """Stored raster MIME types render inline despite filename extensions."""
+    upload = await file_client.post(
+        "/v1/sessions/79b22ebd2309e48fdeb450c65611d51b/resources/files",
+        files={"file": (filename, b"raster-image", content_type)},
+    )
+    assert upload.status_code == 201, upload.text
+    file_id = upload.json()["id"]
+
+    url = f"{_SESSION_FILES_URL}/{file_id}/content"
+    resp = await file_client.get(url)
+    assert resp.status_code == 200
+    assert resp.content == b"raster-image"
+    assert resp.headers["content-type"] == content_type
+    assert resp.headers["content-disposition"] == "inline"
+    assert resp.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.asyncio
 async def test_download_session_file_html_is_attachment_not_inline(
     file_client: httpx.AsyncClient,
 ) -> None:
@@ -1930,10 +1966,66 @@ async def test_download_session_file_html_is_attachment_not_inline(
     # The bytes are still served verbatim — we don't mangle content,
     # we only change how the browser is told to handle them.
     assert resp.content == b"<script>alert(document.domain)</script>"
+    assert resp.headers["content-type"].startswith("text/html")
     # attachment => browser downloads instead of rendering the script.
     assert resp.headers["content-disposition"].startswith("attachment;")
     assert 'filename="evil.html"' in resp.headers["content-disposition"]
     # nosniff => the browser won't second-guess the declared type.
+    assert resp.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "content_type", "body"),
+    [
+        ("vector.svg", "image/svg+xml", b"<svg></svg>"),
+        ("notes", "text/plain", b"plain text"),
+    ],
+)
+async def test_download_session_file_content_non_raster_is_attachment(
+    file_client: httpx.AsyncClient,
+    filename: str,
+    content_type: str,
+    body: bytes,
+) -> None:
+    """Non-raster content types remain forced downloads."""
+    upload = await file_client.post(
+        "/v1/sessions/79b22ebd2309e48fdeb450c65611d51b/resources/files",
+        files={"file": (filename, body, content_type)},
+    )
+    assert upload.status_code == 201, upload.text
+    file_id = upload.json()["id"]
+
+    url = f"{_SESSION_FILES_URL}/{file_id}/content"
+    resp = await file_client.get(url)
+    assert resp.status_code == 200
+    assert resp.content == body
+    assert resp.headers["content-type"].startswith(content_type)
+    assert resp.headers["content-disposition"].startswith("attachment;")
+    assert resp.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.asyncio
+async def test_download_session_file_content_unknown_type_is_attachment(
+    file_client: httpx.AsyncClient,
+    file_store: Any,
+    artifact_store: _InMemoryArtifactStore,
+) -> None:
+    """Unknown stored types cannot become inline from a misleading filename."""
+    stored = file_store.create(
+        filename="unknown.png",
+        bytes=7,
+        content_type="application/octet-stream",
+        session_id="79b22ebd2309e48fdeb450c65611d51b",
+    )
+    artifact_store.put(stored.id, b"unknown")
+
+    url = f"{_SESSION_FILES_URL}/{stored.id}/content"
+    resp = await file_client.get(url)
+    assert resp.status_code == 200
+    assert resp.content == b"unknown"
+    assert resp.headers["content-type"] == "application/octet-stream"
+    assert resp.headers["content-disposition"].startswith("attachment;")
     assert resp.headers["x-content-type-options"] == "nosniff"
 
 

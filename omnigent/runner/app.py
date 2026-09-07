@@ -4084,6 +4084,13 @@ def create_runner_app(
             )
             return None
         if state.session_id != conv_id:
+            if (
+                action == "model options"
+                and labels.get(CODEX_NATIVE_BRIDGE_ID_LABEL_KEY)
+            ):
+                # Read-only discovery follows a labeled live app-server through
+                # fork/resume rotation; mutations remain owner-bound below.
+                return state
             _logger.warning(
                 "Codex-native %s skipped for %s: bridge belongs to %s.",
                 action,

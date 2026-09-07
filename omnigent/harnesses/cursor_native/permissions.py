@@ -42,6 +42,7 @@ import enum
 import hashlib
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -324,6 +325,41 @@ _QUESTION_TOOL_NAMES = frozenset({"askquestion"})
 # Auto-review retry) still surfaces a card rather than being suppressed.
 _ELICITATION_SETTLE_S = 0.5
 
+
+def _env_int(name: str, default: int) -> int:
+    """Read an int env override, ignoring a malformed value.
+
+    :param name: Environment variable name.
+    :param default: Value used when unset or unparseable.
+    :returns: The parsed int, or *default*.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        _logger.warning("ignoring non-integer %s=%r; using %d", name, raw, default)
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a float env override, ignoring a malformed value.
+
+    :param name: Environment variable name.
+    :param default: Value used when unset or unparseable.
+    :returns: The parsed float, or *default*.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        _logger.warning("ignoring non-numeric %s=%r; using %s", name, raw, default)
+        return default
+
+
 # When a session launched with ``--yolo`` / ``--force`` / ``-f``, cursor still
 # sometimes leaves a pending marker long enough for Omnigent to mirror a card.
 # Auto-accept sends ``y`` into the pane instead of parking a web elicitation.
@@ -331,9 +367,21 @@ _ELICITATION_SETTLE_S = 0.5
 # only a few times: a gate still pending after that is not one ``y`` answers
 # (a stale marker with no prompt on screen, or a prompt needing a different
 # key), so fall back to the ordinary card instead of typing into the composer
-# for the life of the session.
-_YOLO_ACCEPT_RETRY_S = 2.0
-_YOLO_ACCEPT_MAX_ATTEMPTS = 3
+# for the life of the session. Overridable so an operator can trade off
+# latency-to-card against tolerance for a slow-rendering TUI without a code
+# change.
+_YOLO_ACCEPT_RETRY_S = _env_float("OMNIGENT_CURSOR_YOLO_ACCEPT_RETRY_S", 2.0)
+_YOLO_ACCEPT_MAX_ATTEMPTS = _env_int("OMNIGENT_CURSOR_YOLO_ACCEPT_ATTEMPTS", 5)
+
+# A generous, separate ceiling for the OTHER failure mode: the head-of-queue
+# call never shows a prompt at all (e.g. cursor already auto-allowed it and
+# it's just a stale marker in store.db), as opposed to showing a prompt that
+# the accept key isn't clearing (governed by _YOLO_ACCEPT_MAX_ATTEMPTS above).
+# Waiting for a prompt to render is expected and must NOT burn from that same
+# small budget — see the queue-aware note on _yolo_auto_accept — but it still
+# needs a bound so a genuinely stale head cannot block every call behind it
+# forever.
+_YOLO_ACCEPT_STALE_CEILING_S = 60.0
 
 # Cursor's approval block advertises its accept key as a parenthesised hint on
 # the chosen option line, e.g. ``→ Run (once) (y)``. Auto-accept requires that
@@ -378,6 +426,21 @@ def cursor_launch_args_enable_yolo(args: list[str] | None) -> bool:
 def _pane_shows_accept_prompt(pane: str) -> bool:
     """Return whether *pane* is showing a prompt that ``y`` can answer."""
     return bool(_ACCEPT_KEY_HINT_RE.search(pane))
+
+
+def _pane_tail(pane: str | None, *, lines: int = 3, max_len: int = 200) -> str:
+    """Return the last few lines of *pane*, truncated, for a diagnostic log.
+
+    Used when surfacing a card so the WARN line shows the actual prompt
+    wording (or its absence) instead of leaving future failures to guess.
+
+    :param pane: Pane text, or ``None`` when no capture was taken.
+    :param lines: How many trailing lines to keep.
+    :param max_len: Hard cap on the returned string's length.
+    """
+    if not pane:
+        return ""
+    return "\n".join(pane.splitlines()[-lines:])[:max_len]
 
 
 @dataclass(frozen=True)
@@ -718,6 +781,7 @@ async def _yolo_auto_accept(
     bridge_dir: Path,
     session_id: str,
     now: float,
+    pending_since: float,
     attempts_by_call: dict[str, tuple[float, int]],
     allow_send: bool,
 ) -> _YoloAccept:
@@ -725,12 +789,33 @@ async def _yolo_auto_accept(
 
     Fail-closed on every uncertainty: the accept key goes out only while the
     pane is live *and* rendering cursor's accept hint, at most
-    :data:`_YOLO_ACCEPT_MAX_ATTEMPTS` times. A gate that survives that budget —
-    a stale marker with no prompt on screen, a prompt ``y`` cannot answer, or a
-    pane that has gone away — returns :attr:`_YoloAccept.SURFACE_CARD` so it
-    ends up visible in the parent instead of drawing a keystroke every couple of
-    seconds for the life of the session.
+    :data:`_YOLO_ACCEPT_MAX_ATTEMPTS` times. Only ever called for the
+    head-of-queue call (see :func:`supervise_cursor_transcript_elicitations`) —
+    cursor's TUI renders one prompt at a time, so a call behind the head simply
+    isn't evaluated here yet and its budget never advances while it waits.
 
+    Two distinct ways a call fails to clear get two distinct, independent
+    budgets:
+
+    * **A prompt IS on screen but the accept key isn't clearing it** — a
+      wording cursor doesn't answer with ``y``, or a send tmux rejects. Bounded
+      by :data:`_YOLO_ACCEPT_MAX_ATTEMPTS` retries paced by
+      :data:`_YOLO_ACCEPT_RETRY_S`.
+    * **No prompt is on screen at all** — cursor simply hasn't rendered this
+      call's prompt yet (expected while it is still finishing the previous
+      call), or the marker is stale (cursor already resolved it and store.db
+      never caught up). This must NOT draw from the same small attempts
+      budget — a slow render would then exhaust it before cursor ever shows
+      the prompt — so it is instead bounded by the much more generous
+      :data:`_YOLO_ACCEPT_STALE_CEILING_S` wall clock, measured from
+      *pending_since* regardless of how many polls have run.
+
+    Either bound exhausting returns :attr:`_YoloAccept.SURFACE_CARD` so the
+    call ends up visible in the parent instead of drawing a keystroke (or
+    blocking the queue) for the life of the session.
+
+    :param pending_since: loop-time this call was first observed pending —
+        the wall-clock origin for the stale-marker ceiling.
     :param attempts_by_call: tool_call_id → (loop-time of last attempt, count).
         Mutated in place; in-memory only, so a runner restart re-tries a call
         that is still pending.
@@ -738,13 +823,15 @@ async def _yolo_auto_accept(
     """
     last_attempt_at, attempts = attempts_by_call.get(call.tool_call_id, (None, 0))
     if attempts >= _YOLO_ACCEPT_MAX_ATTEMPTS:
+        pane = await asyncio.to_thread(capture_cursor_pane, bridge_dir)
         _logger.warning(
             "cursor elicitation: yolo auto-accept did not clear %s after %d attempts; "
-            "surfacing a card; session=%s tool_call_id=%s",
+            "surfacing a card; session=%s tool_call_id=%s pane_tail=%r",
             call.tool_name,
             attempts,
             session_id,
             call.tool_call_id.splitlines()[0],
+            _pane_tail(pane),
         )
         return _YoloAccept.SURFACE_CARD
     if last_attempt_at is not None and (now - last_attempt_at) < _YOLO_ACCEPT_RETRY_S:
@@ -765,16 +852,32 @@ async def _yolo_auto_accept(
         attempts_by_call[call.tool_call_id] = (now, _YOLO_ACCEPT_MAX_ATTEMPTS)
         return _YoloAccept.SURFACE_CARD
     if not _pane_shows_accept_prompt(pane):
-        # The store says pending but nothing on screen takes the accept key —
-        # a prompt still painting, or a stale marker. Sending now would type a
-        # literal ``y`` into cursor's composer.
-        attempts_by_call[call.tool_call_id] = (now, attempts + 1)
+        pending_for = now - pending_since
+        if pending_for >= _YOLO_ACCEPT_STALE_CEILING_S:
+            # Still nothing on screen after a generous wait: a stale marker
+            # (cursor already resolved it, store.db just hasn't caught up),
+            # not a render that's merely running late. Surface it rather than
+            # blocking every call behind it in the queue forever.
+            _logger.warning(
+                "cursor elicitation: %s stayed pending %.0fs with no accept prompt "
+                "rendered; surfacing a card; session=%s tool_call_id=%s pane_tail=%r",
+                call.tool_name,
+                pending_for,
+                session_id,
+                call.tool_call_id.splitlines()[0],
+                _pane_tail(pane),
+            )
+            return _YoloAccept.SURFACE_CARD
+        # The store says pending but nothing on screen takes the accept key
+        # yet — cursor may still be finishing the previous call's prompt.
+        # Wait without touching the attempts budget above: that budget is for
+        # "a prompt is visible and the key isn't clearing it", not for a
+        # render that simply hasn't happened yet.
         _logger.debug(
-            "cursor elicitation: no accept prompt on screen for %s (attempt %d/%d); "
+            "cursor elicitation: no accept prompt on screen for %s yet (pending %.1fs); "
             "session=%s tool_call_id=%s",
             call.tool_name,
-            attempts + 1,
-            _YOLO_ACCEPT_MAX_ATTEMPTS,
+            pending_for,
             session_id,
             call.tool_call_id.splitlines()[0],
         )
@@ -792,6 +895,14 @@ async def _yolo_auto_accept(
         _preview_for_args(call.args),
     )
     if not await _send_cursor_keys(bridge_dir, session_id, _TRANSCRIPT_ACCEPT_KEY):
+        _logger.warning(
+            "cursor elicitation: keystroke undelivered for %s; surfacing a card; "
+            "session=%s tool_call_id=%s pane_tail=%r",
+            call.tool_name,
+            session_id,
+            call.tool_call_id.splitlines()[0],
+            _pane_tail(pane),
+        )
         attempts_by_call[call.tool_call_id] = (now, _YOLO_ACCEPT_MAX_ATTEMPTS)
         return _YoloAccept.SURFACE_CARD
     attempts_by_call[call.tool_call_id] = (now, attempts + 1)
@@ -905,6 +1016,27 @@ async def supervise_cursor_transcript_elicitations(
                 # Cursor renders one approval prompt at a time, so at most one
                 # accept key goes out per pass however many calls are pending.
                 auto_accepted_this_pass = False
+                # Queue-aware budgeting: cursor's TUI can only ever be showing
+                # ONE of these calls, so only the oldest still-pending,
+                # not-yet-parked, non-question call — the "head of queue" —
+                # is allowed to spend accept-attempt budget this pass. Every
+                # other pending call waits behind it for free: it is not
+                # evaluated by _yolo_auto_accept at all until it becomes head
+                # (the current head clears or exhausts to a card), so a batch
+                # of tool calls emitted together no longer races each other's
+                # attempts down to zero before cursor ever renders them.
+                head_call_id: str | None = None
+                if auto_accept_approvals:
+                    accept_candidates = [
+                        c
+                        for c in pending_calls
+                        if c.tool_call_id not in active and not _is_question_call(c)
+                    ]
+                    if accept_candidates:
+                        head_call_id = min(
+                            accept_candidates,
+                            key=lambda c: first_seen.get(c.tool_call_id, now),
+                        ).tool_call_id
                 # Surface calls that have now stayed pending past the settle window.
                 for call in pending_calls:
                     if call.tool_call_id in active:
@@ -926,11 +1058,17 @@ async def supervise_cursor_transcript_elicitations(
                     # mirroring a card a piloted parent cannot click. AskQuestion
                     # still parks — that is deliberate human input.
                     if auto_accept_approvals and not _is_question_call(call):
+                        if call.tool_call_id != head_call_id:
+                            # Not the head of the queue yet: cursor is still
+                            # showing (or about to show) an earlier call's
+                            # prompt. Wait without spending this call's budget.
+                            continue
                         outcome = await _yolo_auto_accept(
                             call,
                             bridge_dir=bridge_dir,
                             session_id=session_id,
                             now=now,
+                            pending_since=first,
                             attempts_by_call=auto_accept_attempts,
                             allow_send=not auto_accepted_this_pass,
                         )

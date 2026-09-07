@@ -105,14 +105,38 @@ opposite default of the rest of this design, so the accept is deliberately fail-
   accept hint (`→ Run (once) (y)`). A stale marker with no gate rendered gets no keystroke —
   `tmux send-keys y` would type a literal `y` into the composer, which then prepends itself to
   whatever the user types next in the embedded terminal.
-- **Bounded.** `_YOLO_ACCEPT_MAX_ATTEMPTS` tries, paced by `_YOLO_ACCEPT_RETRY_S`, at most one
-  keystroke per poll (cursor renders one prompt at a time).
-- **Falls back to the card.** A dead pane, a send tmux rejects, or a gate still pending after
-  the budget all surface the ordinary ApprovalCard. The worst case is therefore today's visible
-  stall, never a keystroke loop.
-- **`AskQuestion` is excluded** — a question is human input, not a gate `y` can answer.
+- **Bounded, with two independent budgets.** `_YOLO_ACCEPT_MAX_ATTEMPTS` tries, paced by
+  `_YOLO_ACCEPT_RETRY_S`, cover a prompt that IS on screen but that the accept key isn't
+  clearing (at most one keystroke per poll, since cursor renders one prompt at a time). A
+  *separate*, far more generous `_YOLO_ACCEPT_STALE_CEILING_S` wall-clock ceiling (default 60s,
+  measured from when the call was first seen pending) covers the other failure mode — no prompt
+  ever renders at all, e.g. a stale marker cursor already resolved that store.db hasn't caught
+  up to. Keeping these separate matters: without it, a call still queued behind an earlier one
+  would burn its "no prompt yet" polls against the small attempts budget and could be surfaced
+  before cursor even started showing it.
+- **Queue-aware: only the head of the queue spends budget.** Cursor's TUI can only ever be
+  showing ONE of a session's pending calls at a time, so when several tool calls go pending
+  together, the supervisor sorts them by first-seen time and evaluates *only* the oldest
+  (the "head") each pass — every other pending call is skipped for free, with its own budget
+  left untouched, until it becomes head in turn (the current head either clears or exhausts to
+  a card). This is what fixes a batch of tool calls emitted in one turn racing each other's
+  attempts down to zero before cursor ever rendered most of them.
+- **Falls back to the card.** A dead pane, a send tmux rejects, the head's attempts budget
+  exhausting with a prompt visible, or the head's stale-ceiling exhausting with no prompt ever
+  rendered — all surface the ordinary ApprovalCard for that one call, and the queue proceeds to
+  the next. The worst case is therefore today's visible stall for one call, never a keystroke
+  loop or an indefinitely blocked queue.
+- **`AskQuestion` is excluded** — a question is human input, not a gate `y` can answer, and it
+  does not occupy (or wait behind) the accept-budget queue.
 - Because a gate answered this way is never seen by a human, the accept logs the tool name and
-  an argument preview at INFO: that line is the only record Omnigent approved the call.
+  an argument preview at INFO: that line is the only record Omnigent approved the call. Whenever
+  a card is surfaced instead, the WARN log includes the pane's last ~3 lines (truncated to 200
+  chars) so a failure shows the actual prompt wording that didn't clear.
+- **Env overrides.** `OMNIGENT_CURSOR_YOLO_ACCEPT_ATTEMPTS` (default 5) and
+  `OMNIGENT_CURSOR_YOLO_ACCEPT_RETRY_S` (default 2.0) override `_YOLO_ACCEPT_MAX_ATTEMPTS` /
+  `_YOLO_ACCEPT_RETRY_S` for an operator who needs to trade off latency-to-card against
+  tolerance for a slow-rendering TUI without a code change. A malformed value is logged and
+  ignored in favor of the default.
 
 The attempt counters are in-memory, so a runner restart re-tries a call that is still pending.
 

@@ -2107,9 +2107,33 @@ def _codex_rollout_records_from_session_items(
         # replacement_history replaces them.
         if item.get("type") == "compaction":
             compacted_msgs = item.get("compacted_messages")
+            if not isinstance(compacted_msgs, list):
+                compacted_msgs = []
+            summary = item.get("summary")
+            # A summary-only marker (no compacted_messages, e.g. a fork
+            # compacted from another harness) must still reach Codex as
+            # replacement history, or the summary is silently dropped.
+            if not compacted_msgs and isinstance(summary, str) and summary:
+                compacted_msgs = [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "[Previous conversation summary]",
+                            }
+                        ],
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": summary}],
+                    },
+                ]
             if compacted_msgs:
                 compacted_payload: _JsonObject = {
-                    "message": item.get("summary", ""),
+                    "message": summary if isinstance(summary, str) else "",
                     "replacement_history": compacted_msgs,
                 }
                 compacted_record: _JsonObject = {

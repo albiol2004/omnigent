@@ -1216,6 +1216,86 @@ async def _create_parent_with_subagents(
     return {"session_id": session_id, "agent_id": agent_resp.json()["id"]}
 
 
+def _bundle_with_native_root(
+    name: str,
+    harness: str,
+    config: dict[str, Any],
+) -> bytes:
+    """Build a registered agent whose root executor uses a native harness."""
+    root_config = {
+        "spec_version": 1,
+        "name": name,
+        "executor": {
+            "type": "omnigent",
+            "model": f"test-{name}",
+            "config": {"harness": harness, **config},
+        },
+        "prompt": "test native registered agent",
+    }
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        cfg = yaml.dump(root_config).encode()
+        info = tarfile.TarInfo(name="config.yaml")
+        info.size = len(cfg)
+        tf.addfile(info, io.BytesIO(cfg))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    "harness,root_config,expected_args",
+    [
+        (
+            "claude-native",
+            {"permission_mode": "bypassPermissions"},
+            ["--permission-mode", "bypassPermissions"],
+        ),
+        (
+            "codex-native",
+            {"yolo": True},
+            ["--dangerously-bypass-approvals-and-sandbox"],
+        ),
+        (
+            "cursor-native",
+            {"yolo": True},
+            ["--yolo"],
+        ),
+    ],
+)
+async def test_registered_native_agent_create_derives_launch_args_from_root_spec(
+    client: httpx.AsyncClient,
+    harness: str,
+    root_config: dict[str, Any],
+    expected_args: list[str],
+) -> None:
+    """Durable agent-id launches inherit native permission flags from YAML."""
+    bundle = _bundle_with_native_root(
+        name=f"registered-{harness}",
+        harness=harness,
+        config=root_config,
+    )
+    bootstrap = await client.post(
+        "/v1/sessions",
+        data={"metadata": json.dumps({})},
+        files={"bundle": ("agent.tar.gz", bundle, "application/gzip")},
+    )
+    assert bootstrap.status_code == 201, bootstrap.text
+    bootstrap_id = bootstrap.json()["session_id"]
+    agent_resp = await client.get(f"/v1/sessions/{bootstrap_id}/agent")
+    assert agent_resp.status_code == 200, agent_resp.text
+
+    created = await client.post(
+        "/v1/sessions",
+        json={
+            "agent_id": agent_resp.json()["id"],
+            "parent_session_id": bootstrap_id,
+            "title": "registered native child",
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["terminal_launch_args"] == expected_args
+    assert created.json()["labels"]["omnigent.ui"] == "terminal"
+
+
 @pytest.mark.parametrize(
     "harness,expected_wrapper",
     [

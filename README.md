@@ -609,6 +609,17 @@ the service. To opt out, follow our instructions in
 
 ---
 
+## trio-v0.12.0-fixes (this worktree)
+
+Stock `v0.12.0` plus a thin Trio keeper set. Live
+`~/omnigent` stays on `trio-v0.10.0-fixes` until this branch is
+verified. Keepers: kill-on-close leftover tmux SIGKILL, registered
+`agent_id` native launch-arg derivation (`--yolo`), and
+queue-aware Cursor yolo auto-accept. Do not treat this as upstream
+`main`; several close/leak PRs landed after the 0.12.0 tag.
+
+---
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](https://github.com/omnigent-ai/omnigent/blob/main/CONTRIBUTING.md) for how to set up your environment, run the checks, and open a pull request.

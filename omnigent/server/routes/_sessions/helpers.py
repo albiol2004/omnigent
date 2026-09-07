@@ -8361,6 +8361,37 @@ async def _remove_session_worktree_best_effort(
         )
 
 
+def _resolve_agent_spec(
+    *,
+    agent: Agent,
+    agent_cache: AgentCache | None,
+) -> AgentSpec | None:
+    """Load an already-registered agent's trusted root spec.
+
+    Used when ``POST /v1/sessions`` creates from ``agent_id`` without
+    ``sub_agent_name`` (the Trio Lead/Evaluator path). Native YOLO flags
+    live on that root executor, so we derive ``terminal_launch_args``
+    from this spec instead of leaving them empty.
+
+    :param agent: The registered agent row whose bundle to load.
+    :param agent_cache: Parsed-bundle cache. ``None`` skips derivation.
+    :returns: The root :class:`AgentSpec`, or ``None`` on miss/error.
+    """
+    if agent_cache is None:
+        return None
+    try:
+        return agent_cache.load(
+            agent.id, agent.bundle_location, expand_env=agent.session_id is None
+        ).spec
+    except Exception:  # noqa: BLE001 -- launch derivation is best-effort.
+        _logger.warning(
+            "Could not load bundle for registered agent %s to derive launch config",
+            agent.id,
+            exc_info=True,
+        )
+        return None
+
+
 def _resolve_subagent_spec(
     *,
     agent: Agent,
@@ -8386,24 +8417,10 @@ def _resolve_subagent_spec(
     :returns: The matching child :class:`AgentSpec`, or ``None`` when the
         cache is absent, the bundle fails to load, or no sub-agent matches.
     """
-    if agent_cache is None:
-        return None
     from omnigent.runtime.workflow import _find_spec_by_name
 
-    try:
-        parent_spec = agent_cache.load(
-            agent.id, agent.bundle_location, expand_env=agent.session_id is None
-        ).spec
-    except Exception:  # noqa: BLE001
-        # A bundle that fails to load here must not break session
-        # creation; the session still works, just without the
-        # derived labels / launch args.
-        _logger.warning(
-            "Could not load bundle for agent %s to resolve sub-agent %r spec",
-            agent.id,
-            sub_agent_name,
-            exc_info=True,
-        )
+    parent_spec = _resolve_agent_spec(agent=agent, agent_cache=agent_cache)
+    if parent_spec is None:
         return None
     return _find_spec_by_name(parent_spec, sub_agent_name)
 
@@ -10189,6 +10206,7 @@ __all__ = [
     "_require_permission_mode_forward",
     "_reset_runner_resources_after_switch",
     "_reset_runner_resources_after_switch_impl",
+    "_resolve_agent_spec",
     "_resolve_harness",
     "_resolve_llm_model",
     "_resolve_skill_meta_text_via_runner",

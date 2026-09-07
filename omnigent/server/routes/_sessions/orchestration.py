@@ -283,6 +283,7 @@ from omnigent.server.routes._sessions.helpers import (
     _repl_terminal_ui_labels,
     _require_declared_subagent,
     _require_external_status_forward,
+    _resolve_agent_spec,
     _resolve_harness,
     _resolve_llm_model,
     _resolve_subagent_spec,
@@ -8272,10 +8273,14 @@ async def _create_session_from_existing_agent(
     # Sessions that resolve their own agent (top-level sessions and the
     # manual Add Agent child flow where ``sub_agent_name`` is null) keep
     # the validated body args (e.g. ``["--permission-mode",
-    # "bypassPermissions"]`` from the web permission-mode selector). The
-    # flat-list shape plus this bounds check is the security boundary;
-    # mirrors the multipart create + PATCH paths.
+    # "bypassPermissions"]`` from the web permission-mode selector).
+    # When the body omits launch args entirely, derive them from the
+    # registered root spec — Trio Lead/Evaluator create by agent_id
+    # with yolo:true and no explicit terminal_launch_args.
+    # The flat-list shape plus this bounds check is the security
+    # boundary; mirrors the multipart create + PATCH paths.
     sub_spec: AgentSpec | None = None
+    registered_agent_spec: AgentSpec | None = None
     if body.sub_agent_name:
         sub_spec = _resolve_subagent_spec(
             agent=agent,
@@ -8293,10 +8298,23 @@ async def _create_session_from_existing_agent(
             ) from exc
     else:
         try:
-            validated_launch_args = _validate_terminal_launch_args(body.terminal_launch_args)
+            if body.terminal_launch_args is not None:
+                validated_launch_args = _validate_terminal_launch_args(
+                    body.terminal_launch_args
+                )
+            else:
+                registered_agent_spec = _resolve_agent_spec(
+                    agent=agent,
+                    agent_cache=agent_cache,
+                )
+                validated_launch_args = (
+                    _derive_terminal_launch_args_from_spec(registered_agent_spec)
+                    if registered_agent_spec is not None
+                    else None
+                )
         except ValueError as exc:
             raise OmnigentError(
-                f"invalid terminal_launch_args: {exc}",
+                f"invalid terminal_launch_args in registered agent spec: {exc}",
                 code=ErrorCode.INVALID_INPUT,
             ) from exc
 
@@ -8440,6 +8458,17 @@ async def _create_session_from_existing_agent(
         # premature (routing may pick a non-native SDK harness).
         _merged = dict(body.labels) if body.labels else {}
         _merged.update(_sa_labels)
+        await asyncio.to_thread(conversation_store.set_labels, conv.id, _merged)
+        conv.labels.update(_merged)
+    elif registered_agent_spec is not None and (
+        _agent_labels := _native_subagent_wrapper_labels_from_spec(
+            registered_agent_spec
+        )
+    ):
+        # Registered agent_id creates (no sub_agent_name) still need the
+        # terminal-first pill when the root spec is a native harness.
+        _merged = dict(body.labels) if body.labels else {}
+        _merged.update(_agent_labels)
         await asyncio.to_thread(conversation_store.set_labels, conv.id, _merged)
         conv.labels.update(_merged)
     elif (

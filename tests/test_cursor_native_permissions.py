@@ -683,23 +683,67 @@ async def test_supervise_transcript_yolo_caps_retries_then_surfaces_card(
 async def test_supervise_transcript_yolo_never_types_when_no_prompt_on_screen(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A pending marker with no gate rendered is mirrored, never typed at.
+    """A stale pending marker with no gate rendered is dropped, not typed at
+    and not mirrored to a card.
 
-    This is the stale-marker case the feature exists for. ``tmux send-keys y``
-    against an idle pane types a literal ``y`` into cursor's composer, which
-    then prepends itself to whatever the user types next — so the accept only
-    fires while cursor is actually advertising its accept key. A stale
-    no-prompt marker is bounded by the wall-clock ceiling, not the attempts
-    budget (see ``test_supervise_transcript_yolo_caps_retries...`` for that
-    one) — collapse it to 0 so the test doesn't wait out the real default.
+    This is the stale-marker case the feature exists for: cursor's Run
+    Everything mode already executed the call, and store.db's pending marker
+    just hasn't caught up. ``tmux send-keys y`` against an idle pane types a
+    literal ``y`` into cursor's composer, which then prepends itself to
+    whatever the user types next — so the accept only fires while cursor is
+    actually advertising its accept key — and surfacing a human ApprovalCard
+    here is wrong too: nobody is being asked anything, so the call must be
+    dropped from consideration locally instead. Bounded by the wall-clock
+    ceiling, not the attempts budget (see
+    ``test_supervise_transcript_yolo_caps_retries...`` for that one) —
+    collapse it to 0 so the test doesn't wait out the real default.
     """
     monkeypatch.setattr(cnp, "_YOLO_ACCEPT_RETRY_S", 0.0)
     monkeypatch.setattr(cnp, "_YOLO_ACCEPT_STALE_CEILING_S", 0.0)
     posts, keys_sent = _install_supervisor_fakes(
         monkeypatch, tmp_path, pending=[_SHELL_CALL], pane=_IDLE_PANE
     )
+    real_yolo_auto_accept = cnp._yolo_auto_accept
+    accept_calls: list[str] = []
+
+    async def _counting_yolo_auto_accept(call: CursorPendingToolCall, **kwargs: object):
+        accept_calls.append(call.tool_call_id)
+        return await real_yolo_auto_accept(call, **kwargs)
+
+    monkeypatch.setattr(cnp, "_yolo_auto_accept", _counting_yolo_auto_accept)
 
     task = _start_supervisor(tmp_path, session_id="conv_yolo_idle", auto_accept_approvals=True)
+    # No predicate to wait on (nothing is ever posted) — give the loop several
+    # polls instead, then assert the drop held for all of them.
+    assert await _wait_for(lambda: len(accept_calls) >= 1)
+    await asyncio.sleep(0.1)
+    await _stop(task)
+
+    assert keys_sent == []
+    assert _hook_posts(posts) == []
+    # The call was marked handled in the supervisor's bookkeeping after the
+    # first stale-ceiling evaluation, so later polls must skip it outright
+    # instead of re-evaluating it forever.
+    assert accept_calls == [_SHELL_CALL.tool_call_id]
+
+
+async def test_supervise_transcript_yolo_stale_ceiling_surfaces_card_with_env_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``OMNIGENT_CURSOR_YOLO_STALE_SURFACES_CARD`` restores the old behaviour:
+    a stale no-prompt marker surfaces the ordinary web card instead of being
+    dropped locally.
+    """
+    monkeypatch.setattr(cnp, "_YOLO_ACCEPT_RETRY_S", 0.0)
+    monkeypatch.setattr(cnp, "_YOLO_ACCEPT_STALE_CEILING_S", 0.0)
+    monkeypatch.setattr(cnp, "_YOLO_STALE_SURFACES_CARD", True)
+    posts, keys_sent = _install_supervisor_fakes(
+        monkeypatch, tmp_path, pending=[_SHELL_CALL], pane=_IDLE_PANE
+    )
+
+    task = _start_supervisor(
+        tmp_path, session_id="conv_yolo_idle_override", auto_accept_approvals=True
+    )
     assert await _wait_for(lambda: bool(_hook_posts(posts)))
     await _stop(task)
 
@@ -883,9 +927,9 @@ async def test_supervise_transcript_yolo_head_exhausts_then_next_gets_fresh_budg
 async def test_supervise_transcript_yolo_stale_head_ceiling_then_queue_proceeds(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A stale head (no prompt ever renders) surfaces via the wall-clock
+    """A stale head (no prompt ever renders) is dropped via the wall-clock
     ceiling rather than the attempts budget, and does not block the call
-    behind it forever — that one proceeds (and hits the same ceiling) too.
+    behind it forever — that one is evaluated (and dropped the same way) too.
     """
     monkeypatch.setattr(cnp, "_YOLO_ACCEPT_RETRY_S", 0.0)
     monkeypatch.setattr(cnp, "_YOLO_ACCEPT_STALE_CEILING_S", 0.0)
@@ -896,18 +940,28 @@ async def test_supervise_transcript_yolo_stale_head_ceiling_then_queue_proceeds(
     posts, keys_sent = _install_supervisor_fakes(
         monkeypatch, tmp_path, pending=pending_now, pane=_IDLE_PANE
     )
+    real_yolo_auto_accept = cnp._yolo_auto_accept
+    accept_calls: list[str] = []
+
+    async def _counting_yolo_auto_accept(call: CursorPendingToolCall, **kwargs: object):
+        accept_calls.append(call.tool_call_id)
+        return await real_yolo_auto_accept(call, **kwargs)
+
+    monkeypatch.setattr(cnp, "_yolo_auto_accept", _counting_yolo_auto_accept)
 
     task = _start_supervisor(
         tmp_path, session_id="conv_yolo_stale_queue", auto_accept_approvals=True
     )
-    assert await _wait_for(lambda: len(_hook_posts(posts)) >= 2)
+    assert await _wait_for(lambda: set(accept_calls) >= {_SHELL_CALL.tool_call_id, "call_b\nfc"})
+    await asyncio.sleep(0.1)
     await _stop(task)
 
-    # Neither call was ever typed at (no prompt ever rendered), and both
-    # surfaced their own card — the stale head did not stall the queue.
+    # Neither call was ever typed at (no prompt ever rendered), neither
+    # surfaced a card (nobody was being asked anything), and the stale head
+    # did not stall the queue: both were evaluated and dropped exactly once.
     assert keys_sent == []
-    previews = [j.get("content_preview") for _, j in _hook_posts(posts)]
-    assert previews == ["docker pull example", "echo b"]
+    assert _hook_posts(posts) == []
+    assert accept_calls == [_SHELL_CALL.tool_call_id, "call_b\nfc"]
 
 
 @pytest.mark.parametrize(

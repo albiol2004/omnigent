@@ -121,11 +121,25 @@ opposite default of the rest of this design, so the accept is deliberately fail-
   left untouched, until it becomes head in turn (the current head either clears or exhausts to
   a card). This is what fixes a batch of tool calls emitted in one turn racing each other's
   attempts down to zero before cursor ever rendered most of them.
-- **Falls back to the card.** A dead pane, a send tmux rejects, the head's attempts budget
-  exhausting with a prompt visible, or the head's stale-ceiling exhausting with no prompt ever
-  rendered — all surface the ordinary ApprovalCard for that one call, and the queue proceeds to
-  the next. The worst case is therefore today's visible stall for one call, never a keystroke
-  loop or an indefinitely blocked queue.
+- **A prompt visibly stuck falls back to the card; a stale marker with no prompt does not.**
+  A dead pane, a send tmux rejects, or the head's attempts budget exhausting *with a prompt
+  visible* — those surface the ordinary ApprovalCard for that one call (a human keystroke really
+  is needed and typing isn't landing), and the queue proceeds to the next. But the head's
+  stale-ceiling exhausting with **no prompt ever rendered** is a different situation: cursor's
+  Run Everything mode already executed the call — its own status line reads `… Run Everything`
+  with no accept hint anywhere on screen — and store.db's pending marker just hasn't caught up.
+  Nobody is being asked anything there, so surfacing a card would park a piloted parent on a
+  phantom. That case is instead resolved locally as auto-allowed/stale: logged at WARN
+  (`stale pending marker under yolo; treating as already executed; no card`, including whether
+  the pane's `Run Everything` status-line marker was present as corroboration) and marked handled
+  in the supervisor's `active` bookkeeping — the same map a parked card uses — so later polls skip
+  it outright instead of re-evaluating it every pass. No card was ever parked for it, so there is
+  nothing to resolve server-side (contrast `external_elicitation_resolved`, which releases a card
+  that *was* parked once the TUI answers it directly). Set
+  `OMNIGENT_CURSOR_YOLO_STALE_SURFACES_CARD=1` to restore the pre-existing behaviour (surface the
+  card at the stale ceiling) if an operator needs that fail-safe back. Either way, the worst case
+  stays today's visible stall for one call, never a keystroke loop or an indefinitely blocked
+  queue.
 - **`AskQuestion` is excluded** — a question is human input, not a gate `y` can answer, and it
   does not occupy (or wait behind) the accept-budget queue.
 - Because a gate answered this way is never seen by a human, the accept logs the tool name and
@@ -136,7 +150,9 @@ opposite default of the rest of this design, so the accept is deliberately fail-
   `OMNIGENT_CURSOR_YOLO_ACCEPT_RETRY_S` (default 2.0) override `_YOLO_ACCEPT_MAX_ATTEMPTS` /
   `_YOLO_ACCEPT_RETRY_S` for an operator who needs to trade off latency-to-card against
   tolerance for a slow-rendering TUI without a code change. A malformed value is logged and
-  ignored in favor of the default.
+  ignored in favor of the default. `OMNIGENT_CURSOR_YOLO_STALE_SURFACES_CARD` (any truthy value,
+  default off) restores the pre-existing behaviour of surfacing a card when the stale ceiling
+  fires instead of dropping the call locally.
 
 The attempt counters are in-memory, so a runner restart re-tries a call that is still pending.
 

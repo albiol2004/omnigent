@@ -688,9 +688,13 @@ async def test_supervise_transcript_yolo_never_types_when_no_prompt_on_screen(
     This is the stale-marker case the feature exists for. ``tmux send-keys y``
     against an idle pane types a literal ``y`` into cursor's composer, which
     then prepends itself to whatever the user types next — so the accept only
-    fires while cursor is actually advertising its accept key.
+    fires while cursor is actually advertising its accept key. A stale
+    no-prompt marker is bounded by the wall-clock ceiling, not the attempts
+    budget (see ``test_supervise_transcript_yolo_caps_retries...`` for that
+    one) — collapse it to 0 so the test doesn't wait out the real default.
     """
     monkeypatch.setattr(cnp, "_YOLO_ACCEPT_RETRY_S", 0.0)
+    monkeypatch.setattr(cnp, "_YOLO_ACCEPT_STALE_CEILING_S", 0.0)
     posts, keys_sent = _install_supervisor_fakes(
         monkeypatch, tmp_path, pending=[_SHELL_CALL], pane=_IDLE_PANE
     )
@@ -794,6 +798,116 @@ async def test_supervise_transcript_yolo_still_parks_askquestion(
     await _stop(task)
 
     assert keys_sent == []
+
+
+async def test_supervise_transcript_yolo_queue_all_accept_in_turn_zero_cards(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Three tool calls pending at once are each accepted in turn — no cards.
+
+    Reproduces the batched-tool-call regression queue-aware budgeting fixes:
+    before it, every pending call burned its own independent attempts budget
+    each poll regardless of whether cursor was even showing its prompt yet, so
+    calls behind the head exhausted before cursor ever rendered them. Now only
+    the head spends budget; the rest wait for free until they become head.
+    """
+    monkeypatch.setattr(cnp, "_YOLO_ACCEPT_RETRY_S", 0.0)
+    call_a = _SHELL_CALL
+    call_b = CursorPendingToolCall(
+        tool_call_id="call_b\nfc", tool_name="Shell", args={"command": "echo b"}
+    )
+    call_c = CursorPendingToolCall(
+        tool_call_id="call_c\nfc", tool_name="Shell", args={"command": "echo c"}
+    )
+    pending_now = [call_a, call_b, call_c]
+    posts, keys_sent = _install_supervisor_fakes(
+        monkeypatch, tmp_path, pending=pending_now, pane=_ACCEPT_PANE
+    )
+
+    task = _start_supervisor(tmp_path, session_id="conv_yolo_queue3", auto_accept_approvals=True)
+
+    for call in (call_a, call_b, call_c):
+        sent_before = len(keys_sent)
+        assert await _wait_for(lambda sent_before=sent_before: len(keys_sent) > sent_before)
+        # cursor moves its prompt to the next call only once this one clears;
+        # removed synchronously (no intervening await) so no extra keystroke
+        # for the just-accepted call can land before the next iteration reads
+        # `sent_before` for the following one.
+        pending_now.remove(call)
+
+    await _stop(task)
+
+    assert keys_sent == [("y",)] * 3
+    assert _hook_posts(posts) == []
+
+
+async def test_supervise_transcript_yolo_head_exhausts_then_next_gets_fresh_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The head exhausting its budget surfaces only its own card.
+
+    The next pending call becomes the new head with its OWN full attempts
+    budget — not one already burned down by having sat behind the exhausted
+    head.
+    """
+    monkeypatch.setattr(cnp, "_YOLO_ACCEPT_RETRY_S", 0.0)
+    call_b = CursorPendingToolCall(
+        tool_call_id="call_b\nfc", tool_name="Shell", args={"command": "echo b"}
+    )
+    pending_now = [_SHELL_CALL, call_b]
+    posts, keys_sent = _install_supervisor_fakes(
+        monkeypatch, tmp_path, pending=pending_now, pane=_ACCEPT_PANE
+    )
+
+    task = _start_supervisor(tmp_path, session_id="conv_yolo_queue2", auto_accept_approvals=True)
+
+    # The head (_SHELL_CALL) exhausts its budget and surfaces exactly one
+    # card. Check immediately on the card appearing (no extra sleep): the
+    # pass that surfaces it computed its head *before* posting the card, so
+    # call_b cannot have been evaluated in that same pass yet.
+    assert await _wait_for(lambda: bool(_hook_posts(posts)))
+    keys_for_head = len(keys_sent)
+    assert len(_hook_posts(posts)) == 1
+    assert keys_for_head == cnp._YOLO_ACCEPT_MAX_ATTEMPTS
+
+    # call_b becomes the new head and keeps getting accepted — a fresh
+    # budget, not a starved one.
+    assert await _wait_for(lambda: len(keys_sent) > keys_for_head)
+    await _stop(task)
+
+    assert keys_sent[:keys_for_head] == [("y",)] * keys_for_head
+    # Only the original head ever surfaced a card.
+    assert len(_hook_posts(posts)) == 1
+
+
+async def test_supervise_transcript_yolo_stale_head_ceiling_then_queue_proceeds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A stale head (no prompt ever renders) surfaces via the wall-clock
+    ceiling rather than the attempts budget, and does not block the call
+    behind it forever — that one proceeds (and hits the same ceiling) too.
+    """
+    monkeypatch.setattr(cnp, "_YOLO_ACCEPT_RETRY_S", 0.0)
+    monkeypatch.setattr(cnp, "_YOLO_ACCEPT_STALE_CEILING_S", 0.0)
+    call_b = CursorPendingToolCall(
+        tool_call_id="call_b\nfc", tool_name="Shell", args={"command": "echo b"}
+    )
+    pending_now = [_SHELL_CALL, call_b]
+    posts, keys_sent = _install_supervisor_fakes(
+        monkeypatch, tmp_path, pending=pending_now, pane=_IDLE_PANE
+    )
+
+    task = _start_supervisor(
+        tmp_path, session_id="conv_yolo_stale_queue", auto_accept_approvals=True
+    )
+    assert await _wait_for(lambda: len(_hook_posts(posts)) >= 2)
+    await _stop(task)
+
+    # Neither call was ever typed at (no prompt ever rendered), and both
+    # surfaced their own card — the stale head did not stall the queue.
+    assert keys_sent == []
+    previews = [j.get("content_preview") for _, j in _hook_posts(posts)]
+    assert previews == ["docker pull example", "echo b"]
 
 
 @pytest.mark.parametrize(

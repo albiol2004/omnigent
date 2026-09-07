@@ -55,6 +55,7 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse as _StreamingResponse
 
 import omnigent.runtime.harnesses._executor_adapter as _adapter_mod_recovery
+from omnigent._wrapper_labels import CLAUDE_NATIVE_WRAPPER_VALUE
 from omnigent.inner.executor import (
     Executor as _RecoveryExecutor,
 )
@@ -5856,6 +5857,8 @@ async def test_session_close_patches_tombstoned_title() -> None:
     from omnigent.runner.tool_dispatch import _execute_session_query_tool
 
     patched: dict[str, Any] = {}
+    stop_events: list[tuple[str, dict[str, Any]]] = []
+    write_order: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "GET" and request.url.path == "/v1/sessions/conv_target":
@@ -5866,6 +5869,7 @@ async def test_session_close_patches_tombstoned_title() -> None:
                     "title": "researcher:auth",
                     "root_conversation_id": "conv_root",
                     "parent_session_id": "conv_caller",
+                    "labels": {"omnigent.wrapper": CLAUDE_NATIVE_WRAPPER_VALUE},
                 },
             )
         if request.method == "GET" and request.url.path == "/v1/sessions/conv_caller":
@@ -5873,7 +5877,12 @@ async def test_session_close_patches_tombstoned_title() -> None:
                 200,
                 json={"id": "conv_caller", "root_conversation_id": "conv_root"},
             )
+        if request.method == "POST" and request.url.path == "/v1/sessions/conv_target/events":
+            write_order.append("stop")
+            stop_events.append(("conv_target", json.loads(request.content)))
+            return httpx.Response(204)
         if request.method == "PATCH" and request.url.path == "/v1/sessions/conv_target":
+            write_order.append("patch")
             patched.update(json.loads(request.content))
             return httpx.Response(200, json={"id": "conv_target"})
         raise AssertionError(f"unexpected {request.method} {request.url.path}")
@@ -5890,6 +5899,10 @@ async def test_session_close_patches_tombstoned_title() -> None:
     # Tombstone embeds the conv id so repeated closes stay unique, and
     # the explicit label makes the closed state observable without
     # exposing the suffix as UI text.
+    assert stop_events == [
+        ("conv_target", {"type": "stop_session", "data": {}}),
+    ]
+    assert write_order == ["stop", "patch"]
     assert patched["title"] == "researcher:auth:closed:conv_target"
     assert patched["labels"] == {CLOSED_LABEL_KEY: CLOSED_LABEL_VALUE}
     assert out == {
@@ -5898,6 +5911,56 @@ async def test_session_close_patches_tombstoned_title() -> None:
         "agent": "researcher",
         "title": "auth",
     }
+
+
+@pytest.mark.asyncio
+async def test_session_close_tombstones_when_target_stop_fails() -> None:
+    """A failed target stop is best-effort and does not block the tombstone."""
+    from omnigent.runner.tool_dispatch import _execute_session_query_tool
+
+    writes: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/sessions/conv_target":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "conv_target",
+                    "title": "worker:task",
+                    "root_conversation_id": "conv_root",
+                    "parent_session_id": "conv_caller",
+                },
+            )
+        if request.method == "GET" and request.url.path == "/v1/sessions/conv_caller":
+            return httpx.Response(
+                200,
+                json={"id": "conv_caller", "root_conversation_id": "conv_root"},
+            )
+        if request.method == "POST" and request.url.path == "/v1/sessions/conv_target/events":
+            writes.append(("POST", request.url.path, json.loads(request.content)))
+            return httpx.Response(404)
+        if request.method == "PATCH" and request.url.path == "/v1/sessions/conv_target":
+            writes.append(("PATCH", request.url.path, json.loads(request.content)))
+            return httpx.Response(200, json={"id": "conv_target"})
+        raise AssertionError(f"unexpected {request.method} {request.url.path}")
+
+    async with _session_query_client(handler) as client:
+        out = json.loads(
+            await _execute_session_query_tool(
+                "sys_session_close",
+                json.dumps({"conversation_id": "conv_target"}),
+                conversation_id="conv_caller",
+                server_client=client,
+            )
+        )
+
+    assert writes[0] == (
+        "POST",
+        "/v1/sessions/conv_target/events",
+        {"type": "interrupt", "data": {}},
+    )
+    assert writes[1][0:2] == ("PATCH", "/v1/sessions/conv_target")
+    assert out["closed"] is True
 
 
 @pytest.mark.asyncio

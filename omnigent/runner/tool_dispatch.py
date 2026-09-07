@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import dataclasses
 import json
 import logging
@@ -5629,6 +5630,20 @@ async def _session_close_via_rest(
     parsed = _parse_session_title(_optional_string(target_snap.get("title")))
     if parsed.agent is None or parsed.title is None:
         return json.dumps({"error": "session_not_a_sub_agent", "conversation_id": target_id})
+    # Stop only after close is allowed. Prefer Claude's hard stop when the
+    # snapshot identifies that wrapper; unlabeled snapshots use interrupt.
+    # A failed stop must not prevent the close tombstone.
+    event_type = (
+        "stop_session"
+        if _session_wrapper_label(target_snap) == CLAUDE_NATIVE_WRAPPER_VALUE
+        else "interrupt"
+    )
+    with contextlib.suppress(Exception):
+        await server_client.post(
+            f"/v1/sessions/{target_id}/events",
+            json={"type": event_type, "data": {}},
+            timeout=30.0,
+        )
     new_title = f"{parsed.agent}:{parsed.title}{_CLOSED_TITLE_INFIX}{target_id}"
     try:
         patch = await server_client.patch(

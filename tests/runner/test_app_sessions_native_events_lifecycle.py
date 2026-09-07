@@ -1014,6 +1014,136 @@ async def test_codex_native_model_options_query_model_list(
 
 
 @pytest.mark.asyncio
+async def test_codex_native_model_options_follow_labeled_foreign_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """
+    Model discovery follows a labeled live bridge across session rotation.
+
+    The child session can read the app-server catalog while a parent-owned
+    bridge remains live, but mutating settings must stay owner-bound.
+    """
+    from omnigent import codex_native_app_server
+    from omnigent.spec.types import ExecutorSpec
+
+    parent_id = "f3c1df05a73a4ab8a6e7d976c7f2db10"
+    child_id = "a0e2e4b3f6d64b6e9e0d52a9f9e4d6c1"
+    bridge_id = "bridge_parent_rotation"
+    bridge_label_key = codex_native_bridge.CODEX_NATIVE_BRIDGE_ID_LABEL_KEY
+    monkeypatch.setattr(codex_native_bridge, "_BRIDGE_ROOT", tmp_path / "codex-bridge")
+    codex_native_bridge.write_bridge_state(
+        codex_native_bridge.bridge_dir_for_bridge_id(bridge_id),
+        codex_native_bridge.CodexNativeBridgeState(
+            session_id=parent_id,
+            socket_path="ws://127.0.0.1:43210",
+            thread_id="thread_parent",
+            codex_home=str(tmp_path / "codex-home"),
+            active_turn_id=None,
+        ),
+    )
+
+    expected_models = [
+        {
+            "id": "gpt-5.5",
+            "model": "databricks-gpt-5-5",
+            "displayName": "GPT-5.5",
+            "defaultReasoningEffort": "high",
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": "low", "description": "Low"},
+            ],
+            "isDefault": True,
+        }
+    ]
+    fake_client = _RecordingCodexAppServerClient(
+        transport="ws://127.0.0.1:43210",
+        client_name="omnigent-codex-native-runner",
+    )
+    fake_client.model_list_responses = [
+        {"result": {"data": expected_models, "nextCursor": None}}
+    ]
+
+    def _fake_client_for_transport(
+        transport: str,
+        *,
+        client_name: str = "omnigent",
+    ) -> _RecordingCodexAppServerClient:
+        """Return the fake client for the labeled parent bridge."""
+        assert transport == fake_client.transport
+        assert client_name == fake_client.client_name
+        return fake_client
+
+    monkeypatch.setattr(
+        codex_native_app_server,
+        "client_for_transport",
+        _fake_client_for_transport,
+    )
+
+    class _LabeledServerClient(NullServerClient):
+        """Return the rotated bridge label for the child session."""
+
+        async def get(
+            self,
+            url: str,
+            **kwargs: Any,
+        ) -> NullServerClient._Response:
+            if url.endswith("/labels"):
+
+                class _LabelsResponse(NullServerClient._Response):
+                    """Response containing the child session's bridge label."""
+
+                    def json(self) -> dict[str, Any]:
+                        """Return the parent-owned bridge id."""
+                        return {"labels": {bridge_label_key: bridge_id}}
+
+                return _LabelsResponse()
+            return await super().get(url, **kwargs)
+
+    codex_native_spec = AgentSpec(
+        spec_version=1,
+        name="t",
+        executor=ExecutorSpec(type="omnigent", config={"harness": "codex-native"}),
+    )
+
+    async def _resolver(agent_id: str, session_id: str | None = None) -> AgentSpec:
+        """Return the codex-native spec for any agent id."""
+        del agent_id, session_id
+        return codex_native_spec
+
+    app = create_runner_app(
+        process_manager=_FakeProcessManager(
+            _ScriptedHarnessClient([])
+        ),  # type: ignore[arg-type]
+        spec_resolver=_resolver,
+        server_client=_LabeledServerClient(),  # type: ignore[arg-type]
+    )
+
+    async with _runner_client(app) as client:
+        create_resp = await client.post(
+            "/v1/sessions",
+            json={
+                "session_id": child_id,
+                "agent_id": "880b5afda28ad55ff74cbeb9b5fc67fb",
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        model_resp = await client.get(
+            f"/v1/sessions/{child_id}/codex-model-options"
+        )
+        mutation_resp = await client.post(
+            f"/v1/sessions/{child_id}/events",
+            json={"type": "model_change", "model": "gpt-5.4"},
+        )
+
+    assert model_resp.status_code == 200, model_resp.text
+    assert model_resp.json() == {"models": expected_models}
+    assert mutation_resp.status_code == 204, mutation_resp.text
+    assert fake_client.requests == [
+        ("model/list", {"includeHidden": False}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_claude_native_model_options_use_session_launch_catalog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

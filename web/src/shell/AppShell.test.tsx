@@ -640,7 +640,14 @@ describe("TerminalFirstContext", () => {
       },
     ]);
     useTerminalsMock.mockReturnValue({
-      terminals: [{ id: "terminal_main", name: "claude", session: "main", running: true }],
+      terminals: [
+        {
+          id: "terminal_claude_main",
+          name: "claude",
+          session: "main",
+          running: true,
+        },
+      ],
       isLoading: false,
       error: null,
     });
@@ -720,7 +727,14 @@ describe("TerminalFirstContext", () => {
       },
     ]);
     useTerminalsMock.mockReturnValue({
-      terminals: [{ id: "terminal_main", name: "claude", session: "main", running: true }],
+      terminals: [
+        {
+          id: "terminal_claude_main",
+          name: "claude",
+          session: "main",
+          running: true,
+        },
+      ],
       isLoading: false,
       error: null,
     });
@@ -786,7 +800,14 @@ describe("TerminalFirstContext", () => {
       { id: "conv_native", permission_level: null, labels: { "omnigent.ui": "terminal" } },
     ]);
     useTerminalsMock.mockReturnValue({
-      terminals: [{ id: "terminal_main", name: "claude", session: "main", running: true }],
+      terminals: [
+        {
+          id: "terminal_claude_main",
+          name: "claude",
+          session: "main",
+          running: true,
+        },
+      ],
       isLoading: false,
       error: null,
     });
@@ -840,7 +861,14 @@ describe("TerminalFirstContext", () => {
     // the list empties (see the startup-spinner tests above).
     useChatStore.setState({ terminalPending: true, sessionStatus: "running" });
     useTerminalsMock.mockReturnValue({
-      terminals: [{ id: "terminal_main", name: "claude", session: "main", running: true }],
+      terminals: [
+        {
+          id: "terminal_claude_main",
+          name: "claude",
+          session: "main",
+          running: true,
+        },
+      ],
       isLoading: false,
       error: null,
     });
@@ -899,7 +927,14 @@ describe("TerminalFirstContext", () => {
       { id: "conv_other", permission_level: null, labels: {} },
     ]);
     useTerminalsMock.mockReturnValue({
-      terminals: [{ id: "terminal_main", name: "claude", session: "main", running: true }],
+      terminals: [
+        {
+          id: "terminal_claude_main",
+          name: "claude",
+          session: "main",
+          running: true,
+        },
+      ],
       isLoading: false,
       error: null,
     });
@@ -941,7 +976,14 @@ describe("TerminalFirstContext", () => {
       },
     ]);
     useTerminalsMock.mockReturnValue({
-      terminals: [{ id: "terminal_main", name: "claude", session: "main", running: true }],
+      terminals: [
+        {
+          id: "terminal_claude_main",
+          name: "claude",
+          session: "main",
+          running: true,
+        },
+      ],
       isLoading: false,
       error: null,
     });
@@ -970,7 +1012,14 @@ describe("Right-rail terminals card", () => {
       },
     ]);
     useTerminalsMock.mockReturnValue({
-      terminals: [{ id: "terminal_main", name: "claude", session: "main", running: true }],
+      terminals: [
+        {
+          id: "terminal_claude_main",
+          name: "claude",
+          session: "main",
+          running: true,
+        },
+      ],
       isLoading: false,
       error: null,
     });
@@ -1113,7 +1162,14 @@ describe("Right-rail terminals card", () => {
       },
     ]);
     useTerminalsMock.mockReturnValue({
-      terminals: [{ id: "terminal_main", name: "claude", session: "main", running: true }],
+      terminals: [
+        {
+          id: "terminal_claude_main",
+          name: "claude",
+          session: "main",
+          running: true,
+        },
+      ],
       isLoading: false,
       error: null,
     });

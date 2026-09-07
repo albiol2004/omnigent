@@ -1,0 +1,12 @@
+2026-09-07T12:08:32.629622Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 3 items in this shard
+...                                                                      [100%]
+========================= Top tests by peak-RSS delta ==========================
++  158.9 MB  (now    158.9 MB)  tests/runner/test_app_sessions_native_events_lifecycle.py::test_codex_native_model_options_returns_503_until_bridge_state_exists
++    1.1 MB  (now    160.0 MB)  tests/runner/test_app_sessions_native_events_lifecycle.py::test_codex_native_model_options_query_model_list
++    0.9 MB  (now    160.9 MB)  tests/runner/test_app_sessions_native_events_lifecycle.py::test_codex_native_model_options_follow_labeled_foreign_bridge
+================================== slow tests ==================================
+[slow] 2.02s tests/runner/test_app_sessions_native_events_lifecycle.py::test_codex_native_model_options_returns_503_until_bridge_state_exists
+[slow] 1.84s tests/runner/test_app_sessions_native_events_lifecycle.py::test_codex_native_model_options_follow_labeled_foreign_bridge
+[slow] 1.84s tests/runner/test_app_sessions_native_events_lifecycle.py::test_codex_native_model_options_query_model_list
+3 passed, 38 deselected in 5.81s

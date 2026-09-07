@@ -1,0 +1,6 @@
+2026-09-07T11:41:05.871141Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 3 items in this shard
+...                                                                      [100%]
+========================= Top tests by peak-RSS delta ==========================
++  119.5 MB  (now    119.5 MB)  tests/test_codex_native.py::test_preload_codex_thread_for_resume_resumes_and_closes
+3 passed, 214 deselected in 0.23s

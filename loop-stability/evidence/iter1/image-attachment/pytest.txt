@@ -1,0 +1,9 @@
+Command:
+$ cd /home/alex/omnigent && \
+  PATH=/home/alex/omnigent/.venv/bin:$PATH uv run pytest -q \
+  tests/server/routes/test_session_resources.py -k 'image or upload or content'
+
+Output:
+Running 12 items in this shard
+............                                                             [100%]
+12 passed, 138 deselected in 8.71s

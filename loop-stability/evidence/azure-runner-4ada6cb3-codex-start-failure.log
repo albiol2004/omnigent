@@ -1,0 +1,51 @@
+ex_native_app_server.py", line 552, in request
+    raise RuntimeError(str(error))
+RuntimeError: {'code': -32600, 'message': 'thread 01a07b94-6560-7623-af8b-ddfec31fee57 already has an active writer'}
+WARN  09-07 11:15:28.482 runner.app                       ...t_error_payload | Native Codex terminal start failed: {'code': -32600, 'message': 'thread 01a07b94-6560-7623-af8b-ddfec31fee57 already has an active writer'}
+Traceback (most recent call last):
+  File "/home/coder/omnigent/omnigent/runner/native/orchestration.py", line 7497, in _launch_native_terminal
+    await adapter(ctx)
+  File "/home/coder/omnigent/omnigent/runner/native/orchestration.py", line 7344, in _launch_codex
+    return await _auto_create_codex_terminal(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/coder/omnigent/omnigent/runner/native/orchestration.py", line 4161, in _auto_create_codex_terminal
+    await preload_codex_thread_for_resume(
+  File "/home/coder/omnigent/omnigent/codex_native_app_server.py", line 2674, in preload_codex_thread_for_resume
+    await client.request(
+  File "/home/coder/omnigent/omnigent/codex_native_app_server.py", line 552, in request
+    raise RuntimeError(str(error))
+RuntimeError: {'code': -32600, 'message': 'thread 01a07b94-6560-7623-af8b-ddfec31fee57 already has an active writer'}
+INFO  09-07 11:15:28.522 codex_native_app_server          ...cription_launch | native-codex routing: Codex CLI login (subscription provider 'codex'; Codex is logged in)
+ERROR 09-07 11:15:29.017 runner.app                       ...native_terminal | Codex terminal ensure failed for session=4ada6cb3c4b54f6d877f237a1daa4d82
+Traceback (most recent call last):
+  File "/home/coder/omnigent/omnigent/runner/native/orchestration.py", line 7621, in _ensure_native_terminal
+    view = await adapter(ctx)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/coder/omnigent/omnigent/runner/native/orchestration.py", line 7344, in _launch_codex
+    return await _auto_create_codex_terminal(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/coder/omnigent/omnigent/runner/native/orchestration.py", line 4161, in _auto_create_codex_terminal
+    await preload_codex_thread_for_resume(
+  File "/home/coder/omnigent/omnigent/codex_native_app_server.py", line 2674, in preload_codex_thread_for_resume
+    await client.request(
+  File "/home/coder/omnigent/omnigent/codex_native_app_server.py", line 552, in request
+    raise RuntimeError(str(error))
+RuntimeError: {'code': -32600, 'message': 'thread 01a07b94-6560-7623-af8b-ddfec31fee57 already has an active writer'}
+WARN  09-07 11:15:29.017 runner.app                       ...t_error_payload | Native Codex terminal start failed: {'code': -32600, 'message': 'thread 01a07b94-6560-7623-af8b-ddfec31fee57 already has an active writer'}
+Traceback (most recent call last):
+  File "/home/coder/omnigent/omnigent/runner/native/orchestration.py", line 7621, in _ensure_native_terminal
+    view = await adapter(ctx)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/coder/omnigent/omnigent/runner/native/orchestration.py", line 7344, in _launch_codex
+    return await _auto_create_codex_terminal(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/coder/omnigent/omnigent/runner/native/orchestration.py", line 4161, in _auto_create_codex_terminal
+    await preload_codex_thread_for_resume(
+  File "/home/coder/omnigent/omnigent/codex_native_app_server.py", line 2674, in preload_codex_thread_for_resume
+    await client.request(
+  File "/home/coder/omnigent/omnigent/codex_native_app_server.py", line 552, in request
+    raise RuntimeError(str(error))
+RuntimeError: {'code': -32600, 'message': 'thread 01a07b94-6560-7623-af8b-ddfec31fee57 already has an active writer'}
+INFO  09-07 11:15:29.882 runner.app                       ..._session_events | post_session_events: conv=4ada6cb3c4b54f6d877f237a1daa4d82 type=goal_get active=False buffer_len=0 content_types=[] model_override=None
+WARN  09-07 11:15:29.886 runner.app                       ...ate_for_session | Codex-native goal read skipped for 4ada6cb3c4b54f6d877f237a1daa4d82: no bridge state.
+

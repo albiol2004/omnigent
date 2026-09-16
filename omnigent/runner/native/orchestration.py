@@ -4284,6 +4284,20 @@ async def _auto_create_codex_terminal(
                 tmux_start_on_attach=False,
             ),
         )
+        # Advertise the tmux socket+target so the codex-native harness stop can
+        # hard-kill this same pane (tmux kill-session), wiring the web UI's
+        # "Stop session" affordance to the running TUI. Mirrors cursor-native.
+        terminal_registry = resource_registry.terminal_registry
+        if terminal_registry is not None:
+            instance = terminal_registry.get(session_id, "codex", "main")
+            if instance is not None and instance.running:
+                from omnigent.codex_native_bridge import write_tmux_target
+
+                write_tmux_target(
+                    bridge_dir,
+                    socket_path=instance.socket_path,
+                    tmux_target=instance.tmux_target,
+                )
         publish_event(
             session_id,
             {

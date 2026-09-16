@@ -8,8 +8,10 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
@@ -1019,3 +1021,116 @@ def clear_active_turn_id_if_matches(bridge_dir: Path, completed_turn_id: str | N
             ),
         )
         return True
+
+
+# --- tmux helpers -----------------------------------------------------------
+# Codex's TUI runs in a tmux pane (resource_registry.launch_auxiliary_terminal
+# with terminal_name="codex"). The runner advertises its socket+target via
+# ``tmux.json`` after launch so the web UI's "Stop session" can hard-kill the
+# pane. Mirrors the claude/cursor native bridges.
+
+_TMUX_FILE = "tmux.json"
+_TMUX_READY_TIMEOUT_S = 30.0
+_TMUX_SEND_TIMEOUT_S = 10.0
+_POLL_INTERVAL_S = 0.2
+
+
+class TmuxSessionNotAdvertised(RuntimeError):
+    """The bridge's tmux target was not advertised before the deadline."""
+
+
+def _ensure_dir(path: Path) -> None:
+    """Create *path* (and parents) with owner-only permissions."""
+    path.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o700)
+
+
+def write_tmux_target(
+    bridge_dir: Path,
+    *,
+    socket_path: Path,
+    tmux_target: str,
+    pid: int | None = None,
+) -> None:
+    """Advertise the tmux socket + target for the running Codex terminal."""
+    _ensure_dir(bridge_dir)
+    payload: dict[str, object] = {
+        "socket_path": str(socket_path),
+        "tmux_target": tmux_target,
+        "updated_at": time.time(),
+    }
+    if pid is not None:
+        payload["pid"] = pid
+    tmp = bridge_dir / (_TMUX_FILE + ".tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    os.replace(tmp, bridge_dir / _TMUX_FILE)
+
+
+def read_tmux_info(bridge_dir: Path) -> dict[str, str] | None:
+    """Return ``{socket_path, tmux_target}`` from ``tmux.json``, or ``None``."""
+    try:
+        raw = (bridge_dir / _TMUX_FILE).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    socket_path = data.get("socket_path")
+    tmux_target = data.get("tmux_target")
+    if (
+        isinstance(socket_path, str)
+        and socket_path
+        and isinstance(tmux_target, str)
+        and tmux_target
+    ):
+        return {"socket_path": socket_path, "tmux_target": tmux_target}
+    return None
+
+
+def _wait_for_tmux_info(bridge_dir: Path, *, timeout_s: float) -> dict[str, str]:
+    """Block until ``tmux.json`` is advertised, or raise on timeout."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        info = read_tmux_info(bridge_dir)
+        if info is not None:
+            return info
+        time.sleep(_POLL_INTERVAL_S)
+    raise TmuxSessionNotAdvertised(
+        f"codex-native tmux target was not advertised within {timeout_s:.0f}s"
+    )
+
+
+def _run_tmux(socket_path: str, *args: str) -> None:
+    """Invoke ``tmux -S <socket> <args...>`` and raise on failure."""
+    try:
+        proc = subprocess.run(
+            ["tmux", "-S", socket_path, *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_TMUX_SEND_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"tmux command timed out after {_TMUX_SEND_TIMEOUT_S}s"
+        ) from exc
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip() or "<no output>"
+        raise RuntimeError(f"tmux command failed (rc={proc.returncode}): {detail}")
+
+
+def kill_session(bridge_dir: Path, *, timeout_s: float = _TMUX_READY_TIMEOUT_S) -> None:
+    """Hard-stop the Codex session by killing its tmux session.
+
+    Terminates the ``codex`` TUI pane outright — the analog of the user
+    manually exiting the attached TUI, for the web UI's "Stop session"
+    affordance. Mirrors :func:`omnigent.claude_native_bridge.kill_session`.
+
+    :raises TmuxSessionNotAdvertised: If the tmux target is not advertised
+        within *timeout_s* (no live session to kill).
+    :raises RuntimeError: If ``tmux kill-session`` itself fails.
+    """
+    info = _wait_for_tmux_info(bridge_dir, timeout_s=timeout_s)
+    _run_tmux(info["socket_path"], "kill-session", "-t", info["tmux_target"])

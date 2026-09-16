@@ -112,6 +112,41 @@ class _RecordingCodexAppServerClient:
         self.closed = True
 
 
+def _stub_codex_auto_create(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch Codex auto-create to return a view without launching tmux.
+
+    POST /v1/sessions auto-creates a Codex terminal: it calls
+    ``clear_bridge_state`` then ``launch_auxiliary_terminal``. These tests
+    seed bridge state by hand and pass no ``terminal_registry``, so launch
+    raises ``RuntimeError: Terminal registry not configured`` and the
+    failed auto-create leaves no bridge state -- the later settings/interrupt
+    RPC then returns 503 / ``connected is False``. This stub mirrors the
+    compact 503 stub: session create still returns 201 with a
+    ``SessionResourceView``, but no tmux pane is launched and the seeded
+    bridge state is left intact. The endpoint under test stays real.
+    """
+
+    async def _stub_auto_create_codex_terminal(
+        session_id: str,
+        resource_registry: Any,
+        publish_event: Any,
+        **_kwargs: Any,
+    ) -> SessionResourceView:
+        """Return a view without launching tmux or clearing bridge state."""
+        del resource_registry, publish_event, _kwargs
+        return SessionResourceView(
+            id="terminal_codex_main",
+            type="terminal",
+            session_id=session_id,
+            name="Codex",
+        )
+
+    monkeypatch.setattr(
+        "omnigent.runner.native.orchestration._auto_create_codex_terminal",
+        _stub_auto_create_codex_terminal,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "event_payload,expected_params",
@@ -172,6 +207,11 @@ async def test_events_codex_native_settings_change_uses_thread_settings_update(
             active_turn_id=None,
         ),
     )
+
+    # Auto-create on POST /v1/sessions would clear this seeded bridge state
+    # then fail to launch (no terminal registry here), leaving no bridge for
+    # the settings RPC. Stub it so create returns 201 without touching state.
+    _stub_codex_auto_create(monkeypatch)
 
     fake_client = _RecordingCodexAppServerClient(
         transport="ws://127.0.0.1:43210",
@@ -1043,6 +1083,12 @@ async def test_codex_native_model_options_follow_labeled_foreign_bridge(
         ),
     )
 
+    # Auto-create on POST /v1/sessions would clear the child's own bridge
+    # then fail to launch (no terminal registry here). The labeled parent
+    # bridge above is what the child reads, so keep create returning 201
+    # without launching tmux; the parent bridge stays live for discovery.
+    _stub_codex_auto_create(monkeypatch)
+
     expected_models = [
         {
             "id": "gpt-5.5",
@@ -1551,6 +1597,11 @@ async def test_events_interrupt_on_codex_native_uses_turn_interrupt_without_mark
             active_turn_id="turn_codex",
         ),
     )
+
+    # Auto-create on POST /v1/sessions would clear this seeded bridge state
+    # then fail to launch (no terminal registry here), leaving no bridge for
+    # the interrupt RPC. Stub it so create returns 201 without touching state.
+    _stub_codex_auto_create(monkeypatch)
 
     fake_client = _RecordingCodexAppServerClient(
         transport="ws://127.0.0.1:43210",

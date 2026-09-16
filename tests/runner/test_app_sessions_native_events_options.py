@@ -743,7 +743,9 @@ async def test_events_compact_on_codex_native_injects_slash_command(
 
 
 @pytest.mark.asyncio
-async def test_events_compact_on_codex_native_returns_503_when_no_terminal() -> None:
+async def test_events_compact_on_codex_native_returns_503_when_no_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """
     Codex-native compact returns 503 when no live terminal is registered.
 
@@ -764,6 +766,36 @@ async def test_events_compact_on_codex_native_returns_503_when_no_terminal() -> 
     conv_id = "4be2f8fe2204fade6a89dafade0a0fd2"
     # Empty registry — no codex terminal registered.
     terminal_registry = TerminalRegistry()
+
+    # Session create would otherwise auto-create a REAL codex pane into the
+    # empty TerminalRegistry() above, so /compact would find a running
+    # terminal and return 200. This test is about compact-with-no-pane, NOT
+    # about blocking auto-create in production: stub the auto-create so
+    # session create still returns 201 but registers no pane, leaving the
+    # 503 production path (a real missing terminal) intact.
+    from omnigent.entities.session_resources import SessionResourceView
+    from omnigent.runner.native import orchestration as _codex_orch
+
+    async def _stub_auto_create_codex_terminal(
+        session_id: str,
+        resource_registry: Any,
+        publish_event: Any,
+        **_kwargs: Any,
+    ) -> SessionResourceView:
+        """Return a view without launching tmux or registering a pane."""
+        del resource_registry, publish_event, _kwargs
+        return SessionResourceView(
+            id="terminal_codex_main",
+            type="terminal",
+            session_id=session_id,
+            name="Codex",
+        )
+
+    monkeypatch.setattr(
+        _codex_orch,
+        "_auto_create_codex_terminal",
+        _stub_auto_create_codex_terminal,
+    )
 
     pm = _FakeProcessManager(_ScriptedHarnessClient([]))
     app = create_runner_app(

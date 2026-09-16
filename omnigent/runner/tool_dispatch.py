@@ -5579,6 +5579,54 @@ async def _close_tree_scope_error(
     return None
 
 
+def _close_tombstone_label(
+    target_snap: _JsonObject, target_id: str
+) -> tuple[str, str]:
+    """
+    Derive the ``(agent, title)`` used to tombstone a close target.
+
+    Sub-agent titles are normally stored as ``"<agent>:<title>"`` and
+    split by :func:`_parse_session_title`. Some children are created
+    with a verbatim ``sys_session_create`` title that has no colon
+    (e.g. ``"Lead pass"``); those fail the parse but are still valid
+    tree-scoped sub-agents — the spawn-tree gate in
+    :func:`_close_tree_scope_error` already accepted them — and must be
+    closeable. When the parse fails we fall back to the snapshot's own
+    agent identity fields (the same ones ``sys_session_get_info``
+    exposes: ``sub_agent_name``/``agent_name``/``agent_id``) and the
+    raw title with any legacy closed marker stripped, or the
+    conversation id when the title is empty. Both components are
+    sanitized to non-empty strings so the rebuilt tombstone keeps the
+    canonical ``"{agent}:{title}{_CLOSED_TITLE_INFIX}{id}"`` shape.
+
+    :param target_snap: The close target's session snapshot dict.
+    :param target_id: The target conversation id, used as the title
+        fallback and embedded in the tombstone by the caller.
+    :returns: A ``(agent, title)`` pair, both non-empty.
+    """
+    parsed = _parse_session_title(_optional_string(target_snap.get("title")))
+    if parsed.agent is not None and parsed.title is not None:
+        return parsed.agent, parsed.title
+    # No colon in the title — a verbatim sys_session_create child that
+    # the spawn-tree gate already accepted. Recover an agent label from
+    # the snapshot's identity fields (same precedence get_info exposes)
+    # so the tombstone still names the agent; "agent" is the last resort.
+    agent = (
+        _optional_string(target_snap.get("sub_agent_name"))
+        or _optional_string(target_snap.get("agent_name"))
+        or _optional_string(target_snap.get("agent_id"))
+        or "agent"
+    )
+    # Strip any legacy closed marker from the raw title before reusing
+    # it; fall back to the conversation id when the title is missing or
+    # reduces to empty so the tombstone stays unique and well-formed.
+    raw_title = title_without_closed_marker(
+        _optional_string(target_snap.get("title"))
+    )
+    title = raw_title or target_id
+    return agent, title
+
+
 async def _session_close_via_rest(
     args: _JsonObject,
     conversation_id: str,
@@ -5627,9 +5675,12 @@ async def _session_close_via_rest(
     )
     if scope_error is not None:
         return scope_error
-    parsed = _parse_session_title(_optional_string(target_snap.get("title")))
-    if parsed.agent is None or parsed.title is None:
-        return json.dumps({"error": "session_not_a_sub_agent", "conversation_id": target_id})
+    # Derive the tombstone agent/title. Tree scope already passed, so a
+    # title with no colon (a verbatim sys_session_create child) is still
+    # closeable — the helper falls back to the snapshot's identity fields
+    # instead of rejecting with session_not_a_sub_agent. Top-level and
+    # out-of-tree targets were already refused by _close_tree_scope_error.
+    agent, title = _close_tombstone_label(target_snap, target_id)
     # Stop only after close is allowed. Prefer Claude's hard stop when the
     # snapshot identifies that wrapper; unlabeled snapshots use interrupt.
     # A failed stop must not prevent the close tombstone.
@@ -5644,7 +5695,7 @@ async def _session_close_via_rest(
             json={"type": event_type, "data": {}},
             timeout=30.0,
         )
-    new_title = f"{parsed.agent}:{parsed.title}{_CLOSED_TITLE_INFIX}{target_id}"
+    new_title = f"{agent}:{title}{_CLOSED_TITLE_INFIX}{target_id}"
     try:
         patch = await server_client.patch(
             f"/v1/sessions/{target_id}",
@@ -5662,8 +5713,8 @@ async def _session_close_via_rest(
         {
             "closed": True,
             "conversation_id": target_id,
-            "agent": parsed.agent,
-            "title": parsed.title,
+            "agent": agent,
+            "title": title,
         }
     )
 

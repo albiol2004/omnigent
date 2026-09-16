@@ -22,6 +22,7 @@ from omnigent.session_lifecycle import (
     CLOSED_LABEL_VALUE,
     CLOSED_TITLE_INFIX,
     is_session_closed,
+    title_without_closed_marker,
 )
 from omnigent.spec import AgentSpec
 from omnigent.stores import ConversationStore
@@ -1221,6 +1222,43 @@ def _agent_title_from_conversation(child: Conversation) -> _AgentTitle:
     return _AgentTitle(agent=sa_agent, title=sa_title)
 
 
+def _close_tombstone_from_child(child: Conversation) -> _AgentTitle:
+    """
+    Derive the ``(agent, title)`` used to tombstone a close target.
+
+    Mirrors the runner's ``_close_tombstone_label``: sub-agent titles
+    are normally ``"<agent>:<title>"`` and split by
+    :func:`_agent_title_from_conversation`, but some children are
+    created with a verbatim ``sys_session_create`` title that has no
+    colon (e.g. ``"Lead pass"``). Peek still rejects those via
+    :func:`_agent_title_from_conversation` (it raises), but close
+    must accept them once the spawn-tree gate has passed. When the
+    title has no colon we recover an agent label from the child's
+    identity fields (``sub_agent_name`` is the sub-agent type;
+    ``agent_id`` is the bound agent) and reuse the raw title with
+    any legacy closed marker stripped, or the conversation id when
+    the title is empty. Both components are non-empty so the rebuilt
+    tombstone keeps the canonical ``"{agent}:{title}{infix}{id}"`` shape.
+
+    :param child: The target child :class:`Conversation`.
+    :returns: An :class:`_AgentTitle` with non-empty agent/title
+        fields suitable for rebuilding the tombstone.
+    """
+    if child.title and ":" in child.title:
+        return _agent_title_from_conversation(child)
+    # No colon — a verbatim sys_session_create child the spawn-tree
+    # gate already accepted. Recover an agent label from the child's
+    # identity fields; "agent" is the last resort so the tombstone
+    # always names something.
+    agent = child.sub_agent_name or child.agent_id or "agent"
+    # Strip any legacy closed marker from the raw title before reusing
+    # it; fall back to the conversation id when the title is missing or
+    # reduces to empty so the tombstone stays unique and well-formed.
+    raw_title = title_without_closed_marker(child.title)
+    title = raw_title or child.id
+    return _AgentTitle(agent=agent, title=title)
+
+
 def _resolve_caller_tree(ctx: ToolContext) -> _CallerTree:
     """
     Resolve the caller's conversation and its tree's root.
@@ -1690,10 +1728,14 @@ class SysSessionCloseTool(Tool):
         busy_error = _busy_check_or_none(child_conv_id=resolution.child.id)
         if busy_error is not None:
             return busy_error
-        labelled = _agent_title_from_conversation(resolution.child)
-        # Re-build the tombstoned title from the parsed components so
-        # the marker lands in the canonical position even if the
-        # original title used uncommon characters around the colon.
+        # Close accepts a child whose title has no colon (a verbatim
+        # sys_session_create title like "Lead pass") once the spawn-tree
+        # gate has passed; the helper falls back to the child's identity
+        # fields instead of raising like _agent_title_from_conversation.
+        labelled = _close_tombstone_from_child(resolution.child)
+        # Re-build the tombstoned title from the parsed/fallback components
+        # so the marker lands in the canonical position even if the original
+        # title used uncommon characters around the colon.
         new_title = f"{labelled.agent}:{labelled.title}{_CLOSED_TITLE_INFIX}{resolution.child.id}"
         resolution.conv_store.update_conversation(resolution.child.id, title=new_title)
         resolution.conv_store.set_labels(

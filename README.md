@@ -611,12 +611,15 @@ the service. To opt out, follow our instructions in
 
 ## trio-v0.12.0-fixes (this worktree)
 
-Stock `v0.12.0` plus a thin Trio keeper set. Live
-`~/omnigent` stays on `trio-v0.10.0-fixes` until this branch is
-verified. Keepers: kill-on-close leftover tmux SIGKILL, registered
-`agent_id` native launch-arg derivation (`--yolo`), and
-queue-aware Cursor yolo auto-accept. Do not treat this as upstream
-`main`; several close/leak PRs landed after the 0.12.0 tag.
+Stock `v0.12.0` plus a thin Trio keeper set. Live install
+`/home/coder/omnigent` (`~/omnigent`) is on `trio-v0.12.0-fixes`.
+This worktree branch `trio-v0.12.0-fixes-close` carries the
+`sys_session_close` native teardown fix until it is adopted into
+the live install. Keepers: kill-on-close leftover tmux SIGKILL,
+registered `agent_id` native launch-arg derivation (`--yolo`),
+and queue-aware Cursor yolo auto-accept; the close/teardown fix
+covers Claude, Codex, and Cursor children. Do not treat this as
+upstream `main`; several close/leak PRs landed after the 0.12.0 tag.
 
 ---
 

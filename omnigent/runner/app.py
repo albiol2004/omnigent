@@ -12110,9 +12110,9 @@ def create_runner_app(
         from omnigent.native.native_cost_popup import _list_tmux_clients, _tmux_window_activity_at
         from omnigent.runner.tool_dispatch import _publish_terminal_deleted_event
         from omnigent.terminals.pane_reaper import (
-            PANE_OUTPUT_BUSY_WINDOW_S,
             NativePaneReaper,
             PaneRef,
+            _pane_is_busy_after_harness,
         )
 
         def _native_panes_for_reaper() -> list[PaneRef]:
@@ -12126,30 +12126,26 @@ def create_runner_app(
             return panes
 
         async def _native_pane_is_busy(pane: PaneRef) -> bool:
-            conv_id = pane.conversation_id
-            if conv_id in _active_turns or (
-                process_manager is not None and process_manager.has_active_turn(conv_id)
-            ):
+            # A pane parked on a permission prompt emits nothing and reports
+            # no active turn. Reaping it kills the prompt and strands its
+            # approval card. Check before the harness-release helper so an
+            # orphaned pane still waiting on a card is not torn down.
+            if approval_wait_is_fresh(pane.conversation_id):
                 return True
-            if _native_pane_status.get(conv_id) == "running":
-                return True
-            # A pane parked on a permission prompt emits nothing and reports no
-            # active turn, so every signal above reads idle. Reaping it kills the
-            # prompt and strands its approval card unanswerable.
-            if approval_wait_is_fresh(conv_id):
-                return True
-            clients = await asyncio.to_thread(_list_tmux_clients, str(pane.socket_path), "main")
-            if clients:
-                return True
-            # Primary evidence: tmux stamps window_activity on every byte the
-            # pane emits, so a producing terminal stays busy even when the
-            # status pipeline above has silently stalled (a stalled forwarder
-            # once froze the busy signal and got a live session reaped).
-            activity_at = await asyncio.to_thread(
-                _tmux_window_activity_at, str(pane.socket_path), "main"
-            )
-            return (
-                activity_at is not None and time.time() - activity_at < PANE_OUTPUT_BUSY_WINDOW_S
+            # Delegated to pane_reaper so the busy logic is unit-testable
+            # without importing this 10k-line app module. See
+            # _pane_is_busy_after_harness for why an orphaned pane (harness
+            # released) ignores stale "running" status and TUI-redraw
+            # window_activity — only a tmux client spares it.
+            return await _pane_is_busy_after_harness(
+                conv_id=pane.conversation_id,
+                socket_path=pane.socket_path,
+                active_turns=_active_turns,
+                process_manager=process_manager,
+                native_pane_status=_native_pane_status,
+                list_tmux_clients=_list_tmux_clients,
+                tmux_window_activity_at=_tmux_window_activity_at,
+                now=time.time(),
             )
 
         async def _reap_native_pane(pane: PaneRef) -> None:

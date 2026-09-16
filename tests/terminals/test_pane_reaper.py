@@ -14,6 +14,7 @@ from omnigent.terminals.pane_reaper import (
     _IDLE_TIMEOUT_ENV,
     NativePaneReaper,
     PaneRef,
+    _pane_is_busy_after_harness,
     resolve_native_pane_idle_timeout_s,
 )
 
@@ -187,3 +188,193 @@ async def test_loop_disabled_when_timeout_non_positive() -> None:
     finally:
         await r.shutdown()
     assert f.reaped == []
+
+
+# ── Busy predicate (_pane_is_busy_after_harness) ───────────────────────────
+#
+# The busy logic was extracted from the 10k-line runner app so it can be tested
+# in isolation with a fake process manager + fake tmux probes. The core fix:
+# once the harness subprocess is gone (release() only pops the PM entry, it
+# does NOT close the native tmux pane), a stale "running" status and the TUI's
+# redraw-driven window_activity must NOT pin the leaked pane — only an
+# attached tmux client (a human) should spare it.
+
+
+class _FakePM:
+    """Minimal HarnessProcessManager double: just has_session + has_active_turn."""
+
+    def __init__(self, *, has_session: bool = True, has_active_turn: bool = False) -> None:
+        self._has_session = has_session
+        self._has_active_turn = has_active_turn
+
+    def has_session(self, conversation_id: str) -> bool:
+        return self._has_session
+
+    def has_active_turn(self, conversation_id: str) -> bool:
+        return self._has_active_turn
+
+
+def _tmux_fakes(
+    *, clients: list[object] | None = None, activity_at: float | None = None
+) -> tuple[Callable[[str, str], list[object]], Callable[[str, str], float | None]]:
+    """Return (list_clients, window_activity_at) sync fakes with canned answers."""
+    canned_clients = clients if clients is not None else []
+
+    def list_clients(socket: str, pane: str) -> list[object]:
+        return list(canned_clients)
+
+    def window_activity(socket: str, pane: str) -> float | None:
+        return activity_at
+
+    return list_clients, window_activity
+
+
+async def test_busy_orphaned_stale_running_fresh_activity_no_clients_is_reapable() -> None:
+    """Orphaned pane (harness gone) with stale "running" + fresh activity but
+    no attached client must NOT be busy — the TUI redraw must not pin it."""
+    list_clients, window_activity = _tmux_fakes(
+        clients=[], activity_at=1000.0  # fresh relative to now=1001 (< 120s)
+    )
+    busy = await _pane_is_busy_after_harness(
+        conv_id="conv_a",
+        socket_path=Path("/tmp/x.sock"),
+        active_turns=set(),
+        process_manager=_FakePM(has_session=False, has_active_turn=False),
+        native_pane_status={"conv_a": "running"},  # stale
+        list_tmux_clients=list_clients,
+        tmux_window_activity_at=window_activity,
+        now=1001.0,
+    )
+    assert busy is False
+
+
+async def test_busy_live_harness_running_is_busy() -> None:
+    """Live harness subprocess reporting "running" stays busy (autonomous turn)."""
+    list_clients, window_activity = _tmux_fakes(clients=[], activity_at=None)
+    busy = await _pane_is_busy_after_harness(
+        conv_id="conv_a",
+        socket_path=Path("/tmp/x.sock"),
+        active_turns=set(),
+        process_manager=_FakePM(has_session=True, has_active_turn=False),
+        native_pane_status={"conv_a": "running"},
+        list_tmux_clients=list_clients,
+        tmux_window_activity_at=window_activity,
+        now=1000.0,
+    )
+    assert busy is True
+
+
+async def test_busy_orphaned_with_attached_client_is_busy() -> None:
+    """Orphaned pane with an attached human (tmux client) is spared."""
+    list_clients, window_activity = _tmux_fakes(
+        clients=["user@host"], activity_at=1000.0
+    )
+    busy = await _pane_is_busy_after_harness(
+        conv_id="conv_a",
+        socket_path=Path("/tmp/x.sock"),
+        active_turns=set(),
+        process_manager=_FakePM(has_session=False, has_active_turn=False),
+        native_pane_status={"conv_a": "running"},  # stale but irrelevant
+        list_tmux_clients=list_clients,
+        tmux_window_activity_at=window_activity,
+        now=1001.0,
+    )
+    assert busy is True
+
+
+async def test_busy_in_flight_turn_busy_without_session_entry() -> None:
+    """An in-flight turn is busy even when the PM has no session entry."""
+    list_clients, window_activity = _tmux_fakes(clients=[], activity_at=None)
+    busy = await _pane_is_busy_after_harness(
+        conv_id="conv_a",
+        socket_path=Path("/tmp/x.sock"),
+        active_turns=set(),  # not in local active_turns
+        process_manager=_FakePM(has_session=False, has_active_turn=True),  # PM turn in flight
+        native_pane_status={},
+        list_tmux_clients=list_clients,
+        tmux_window_activity_at=window_activity,
+        now=1000.0,
+    )
+    assert busy is True
+
+
+async def test_busy_local_active_turn_busy_without_pm() -> None:
+    """A locally-tracked in-flight turn (no PM at all) is busy."""
+    list_clients, window_activity = _tmux_fakes(clients=[], activity_at=None)
+    busy = await _pane_is_busy_after_harness(
+        conv_id="conv_a",
+        socket_path=Path("/tmp/x.sock"),
+        active_turns={"conv_a"},  # local turn in flight
+        process_manager=None,
+        native_pane_status={},
+        list_tmux_clients=list_clients,
+        tmux_window_activity_at=window_activity,
+        now=1000.0,
+    )
+    assert busy is True
+
+
+async def test_busy_no_pm_keeps_running_signal() -> None:
+    """Without a PM (tests/runners), the original "running" signal still applies."""
+    list_clients, window_activity = _tmux_fakes(clients=[], activity_at=None)
+    busy = await _pane_is_busy_after_harness(
+        conv_id="conv_a",
+        socket_path=Path("/tmp/x.sock"),
+        active_turns=set(),
+        process_manager=None,
+        native_pane_status={"conv_a": "running"},
+        list_tmux_clients=list_clients,
+        tmux_window_activity_at=window_activity,
+        now=1000.0,
+    )
+    assert busy is True
+
+
+async def test_busy_no_pm_window_activity_keeps_pane() -> None:
+    """Without a PM, fresh window_activity still spares a producing terminal."""
+    list_clients, window_activity = _tmux_fakes(clients=[], activity_at=999.0)
+    busy = await _pane_is_busy_after_harness(
+        conv_id="conv_a",
+        socket_path=Path("/tmp/x.sock"),
+        active_turns=set(),
+        process_manager=None,
+        native_pane_status={},
+        list_tmux_clients=list_clients,
+        tmux_window_activity_at=window_activity,
+        now=1000.0,  # 1s ago < 120s window
+    )
+    assert busy is True
+
+
+async def test_busy_no_pm_stale_window_activity_is_reapable() -> None:
+    """Without a PM, window_activity older than the busy window is reapable."""
+    list_clients, window_activity = _tmux_fakes(
+        clients=[], activity_at=800.0  # 200s ago > 120s window
+    )
+    busy = await _pane_is_busy_after_harness(
+        conv_id="conv_a",
+        socket_path=Path("/tmp/x.sock"),
+        active_turns=set(),
+        process_manager=None,
+        native_pane_status={},
+        list_tmux_clients=list_clients,
+        tmux_window_activity_at=window_activity,
+        now=1000.0,
+    )
+    assert busy is False
+
+
+async def test_busy_live_harness_no_signals_no_clients_is_reapable() -> None:
+    """Live harness, no running status, no clients, no recent activity → reapable."""
+    list_clients, window_activity = _tmux_fakes(clients=[], activity_at=None)
+    busy = await _pane_is_busy_after_harness(
+        conv_id="conv_a",
+        socket_path=Path("/tmp/x.sock"),
+        active_turns=set(),
+        process_manager=_FakePM(has_session=True, has_active_turn=False),
+        native_pane_status={},
+        list_tmux_clients=list_clients,
+        tmux_window_activity_at=window_activity,
+        now=1000.0,
+    )
+    assert busy is False

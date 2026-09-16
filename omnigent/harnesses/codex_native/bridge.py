@@ -19,6 +19,7 @@ from pathlib import Path
 
 import tomllib
 
+from omnigent import native_tmux_kill
 from omnigent.native import native_bridge_common
 
 CODEX_NATIVE_BRIDGE_ID_LABEL_KEY = "omnigent.codex_native.bridge_id"
@@ -1328,4 +1329,12 @@ def kill_session(bridge_dir: Path, *, timeout_s: float = _TMUX_READY_TIMEOUT_S) 
     :raises RuntimeError: If ``tmux kill-session`` itself fails.
     """
     info = _wait_for_tmux_info(bridge_dir, timeout_s=timeout_s)
-    _run_tmux(info["socket_path"], "kill-session", "-t", info["tmux_target"])
+    # Delegate pid-resolution + kill-session + leftover SIGKILL escalation to
+    # the shared native-tmux-kill helper (mirrors claude-native). The bridge's
+    # own _run_tmux stays authoritative for the kill-session call and errors.
+    native_tmux_kill.kill_session_with_escalation(
+        bridge_dir,
+        socket_path=info["socket_path"],
+        tmux_target=info["tmux_target"],
+        kill_session_fn=lambda socket, target: _run_tmux(socket, "kill-session", "-t", target),
+    )

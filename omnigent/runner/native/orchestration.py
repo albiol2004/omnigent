@@ -4687,7 +4687,14 @@ async def _auto_create_codex_terminal(
         # Advertise the tmux socket+target so the codex-native harness stop can
         # hard-kill this same pane (tmux kill-session), wiring the web UI's
         # "Stop session" affordance to the running TUI. Mirrors cursor-native.
-        terminal_registry = resource_registry.terminal_registry
+        # Fakes (and some runners) implement launch_auxiliary_terminal without
+        # a terminal_registry attribute. Missing advertise is fine: kill_session
+        # already treats "tmux.json not advertised" as best-effort. Never abort
+        # auto-create after a successful launch — that tears down the app-server
+        # and strands the session with no loaded Codex bridge.
+        terminal_registry = getattr(
+            resource_registry, "terminal_registry", None
+        )
         if terminal_registry is not None:
             instance = terminal_registry.get(session_id, "codex", "main")
             if instance is not None and instance.running:

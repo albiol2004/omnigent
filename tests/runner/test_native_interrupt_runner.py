@@ -225,7 +225,7 @@ async def test_uniform_stop_kill_failure_returns_503_without_idle(
 
 
 @pytest.mark.asyncio
-async def test_codex_and_pi_stop_route_to_interrupt(
+async def test_pi_stop_routes_to_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """codex/pi have no distinct stop — stop() routes to their interrupt handler."""
@@ -382,3 +382,80 @@ async def test_claude_stop_cancels_forwarder_after_teardown(
         ("teardown", "conv_cl"),
         ("cancel", "conv_cl"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_codex_stop_kills_tears_down_and_goes_idle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """codex stop kills the tmux pane, tears down terminals + app-server, idles.
+
+    Mirrors claude-native stop, but the codex app-server teardown cancels the
+    transcript forwarder itself, so there is no separate
+    ``_cancel_auto_forwarder_task`` call after the terminal teardown.
+    """
+    import omnigent.codex_native_bridge as codex_bridge
+    from omnigent.runner.native import interrupt as interrupt_mod
+
+    calls: list[tuple[str, Any]] = []
+    monkeypatch.setattr(
+        codex_bridge, "bridge_dir_for_bridge_id", lambda conv: f"dir/{conv}"
+    )
+    monkeypatch.setattr(
+        codex_bridge,
+        "kill_session",
+        lambda bridge_dir, *, timeout_s: calls.append(("kill", (bridge_dir, timeout_s))),
+    )
+
+    runner, captured = _make_runner()
+
+    async def _teardown(conv_id: str) -> None:
+        calls.append(("teardown", conv_id))
+
+    async def _teardown_app_server(conv_id: str) -> None:
+        calls.append(("teardown_app_server", conv_id))
+
+    monkeypatch.setattr(runner, "_teardown_session_terminals", _teardown)
+    monkeypatch.setattr(interrupt_mod, "teardown_codex_native_app_server", _teardown_app_server)
+
+    resp = await runner.stop("codex-native", "conv_cx")
+
+    assert isinstance(resp, Response) and resp.status_code == 204
+    # kill -> terminal teardown -> app-server teardown (which cancels the
+    # forwarder itself, so no separate _cancel_auto_forwarder_task step).
+    assert calls == [
+        ("kill", ("dir/conv_cx", 1.0)),
+        ("teardown", "conv_cx"),
+        ("teardown_app_server", "conv_cx"),
+    ]
+    assert ("conv_cx", {"type": "session.status", "status": "idle"}) in captured[
+        "published"
+    ]
+    assert captured["wakes"] == [("conv_cx", "cancelled", "[System: sub-agent stopped]")]
+
+
+@pytest.mark.asyncio
+async def test_codex_stop_is_idempotent_without_advertised_tmux(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An already-absent Codex pane still completes stop teardown."""
+    import omnigent.codex_native_bridge as codex_bridge
+    from omnigent.runner.native import interrupt as interrupt_mod
+
+    async def _teardown_app_server(conv_id: str) -> None:
+        del conv_id
+
+    monkeypatch.setattr(interrupt_mod, "teardown_codex_native_app_server", _teardown_app_server)
+    monkeypatch.setattr(codex_bridge, "bridge_dir_for_bridge_id", lambda conv: f"dir/{conv}")
+
+    def _absent(bridge_dir: Any, *, timeout_s: float) -> None:
+        del bridge_dir, timeout_s
+        raise codex_bridge.TmuxSessionNotAdvertised("not advertised")
+
+    monkeypatch.setattr(codex_bridge, "kill_session", _absent)
+
+    runner, captured = _make_runner()
+    resp = await runner.stop("codex-native", "conv_cx")
+
+    assert isinstance(resp, Response) and resp.status_code == 204
+    assert captured["wakes"] == [("conv_cx", "cancelled", "[System: sub-agent stopped]")]

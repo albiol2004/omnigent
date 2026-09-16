@@ -56,7 +56,11 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.responses import StreamingResponse as _StreamingResponse
 
 import omnigent.runtime.harnesses._executor_adapter as _adapter_mod_recovery
-from omnigent._wrapper_labels import CLAUDE_NATIVE_WRAPPER_VALUE
+from omnigent._wrapper_labels import (
+    CLAUDE_NATIVE_WRAPPER_VALUE,
+    CODEX_NATIVE_WRAPPER_VALUE,
+    CURSOR_NATIVE_WRAPPER_VALUE,
+)
 from omnigent.inner.executor import (
     Executor as _RecoveryExecutor,
 )
@@ -6852,6 +6856,68 @@ async def test_session_close_patches_tombstoned_title() -> None:
         "agent": "researcher",
         "title": "auth",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wrapper_label",
+    [CURSOR_NATIVE_WRAPPER_VALUE, CODEX_NATIVE_WRAPPER_VALUE],
+    ids=["cursor-native", "codex-native"],
+)
+async def test_session_close_routes_native_wrappers_to_stop_session(
+    wrapper_label: str,
+) -> None:
+    """cursor/codex-native close targets POST ``stop_session`` not ``interrupt``.
+
+    These harnesses own a runner-side hard stop (tmux kill-session), so the
+    REST close path must route them to ``stop_session`` like claude-native.
+    Unlabeled/other harnesses still fall back to ``interrupt`` (covered by
+    ``test_session_close_tombstones_when_target_stop_fails`` and the
+    unparsable-title case).
+    """
+    from omnigent.runner.tool_dispatch import _execute_session_query_tool
+
+    stop_events: list[tuple[str, dict[str, Any]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/sessions/conv_target":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "conv_target",
+                    "title": "worker:task",
+                    "root_conversation_id": "conv_root",
+                    "parent_session_id": "conv_caller",
+                    "labels": {"omnigent.wrapper": wrapper_label},
+                },
+            )
+        if request.method == "GET" and request.url.path == "/v1/sessions/conv_caller":
+            return httpx.Response(
+                200,
+                json={"id": "conv_caller", "root_conversation_id": "conv_root"},
+            )
+        if (
+            request.method == "POST"
+            and request.url.path == "/v1/sessions/conv_target/events"
+        ):
+            stop_events.append(("conv_target", json.loads(request.content)))
+            return httpx.Response(204)
+        if request.method == "PATCH" and request.url.path == "/v1/sessions/conv_target":
+            return httpx.Response(200, json={"id": "conv_target"})
+        raise AssertionError(f"unexpected {request.method} {request.url.path}")
+
+    async with _session_query_client(handler) as client:
+        out = json.loads(
+            await _execute_session_query_tool(
+                "sys_session_close",
+                json.dumps({"conversation_id": "conv_target"}),
+                conversation_id="conv_caller",
+                server_client=client,
+            )
+        )
+
+    assert stop_events == [("conv_target", {"type": "stop_session", "data": {}})]
+    assert out["closed"] is True
 
 
 @pytest.mark.asyncio

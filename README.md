@@ -609,17 +609,22 @@ the service. To opt out, follow our instructions in
 
 ---
 
-## trio-v0.12.0-fixes (this worktree)
+## trio-v0.12.0-fixes-close (this worktree)
 
 Stock `v0.12.0` plus a thin Trio keeper set. Live install
 `/home/coder/omnigent` (`~/omnigent`) is on `trio-v0.12.0-fixes`.
 This worktree branch `trio-v0.12.0-fixes-close` carries the
 `sys_session_close` native teardown fix until it is adopted into
-the live install. Keepers: kill-on-close leftover tmux SIGKILL,
-registered `agent_id` native launch-arg derivation (`--yolo`),
-and queue-aware Cursor yolo auto-accept; the close/teardown fix
-covers Claude, Codex, and Cursor children. Do not treat this as
-upstream `main`; several close/leak PRs landed after the 0.12.0 tag.
+the live install. Motivation: idle native role TUIs from finished
+Trio loops leaked ~5 GB (upstream omnigent-ai/omnigent#7498);
+`sys_session_close` now closes tree-scoped children whose title
+does not parse as `<agent>:<title>` (top-level and `config_path`
+anchors still refused) and tears down the Claude, Codex, and
+Cursor native tmux panes, terminals, and Codex app-server.
+Keepers: kill-on-close leftover tmux SIGKILL, registered `agent_id`
+native launch-arg derivation (`--yolo`), and queue-aware Cursor
+yolo auto-accept. Do not treat this as upstream `main`; several
+close/leak PRs landed after the 0.12.0 tag.
 
 ---
 

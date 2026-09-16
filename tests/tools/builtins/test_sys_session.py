@@ -979,6 +979,49 @@ def test_close_top_level_conversation_in_tree_is_rejected(
     assert _CLOSED_TITLE_INFIX not in (parent_after.title or "")
 
 
+def test_close_accepts_child_with_unparsable_title(session_fixture: _Fixture) -> None:
+    """
+    Close succeeds for a tree-scoped child whose title has no colon
+    (a verbatim ``sys_session_create`` title like ``"Lead pass"``).
+
+    The spawn-tree gate (same root + has parent) already accepted the
+    target, so a title that doesn't parse as ``"<agent>:<title>"`` is
+    no longer a reason to reject. The tombstone is rebuilt from the
+    child's identity fields (``sub_agent_name``/``agent_id``) and the
+    raw title, keeping the canonical
+    ``"{agent}:{title}:closed:{id}"`` shape. The parent/top-level
+    rejection above is unaffected.
+    """
+    # Create a sibling child with a verbatim title (no colon) under the
+    # same parent so it shares the caller's spawn tree.
+    unparsable_child = session_fixture.conv_store.create_conversation(
+        kind="sub_agent",
+        title="Lead pass",
+        parent_conversation_id=session_fixture.parent_conv_id,
+        sub_agent_name="lead",
+    )
+
+    tool = SysSessionCloseTool()
+    raw = tool.invoke(
+        json.dumps({"conversation_id": unparsable_child.id}),
+        session_fixture.ctx,
+    )
+    payload = json.loads(raw)
+    assert payload == {
+        "closed": True,
+        "conversation_id": unparsable_child.id,
+        "agent": "lead",
+        "title": "Lead pass",
+    }
+
+    # The tombstone rewrites the title with the conv_id suffix so the
+    # (parent, title) unique slot is freed for a fresh spawn.
+    refreshed = session_fixture.conv_store.get_conversation(unparsable_child.id)
+    assert refreshed is not None
+    assert refreshed.title == f"lead:Lead pass{_CLOSED_TITLE_INFIX}{unparsable_child.id}"
+    assert refreshed.labels[CLOSED_LABEL_KEY] == CLOSED_LABEL_VALUE
+
+
 # ── Close invoke tests ────────────────────────────────────
 
 

@@ -21,7 +21,7 @@ from typing import Any, TextIO
 
 import pytest
 
-from omnigent import claude_native_bridge, native_cost_popup
+from omnigent import claude_native_bridge, native_cost_popup, native_tmux_kill
 from omnigent.claude_native_bridge import (
     _BACKGROUND_TASK_FIELD_MAX_CHARS,
     _build_tools,
@@ -3917,7 +3917,7 @@ def test_kill_session_issues_kill_session_on_target(
         return _FakeCompleted()
 
     monkeypatch.setattr("subprocess.run", _fake_run)
-    monkeypatch.setattr(claude_native_bridge._proc, "process_alive", lambda _pid: False)
+    monkeypatch.setattr(native_tmux_kill._proc, "process_alive", lambda _pid: False)
     kill_session(bridge_dir)
 
     # Exactly one tmux call: kill-session on the advertised target.
@@ -3962,12 +3962,12 @@ def test_kill_session_escalates_live_pane_after_tmux_kill(
     killed: list[tuple[int, int]] = []
     monkeypatch.setattr("subprocess.run", _fake_run)
     monkeypatch.setattr(
-        claude_native_bridge._proc,
+        native_tmux_kill._proc,
         "process_alive",
         lambda _pid: next(alive),
     )
     monkeypatch.setattr(
-        claude_native_bridge._proc,
+        native_tmux_kill._proc,
         "_killpg",
         lambda pid, sig: killed.append((pid, sig)) or True,
     )
@@ -3994,7 +3994,7 @@ def test_kill_session_escalates_live_pane_after_tmux_kill(
             "main",
         ],
     ]
-    assert killed == [(24680, claude_native_bridge._proc._SIGKILL)]
+    assert killed == [(24680, native_tmux_kill._proc._SIGKILL)]
 
 
 def test_kill_session_raises_when_tmux_target_never_published(

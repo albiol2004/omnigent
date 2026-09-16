@@ -15,8 +15,8 @@ from pathlib import Path
 import click
 import pytest
 
-from omnigent import cursor_native_bridge
-from omnigent.cursor_native_bridge import write_tmux_target
+from omnigent import cursor_native_bridge, native_tmux_kill
+from omnigent.cursor_native_bridge import kill_session, write_tmux_target
 
 _SOCK = "/tmp/example/cursor.sock"
 _TARGET = "cursor:0.0"
@@ -361,3 +361,85 @@ class TestHooksConfig:
         assert payload["hooks"]["stop"][0]["command"].endswith(str(bridge_dir))
         # No leftover temp file from the atomic write.
         assert not (workspace / ".cursor" / "hooks.json.tmp").exists()
+
+
+def test_kill_session_issues_kill_session_on_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``kill_session`` issues exactly ``tmux kill-session -t <target>``.
+
+    Hard-stop the web UI's "Stop session" relies on. A recorded pane pid that is
+    not alive means no leftover escalation, so exactly one tmux call is made.
+    Mirrors the claude-native test.
+    """
+    bridge_dir = tmp_path / "bridge"
+    write_tmux_target(bridge_dir, socket_path=Path(_SOCK), tmux_target=_TARGET, pid=12345)
+
+    captured: list[list[str]] = []
+
+    class _FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+        del kwargs
+        captured.append(cmd)
+        return _FakeCompleted()
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    # Recorded pid 12345 is not alive -> no leftover SIGKILL, no extra tmux call.
+    monkeypatch.setattr(native_tmux_kill._proc, "process_alive", lambda _pid: False)
+    kill_session(bridge_dir)
+
+    assert len(captured) == 1, f"Expected 1 tmux kill-session call, got {len(captured)}."
+    assert captured[0] == ["tmux", "-S", _SOCK, "kill-session", "-t", _TARGET]
+
+
+def test_kill_session_escalates_live_pane_after_tmux_kill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pane that survives kill-session receives a SIGKILL for its group.
+
+    With no recorded pid, the pane pid is resolved via ``tmux list-panes``; the
+    leftover pane process is then SIGKILLed through ``_proc._killpg``. Mirrors
+    :func:`tests.test_claude_native_bridge.test_kill_session_escalates_live_pane_after_tmux_kill`.
+    """
+    bridge_dir = tmp_path / "bridge"
+    write_tmux_target(bridge_dir, socket_path=Path(_SOCK), tmux_target=_TARGET)
+
+    captured: list[list[str]] = []
+
+    class _FakeCompleted:
+        returncode = 0
+        stdout = "24680\n"
+        stderr = ""
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+        del kwargs
+        captured.append(cmd)
+        return _FakeCompleted()
+
+    alive = iter((True, False))
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr(
+        native_tmux_kill._proc,
+        "process_alive",
+        lambda _pid: next(alive),
+    )
+    monkeypatch.setattr(
+        native_tmux_kill._proc,
+        "_killpg",
+        lambda pid, sig: killed.append((pid, sig)) or True,
+    )
+
+    kill_session(bridge_dir)
+
+    assert captured == [
+        ["tmux", "-S", _SOCK, "list-panes", "-t", _TARGET, "-F", "#{pane_pid}"],
+        ["tmux", "-S", _SOCK, "kill-session", "-t", _TARGET],
+    ]
+    assert killed == [(24680, native_tmux_kill._proc._SIGKILL)]

@@ -1,0 +1,42 @@
+All changes are complete and verified. Here is my report.
+
+## Files changed
+
+- `omnigent/runner/tool_dispatch.py` — added `_close_tombstone_label` helper; rewrote `_session_close_via_rest` to use it (removed the post-scope title-parse reject).
+- `omnigent/tools/builtins/spawn.py` — imported `title_without_closed_marker`; added `_close_tombstone_from_child` helper; `SysSessionCloseTool.invoke` now uses it.
+- `tests/runner/test_runner_dispatch.py` — added `test_session_close_accepts_child_with_unparsable_title`.
+- `tests/tools/builtins/test_sys_session.py` — added `test_close_accepts_child_with_unparsable_title`.
+
+(Pre-existing unrelated edits in `README.md` and `loop-session-close/STATE.md` were left untouched.)
+
+## Summary
+
+Tree-scoped children (`parent_session_id` set, same `root_conversation_id`) now close even when `title` has no colon (verbatim `sys_session_create` titles like `"Lead pass"`). Previously `_session_close_via_rest` rejected these with `session_not_a_sub_agent` *after* the spawn-tree gate had already passed; that redundant second gate is removed. When `_parse_session_title` succeeds the parsed `agent`/`title` are kept; otherwise the tombstone is derived from snapshot identity fields (`sub_agent_name` → `agent_name` → `agent_id` → `"agent"`) and the raw title (closed marker stripped via `title_without_closed_marker`) or the conversation id — sanitized so the tombstone keeps the canonical `{agent}:{title}:closed:{id}` shape. The in-process `SysSessionCloseTool` mirrors this via `_close_tombstone_from_child` (`sub_agent_name` → `agent_id` → `"agent"`).
+
+Invariants preserved:
+- Top-level sessions (`parent_session_id`/`parent_conversation_id` None) still rejected with `session_not_a_sub_agent` — by `_close_tree_scope_error` (REST) and the parent gate in `_resolve_session_call` (in-process), neither weakened.
+- Out-of-tree targets still rejected with `session_out_of_tree`.
+- Peek still rejects malformed titles via the unchanged `_agent_title_from_conversation` (which still raises); only close accepts unparsable titles.
+- Registration-anchor `config_path` sessions with no parent stay non-closable (they're top-level).
+
+## Verification results
+
+```
+uv run --project /home/coder/omnigent-dev pytest -q \
+  tests/runner/test_runner_dispatch.py \
+  tests/tools/builtins/test_sys_session.py
+```
+
+```
+256 passed, 1 skipped in 204.87s (0:03:24)
+```
+
+Both new tests pass; all pre-existing close/peek/tree-scope tests still pass (including `test_session_close_rejects_top_level_target`, `test_close_top_level_conversation_in_tree_is_rejected`, `test_session_close_rejects_out_of_tree_target_without_patch`, and the peek top-level rejection).
+
+## Concerns
+
+- One iteration was needed: my first `test_sys_session.py` draft passed `agent_id="agent_lead"`, which the `Uuid16` column rejects (`InvalidUuidError`). I dropped `agent_id` there since `sub_agent_name="lead"` already takes precedence in the helper — the assertion `agent == "lead"` is unchanged. The REST test in `test_runner_dispatch.py` keeps `"agent_id": "agent_lead"` because that path consumes a plain JSON snapshot (no UUID validation), so it exercises the `agent_id` fallback branch.
+- The `agent_name` fallback in the REST helper is taken raw (no `public_agent_name` mapping), matching the "snapshot fields" wording; the tombstone is internal metadata, not display text. If display-name normalization is later required for tombstones, that would be a follow-up.
+- I did not run `pre-commit` (the task scoped verification to the two pytest files only); the added code follows the surrounding style.🤖 The slice is complete. The earlier backgrounded pytest run (job 498401) already finished — I used its output to catch the one failing test, fixed it (dropped an invalid UUID `agent_id` from the in-process test), and re-ran the full suite green.
+
+Final state: **256 passed, 1 skipped** for `tests/runner/test_runner_dispatch.py` and `tests/tools/builtins/test_sys_session.py`. No further follow-up actions needed — no commit/push was performed, and Trio mailbox files were left untouched.

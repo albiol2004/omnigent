@@ -1,0 +1,166 @@
+# Scout Report: Codex native tmux kill surface
+
+## Headline finding
+
+**Codex-native has no tmux surface at all.** `grep -i tmux` on `omnigent/codex_native_bridge.py` returns *no matches*. There is no `kill_session`, no `tmux.json`, no `_TMUX_FILE`, no `write_tmux_target`, no `bridge_dir_for_session_id` (Codex uses `bridge_dir_for_bridge_id` instead). So there is **nothing to mirror** from Cursor's `kill_session` — the Codex "hard stop" is a different mechanism (tear down the app-server subprocess, not `tmux kill-session`).
+
+## Evidence
+
+### 1. Codex bridge advertises `state.json`, not `tmux.json`
+
+`omnigent/codex_native_bridge.py` constants (lines 20-55):
+- `20:CODEX_NATIVE_BRIDGE_ID_LABEL_KEY = "omnigent.codex_native.bridge_id"`
+- `24:_STATE_FILE = "state.json"`
+- `55:_BRIDGE_ROOT = Path.home() / ".omnigent" / "codex-native"`
+
+State shape — `CodexNativeBridgeState` (71-95):
+
+```python
+71:class CodexNativeBridgeState:
+    ...
+    90:    socket_path: str          # app-server Unix socket, NOT a tmux socket
+    thread_id: str
+    codex_home: str
+    active_turn_id: str | None = None
+    cwd: str | None = None
+```
+
+Reader: `read_bridge_state` (874-912) parses `state.json` and validates `socket_path` (891, 899-900). Writer: `write_bridge_state` (617). Socket is also derivable without reading state via `socket_path_for_bridge_dir` (301-308) → `bridge_dir / "app-server.sock"`.
+
+Bridge dir resolver is `bridge_dir_for_bridge_id` (97-106), **not** `bridge_dir_for_session_id`:
+
+```python
+97:def bridge_dir_for_bridge_id(bridge_id: str) -> Path:
+    104:    digest = hashlib.sha256(bridge_id.encode("utf-8")).hexdigest()[:32]
+    return _BRIDGE_ROOT / digest
+```
+
+### 2. Cursor `kill_session` is tmux-specific (no Codex analog)
+
+`omnigent/cursor_native_bridge.py:934-944`:
+
+```python
+934:def kill_session(bridge_dir: Path, *, timeout_s: float = _TMUX_READY_TIMEOUT_S) -> None:
+    ...
+    942:    info = _wait_for_tmux_info(bridge_dir, timeout_s=timeout_s)
+    943:    _run_tmux(info["socket_path"], "kill-session", "-t", info["tmux_target"])
+```
+
+Backed by `_TMUX_FILE = "tmux.json"` (39), `write_tmux_target` (~478-488), `read_tmux_info` (490-510), `_wait_for_tmux_info` (513-521), `_run_tmux` (524-538). All tmux-specific.
+
+### 3. Claude `kill_session` is also tmux-specific
+
+`omnigent/claude_native_bridge.py:3278-3326` — same `tmux kill-session` pattern plus pane-pid escalation (`_recorded_tmux_pid`, `_tmux_pane_pid`, `_kill_leftover_tmux_process`). Not portable to Codex.
+
+### 4. The real Codex "kill" is `teardown_codex_native_app_server`
+
+`omnigent/runner/native/orchestration.py:199-225`:
+
+```python
+199:async def teardown_codex_native_app_server(session_id: str) -> None:
+    ...
+    218:    if session_id not in _AUTO_CODEX_APP_SERVERS:
+        return
+    220:    await _cancel_auto_forwarder_task(session_id)
+    221:    leftover_app_server = _AUTO_CODEX_APP_SERVERS.pop(session_id, None)
+    223:    if leftover_app_server is not None:
+    224:        with contextlib.suppress(Exception):
+    225:            await leftover_app_server.close()
+```
+
+Keyed by **session_id** (not bridge_dir). It cancels the forwarder and closes the app-server subprocess — the Codex equivalent of killing the tmux session. `_cancel_auto_forwarder_task` is defined at `orchestration.py:171`.
+
+### 5. `NativeInterruptRunner.stop` today (291-311)
+
+```python
+291: async def stop(self, harness_name: str | None, conv_id: str) -> Response | None:
+    ...
+    300:    agent = native_coding_agent_for_harness(harness_name)
+    ...
+    305:    if key == "claude":
+    306:        return await self._claude_stop(conv_id)
+    307:    if key in ("codex", "pi"):
+    308:        return await self.interrupt(harness_name, conv_id)   # only turn/interrupt, no hard kill
+    ...
+```
+
+Codex currently routes stop → `interrupt` → `_codex_interrupt` (481-577), which only sends `turn/interrupt` over the app-server socket. **No hard kill, no `_teardown_session_terminals`, no `teardown_codex_native_app_server`.**
+
+### 6. `_claude_stop` is the template (438-479)
+
+```python
+438: async def _claude_stop(self, conv_id: str) -> Response:
+    439:    from omnigent.claude_native_bridge import (
+    440:        TmuxSessionNotAdvertised, bridge_dir_for_bridge_id, kill_session,
+    )
+    ...
+    449:    bridge_dir = bridge_dir_for_bridge_id(bridge_id)
+    451:    try:
+    452:        await asyncio.to_thread(kill_session, bridge_dir, timeout_s=1.0)
+    ...
+    462:    await self._teardown_session_terminals(conv_id)
+    463:    await _cancel_auto_forwarder_task(conv_id)
+    464:    self._publish_event(conv_id, {"type": "session.status", "status": "idle"})
+    465:    delivery_ack = self._mark_subagent_terminal_and_wake(conv_id, status="cancelled", ...)
+    ...
+    479:    return Response(status_code=204)
+```
+
+`_teardown_session_terminals` (328-353) closes registered terminals and publishes `terminal_deleted` events.
+
+### 7. Orchestration imports already present in `interrupt.py`
+
+`omnigent/runner/native/interrupt.py:43-47` already imports `_cancel_auto_forwarder_task`, `_claude_native_bridge_id_for_session`, `_session_labels_for_runner_spawn` from `omnigent.runner.native.orchestration`. `teardown_codex_native_app_server` is **not** yet imported — it would need to be added to that block.
+
+### 8. Tests write `tmux.json` via `write_tmux_target` (Cursor/Claude only)
+
+- `tests/test_cursor_native_bridge.py:19` (`from omnigent.cursor_native_bridge import write_tmux_target`), used at `:149`, `:180`.
+- `tests/test_claude_native_bridge.py:55` (`from omnigent.claude_native_bridge import ..., write_tmux_target`), used at `:3189`, `:3246`, `:3373`, `:3437`, `:3486`, etc.
+- `test_kill_session_issues_kill_session_on_target` at `tests/test_claude_native_bridge.py:3876-3921` writes `tmux.json` then asserts `kill_session(bridge_dir)` issues exactly `tmux kill-session -t <target>`.
+
+**No Codex test writes `tmux.json`** — Codex tests would instead use `write_bridge_state` to populate `state.json`. Snippet from `tests/test_claude_native_bridge.py:3178-3200`:
+
+```python
+3178:def test_write_tmux_target_persists_socket_and_target(tmp_path: Path) -> None:
+    bridge_dir = tmp_path / "bridge"
+    write_tmux_target(
+        bridge_dir,
+        socket_path=Path("/tmp/example/tmux.sock"),
+        tmux_target="claude:0.0",
+        pid=12345,
+    )
+    payload = json.loads((bridge_dir / "tmux.json").read_text(encoding="utf-8"))
+    assert payload["socket_path"] == "/tmp/example/tmux.sock"
+    assert payload["tmux_target"] == "claude:0.0"
+```
+
+## Answer to the Lead's question
+
+**Codex does NOT use a tmux advertisement.** There is no `tmux.json` in the Codex bridge dir and no `kill_session` function to copy. The Codex hard-stop surface is `teardown_codex_native_app_server(session_id)` (`omnigent/runner/native/orchestration.py:199-225`), which closes the app-server subprocess from `_AUTO_CODEX_APP_SERVERS` and cancels its forwarder. It is keyed by `session_id`, not `bridge_dir`.
+
+### Recommended shape for `NativeInterruptRunner.stop` Codex branch
+
+Mirror `_claude_stop` (`interrupt.py:438-479`) but swap the tmux kill for the app-server teardown:
+
+1. Add `teardown_codex_native_app_server` to the existing `from omnigent.runner.native.orchestration import (...)` block at `interrupt.py:43-47`.
+2. In `stop()` (305-308), branch `codex` to a new `_codex_stop` instead of falling through to `interrupt`. Keep `pi` on the interrupt path unless it gets its own teardown later.
+3. `_codex_stop(conv_id)` should:
+   - `await teardown_codex_native_app_server(conv_id)` — this already calls `_cancel_auto_forwarder_task` internally, so do **not** call `_cancel_auto_forwarder_task` again separately (unlike `_claude_stop` which calls it at 463 because Claude's `kill_session` does not).
+   - `await self._teardown_session_terminals(conv_id)` (328-353) — close registered terminals + publish `terminal_deleted`.
+   - `self._publish_event(conv_id, {"type": "session.status", "status": "idle"})`.
+   - `self._mark_subagent_terminal_and_wake(conv_id, status="cancelled", output="[System: sub-agent stopped]")` + the same delivery-ack warning block as 470-477.
+   - Return `Response(status_code=204)`.
+
+No `bridge_dir` resolution is needed for the kill step (the app-server is keyed by `conv_id`). If a `state.json` cleanup is also desired, `clear_bridge_state(bridge_dir)` exists at `codex_native_bridge.py:629` and could be called after resolving `bridge_dir` via `bridge_dir_for_bridge_id(labels[CODEX_NATIVE_BRIDGE_ID_LABEL_KEY])` using the same `_session_labels_for_runner_spawn` pattern as `_codex_interrupt` (494-499) — but that is optional cleanup, not required for parity with the tmux kill.
+
+### Functions/line ranges to copy as a template
+
+- **Template (copy structure, not body):** `_claude_stop` — `omnigent/runner/native/interrupt.py:438-479`.
+- **Codex kill replacement:** `teardown_codex_native_app_server` — `omnigent/runner/native/orchestration.py:199-225`.
+- **Terminal teardown (reuse as-is):** `_teardown_session_terminals` — `omnigent/runner/native/interrupt.py:328-353`.
+- **Dispatch point to edit:** `NativeInterruptRunner.stop` — `omnigent/runner/native/interrupt.py:291-311` (specifically the `if key in ("codex", "pi")` branch at 307-308).
+- **Import to extend:** `omnigent/runner/native/interrupt.py:43-47`.
+
+### Caveat
+
+I did not verify whether `pi`-native has its own app-server/teardown helper. The current code lumps `codex` and `pi` together at `interrupt.py:307-308`. Splitting them requires confirming `pi`'s hard-stop path separately before changing that branch.

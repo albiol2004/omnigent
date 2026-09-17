@@ -543,6 +543,12 @@ from omnigent.server.routes._sessions.helpers import (
     prefetch_session_routing_catalogs as prefetch_session_routing_catalogs,
 )
 
+# trioctl's session-contract probe still imports this 0.12 name. Upstream
+# renamed the helper to _resolve_subagent_spec; keep a thin alias so doctor
+# PASSes. Prefer updating trioctl to the new name in a later trio-agent-loop
+# change rather than growing more aliases here.
+_resolve_agent_spec = _resolve_subagent_spec
+
 # Runner-forward / ASK-gate helpers are patched by tests on this facade module
 # (``monkeypatch(sessions.<X>)``). Their real bodies live in the package as
 # ``<X>_impl`` and the siblings call a lazy proxy that resolves the attribute

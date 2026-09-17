@@ -1,0 +1,8 @@
+{
+  "model": "glm-5.2-max",
+  "model_effort": "max",
+  "provider": "cursor",
+  "reasoning_effort": null,
+  "role": "builder",
+  "source": "cursor-model-list"
+}

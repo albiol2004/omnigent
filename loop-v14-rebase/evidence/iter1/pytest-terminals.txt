@@ -1,0 +1,17 @@
+Running 101 items in this shard
+...............s........................................................ [ 71%]
+.............................                                            [100%]
+========================= Top tests by peak-RSS delta ==========================
++  133.2 MB  (now    133.2 MB)  tests/terminals/test_control_bridge.py::test_unescape_control_output_round_trips_control_bytes
++    5.5 MB  (now    143.9 MB)  tests/terminals/test_registry.py::test_conversation_link_for_id_uses_base_url_when_provided
++    2.2 MB  (now    146.3 MB)  tests/terminals/test_registry.py::test_cleanup_conversation_tolerates_close_exception
++    2.1 MB  (now    138.3 MB)  tests/terminals/test_control_bridge.py::test_tmux_clipboard_buffer_read_is_exact_and_bounded
++    1.6 MB  (now    135.2 MB)  tests/terminals/test_control_bridge.py::test_control_bridge_burst_then_exit_delivers_full_tail
++    1.0 MB  (now    136.2 MB)  tests/terminals/test_control_bridge.py::test_seed_full_height_pane_does_not_scroll_or_shift_cursor
++    0.4 MB  (now    146.7 MB)  tests/terminals/test_registry.py::test_shutdown_tolerates_close_exception
++    0.2 MB  (now    133.6 MB)  tests/terminals/test_control_bridge.py::test_control_bridge_coalesces_burst_when_send_lags
++    0.1 MB  (now    133.3 MB)  tests/terminals/test_control_bridge.py::test_control_bridge_streams_large_output_burst
++    0.1 MB  (now    144.0 MB)  tests/terminals/test_registry.py::test_close_expected_closes_its_own_instance
++    0.1 MB  (now    144.1 MB)  tests/terminals/test_registry.py::test_shutdown_clears_all_conversations
++    0.1 MB  (now    138.4 MB)  tests/terminals/test_registry.py::test_list_for_conversation_returns_empty_for_unknown_id
+100 passed, 1 skipped in 28.01s

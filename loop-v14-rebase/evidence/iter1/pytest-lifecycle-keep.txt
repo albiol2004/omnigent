@@ -1,0 +1,22 @@
+Running 1 items in this shard
+F                                                                        [100%]
+=================================== FAILURES ===================================
+E   AssertionError: assert {'models': [{...: True, ...}]} == {'models': [{...: True, ...}]}
+      
+      Differing items:
+      {'models': [{'defaultReasoningEffort': 'high', 'displayName': 'GPT-5.5', 'id': 'gpt-5.5', 'isDefault': True, ...}]} != {'models': [{'defaultReasoningEffort': 'high', 'displayName': 'GPT-5.5', 'id': 'gpt-5.5', 'isDefault': True, ...}]}
+      Use -v to get more diff
+----------------------------- Captured stdout call -----------------------------
+2026-09-17T09:10:56.106670Z [warning  ] could not probe server /api/version ('version'); treating as unknown [omnigent.runner.app]
+2026-09-17T09:10:56.132584Z [info     ] Codex terminal transfer-inbound check: session=a0e2e4b3f6d64b6e9e0d52a9f9e4d6c1 terminal_inbound=False [omnigent.runner.app]
+2026-09-17T09:10:56.145367Z [info     ] post_session_events: conv=a0e2e4b3f6d64b6e9e0d52a9f9e4d6c1 type=model_change active=False buffer_len=0 content_types=[] model_override=None [omnigent.runner.app]
+2026-09-17T09:10:56.148641Z [warning  ] Codex-native settings update skipped for a0e2e4b3f6d64b6e9e0d52a9f9e4d6c1: bridge belongs to f3c1df05a73a4ab8a6e7d976c7f2db10. [omnigent.runner.app]
+------------------------------ Captured log call -------------------------------
+WARNING  omnigent.runner.app:app.py:367 could not probe server /api/version ('version'); treating as unknown
+INFO     omnigent.runner.app:app.py:4113 Codex terminal transfer-inbound check: session=a0e2e4b3f6d64b6e9e0d52a9f9e4d6c1 terminal_inbound=False
+INFO     omnigent.runner.app:app.py:8903 post_session_events: conv=a0e2e4b3f6d64b6e9e0d52a9f9e4d6c1 type=model_change active=False buffer_len=0 content_types=[] model_override=None
+WARNING  omnigent.runner.app:app.py:5250 Codex-native settings update skipped for a0e2e4b3f6d64b6e9e0d52a9f9e4d6c1: bridge belongs to f3c1df05a73a4ab8a6e7d976c7f2db10.
+/home/coder/omnigent-dev/tests/runner/test_app_sessions_native_events_lifecycle.py:1354: AssertionError: assert {'models': [{...: True, ...}]} == {'models': [{...: True, ...}]}
+=========================== short test summary info ============================
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_codex_native_model_options_follow_labeled_foreign_bridge
+1 failed, 51 deselected in 0.31s

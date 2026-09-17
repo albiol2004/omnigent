@@ -1,0 +1,18 @@
+Running 45 items in this shard
+.............................................                            [100%]
+========================= Top tests by peak-RSS delta ==========================
++  106.9 MB  (now    106.9 MB)  tests/tools/builtins/test_sys_session.py::test_send_schema_advertises_plain_string_and_purpose_object_args
++   23.2 MB  (now    130.3 MB)  tests/tools/builtins/test_sys_session.py::test_peek_returns_items_chronological
++   11.0 MB  (now    141.3 MB)  tests/tools/builtins/test_sys_session.py::test_peek_content_limit_scenario[raised-limit]
++    2.8 MB  (now    151.5 MB)  tests/tools/builtins/test_sys_session.py::test_peek_invalid_json_returns_error
++    2.2 MB  (now    146.1 MB)  tests/tools/builtins/test_sys_session.py::test_peek_accepts_integral_float_content_limit
++    2.1 MB  (now    143.8 MB)  tests/tools/builtins/test_sys_session.py::test_peek_content_limit_scenario[budget-ceiling]
++    2.1 MB  (now    148.5 MB)  tests/tools/builtins/test_sys_session.py::test_peek_unknown_conversation_id_returns_not_found
++    0.4 MB  (now    141.7 MB)  tests/tools/builtins/test_sys_session.py::test_peek_content_limit_scenario[default-limit]
++    0.2 MB  (now    146.3 MB)  tests/tools/builtins/test_sys_session.py::test_peek_combined_limits_preserve_total_prompt_bound
++    0.2 MB  (now    151.7 MB)  tests/tools/builtins/test_sys_session.py::test_close_missing_required_field_returns_error
++    0.2 MB  (now    107.1 MB)  tests/tools/builtins/test_sys_session.py::test_send_schema_gates_harness_field_behind_allowlist_opt_in
++    0.1 MB  (now    148.6 MB)  tests/tools/builtins/test_sys_session.py::test_peek_out_of_tree_conversation_is_rejected
++    0.1 MB  (now    148.7 MB)  tests/tools/builtins/test_sys_session.py::test_close_accepts_child_with_unparsable_title
++    0.1 MB  (now    151.8 MB)  tests/tools/builtins/test_sys_session.py::test_peek_empty_conversation_id_returns_error
+45 passed in 66.58s (0:01:06)

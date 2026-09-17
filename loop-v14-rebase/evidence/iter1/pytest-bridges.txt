@@ -1,0 +1,31 @@
+Running 529 items in this shard
+........................................................................ [ 13%]
+........................................................................ [ 27%]
+........................................................................ [ 40%]
+........................................................................ [ 54%]
+........................................................................ [ 68%]
+........................................................................ [ 81%]
+........................................................................ [ 95%]
+.........................                                                [100%]
+========================= Top tests by peak-RSS delta ==========================
++  109.3 MB  (now    109.3 MB)  tests/test_claude_native_bridge.py::test_prepare_bridge_dir_preserves_token_and_updates_runtime
++    9.1 MB  (now    133.5 MB)  tests/test_cursor_native_permissions.py::test_supervise_transcript_parks_new_call_then_releases_on_resolve
++    5.0 MB  (now    117.3 MB)  tests/test_claude_native_bridge.py::test_cycleable_permission_modes_match_the_server_patch_vocabulary
++    2.6 MB  (now    136.3 MB)  tests/test_cursor_native_permissions.py::test_send_cursor_keys_reports_undelivered_keystroke
++    1.8 MB  (now    119.6 MB)  tests/test_claude_native_bridge.py::test_channel_server_relays_active_omnigent_tools
++    1.0 MB  (now    110.6 MB)  tests/test_claude_native_bridge.py::test_prepare_bridge_dir_persists_and_applies_resolved_sandbox
++    0.8 MB  (now    123.1 MB)  tests/test_codex_native_bridge.py::test_write_codex_config_model_replaces_top_level_key
++    0.5 MB  (now    124.3 MB)  tests/test_cursor_native_permissions.py::test_read_pending_detects_framed_gated_tool_call
++    0.4 MB  (now    111.0 MB)  tests/test_claude_native_bridge.py::test_trusted_parent_accepts_qwen_native_bridge_dir
++    0.4 MB  (now    111.6 MB)  tests/test_claude_native_bridge.py::test_read_transcript_items_since_strips_inline_image_data
++    0.2 MB  (now    109.6 MB)  tests/test_claude_native_bridge.py::test_prepare_bridge_dir_preserves_permission_hook_config
++    0.2 MB  (now    111.2 MB)  tests/test_claude_native_bridge.py::test_trusted_parent_accepts_kiro_native_bridge_dir
++    0.2 MB  (now    122.2 MB)  tests/test_claude_native_bridge.py::test_curl_evaluate_policy_command_round_trips
++    0.1 MB  (now    111.7 MB)  tests/test_claude_native_bridge.py::test_read_transcript_flagged_record_without_login_is_untouched[API Error: 500 Internal Server Error]
++    0.1 MB  (now    111.8 MB)  tests/test_claude_native_bridge.py::test_read_transcript_items_since_surfaces_skill_as_slash_command
++    0.1 MB  (now    112.0 MB)  tests/test_claude_native_bridge.py::test_augment_claude_args_leaves_bypass_consent_alone_otherwise[none]
++    0.1 MB  (now    112.1 MB)  tests/test_claude_native_bridge.py::test_augment_claude_args_keeps_permission_hook_without_launch_session_id
++    0.1 MB  (now    112.2 MB)  tests/test_claude_native_bridge.py::test_escape_unsupported_slash_command[/quit now-\ufeff/quit now]
++    0.1 MB  (now    112.3 MB)  tests/test_claude_native_bridge.py::test_kill_session_raises_on_unexpected_tmux_failure
++    0.1 MB  (now    117.4 MB)  tests/test_claude_native_bridge.py::test_set_permission_mode_cycles_until_target_renders[auto]
+529 passed in 69.03s (0:01:09)

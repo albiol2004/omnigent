@@ -506,7 +506,6 @@ from omnigent.server.routes._sessions.helpers import (
     _require_host_conn_for_worktree as _require_host_conn_for_worktree,
     _require_permission_mode_forward as _require_permission_mode_forward,
     _reset_runner_resources_after_switch_impl as _reset_runner_resources_after_switch_impl,
-    _resolve_agent_spec as _resolve_agent_spec,
     _resolve_llm_model as _resolve_llm_model,
     _resolve_skill_meta_text_via_runner as _resolve_skill_meta_text_via_runner,
     _resolve_subagent_spec as _resolve_subagent_spec,
@@ -542,6 +541,12 @@ from omnigent.server.routes._sessions.helpers import (
     cancel_managed_launch_tasks as cancel_managed_launch_tasks,
     prefetch_session_routing_catalogs as prefetch_session_routing_catalogs,
 )
+
+# trioctl's session-contract probe still imports this 0.12 name. Upstream
+# renamed the helper to _resolve_subagent_spec; keep a thin alias so doctor
+# PASSes. Prefer updating trioctl to the new name in a later trio-agent-loop
+# change rather than growing more aliases here.
+_resolve_agent_spec = _resolve_subagent_spec
 
 # Runner-forward / ASK-gate helpers are patched by tests on this facade module
 # (``monkeypatch(sessions.<X>)``). Their real bodies live in the package as

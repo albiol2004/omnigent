@@ -1,0 +1,39 @@
+All three source diffs are clean and correct. The slice is complete.
+
+## Summary
+
+🤖 Implemented the **stop-routing** slice: Codex (and Cursor) now get a real runner-side hard stop instead of falling back to interrupt.
+
+### Files changed
+
+**Source (4):**
+- `omnigent/runner/tool_dispatch.py` — REST close routing: `_session_close_via_rest` now POSTs `stop_session` when the target's wrapper is Claude, Codex, **or** Cursor (added `CURSOR_NATIVE_WRAPPER_VALUE` to imports); unlabeled/other harnesses still use `interrupt`. Failed stop still tombstones (unchanged).
+- `omnigent/codex_native_bridge.py` — Added a tight, documented tmux-helper section mirroring Claude/Cursor: `TmuxSessionNotAdvertised`, `_ensure_dir`, `write_tmux_target`, `read_tmux_info`, `_wait_for_tmux_info`, `_run_tmux`, `kill_session` (issues `tmux kill-session`), plus `subprocess`/`time` imports. Used `TmuxSessionNotAdvertised` (like Claude) rather than Cursor's plain `RuntimeError` so `_codex_stop` can distinguish "not advertised" from a real kill failure.
+- `omnigent/runner/native/orchestration.py` — In `_auto_create_codex_terminal`, after a successful `launch_auxiliary_terminal`, advertise `tmux.json` via `write_tmux_target` when `terminal_registry.get(session_id, "codex", "main")` is running — mirroring the Cursor pattern (2503-2516), inside the existing `try` block.
+- `omnigent/runner/native/interrupt.py` — Imported `teardown_codex_native_app_server`; `stop()` now routes `codex` → new `_codex_stop` (keeps `pi` on interrupt). `_codex_stop` models `_claude_stop`: `kill_session(bridge_dir_for_bridge_id(conv_id), timeout_s=1.0)` (codex uses the session id as bridge id), best-effort on `TmuxSessionNotAdvertised`, 503 on `RuntimeError`; then `_teardown_session_terminals`, `teardown_codex_native_app_server` (cancels the forwarder itself — no double-cancel), publish `session.status` idle, and mark sub-agent cancelled.
+
+**Tests (3):**
+- `tests/runner/test_runner_dispatch.py` — New parametrized `test_session_close_routes_native_wrappers_to_stop_session` (cursor-native, codex-native) asserting `stop_session` is POSTed.
+- `tests/runner/test_native_interrupt_runner.py` — Renamed `test_codex_and_pi_stop_route_to_interrupt` → `test_pi_stop_routes_to_interrupt` (codex no longer routes to interrupt); added `test_codex_stop_kills_tears_down_and_goes_idle` (kill → terminal teardown → app-server teardown → idle → wake) and `test_codex_stop_is_idempotent_without_advertised_tmux`.
+- `tests/test_codex_native_bridge.py` — `test_kill_session_issues_kill_session_on_target` (asserts `tmux -S <sock> kill-session -t main`) and `test_kill_session_raises_when_tmux_not_advertised`.
+
+### Verification results
+
+Exact task command:
+```
+uv run --project /home/coder/omnigent-dev pytest -q \
+  tests/runner/test_runner_dispatch.py \
+  tests/runner/test_native_interrupt_runner.py \
+  tests/test_codex_native_bridge.py
+```
+Result: **266 passed, 1 skipped** (the skip is pre-existing). The 7 new/changed tests all ran and passed.
+
+I also confirmed the 9 codex lifecycle failures in `test_app_sessions_native_events_lifecycle.py` are **pre-existing** — they fail identically on clean HEAD (verified via `git stash`), so they are not introduced by this slice.
+
+### Concerns
+
+1. **Pre-existing failing tests assert the old codex stop→interrupt behavior** this slice intentionally changes — e.g. `test_events_stop_session_on_codex_native_uses_turn_interrupt_without_marker` and `test_events_stop_on_codex_native_cancels_mcp_startup_without_active_turn[stop_session]` in `tests/runner/test_app_sessions_native_events_lifecycle.py`. They were already failing on this branch before my work, but they will need updating to the new hard-stop semantics in a follow-up slice (out of scope for this builder's stated verify set).
+2. **`_cancel_subagent_task` (tool_dispatch ~7851/7865)** still routes only `claude-native` to `stop_session` (codex cancel stays `interrupt` + best-effort). The task scoped #1 to the REST *close* path only, so I left `sys_cancel_task` untouched. If the Lead wants codex `sys_cancel_task` to also use the new hard stop, that's a separate slice.
+3. **`kill_session` timeout** uses `timeout_s=1.0` per spec; when tmux was never advertised it waits up to 1s before raising `TmuxSessionNotAdvertised`. Acceptable for a stop, but a future optimization could short-circuit when the file is absent.
+
+No git commit or push performed; no Trio mailbox files touched; `/home/coder/omnigent` untouched; no omni processes or port 6767 used.

@@ -1,0 +1,687 @@
+2026-09-16T13:26:51.489711Z [info     ] structlog output capture disabled, no output directory specified [structlog_config.pytest]
+Running 2737 items in this shard
+........................................................................ [  2%]
+........................................................................ [  5%]
+..F..................................................................... [  7%]
+........................................................................ [ 10%]
+........................................................................ [ 13%]
+........................................................................ [ 15%]
+........................................................................ [ 18%]
+........................................................................ [ 21%]
+........................................................................ [ 23%]
+..............................................xxxx...................... [ 26%]
+........................................................................ [ 28%]
+........................................................................ [ 31%]
+........................................................................ [ 34%]
+.................................s...................................... [ 36%]
+........................................................................ [ 39%]
+........................................................................ [ 42%]
+........................................................................ [ 44%]
+........................................................................ [ 47%]
+........................................................................ [ 49%]
+........................................................................ [ 52%]
+........................................................................ [ 55%]
+...........................FFFF......................................... [ 57%]
+........................................................................ [ 60%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 68%]
+........................................................................ [ 71%]
+........................................................................ [ 73%]
+........................................................................ [ 76%]
+........................................................................ [ 78%]
+........................................................................ [ 81%]
+........................................................................ [ 84%]
+........................s............................................... [ 86%]
+........................................................................ [ 89%]
+........................................................................ [ 92%]
+........................................................................ [ 94%]
+........................................................................ [ 97%]
+........................................................................ [ 99%]
+.                                                                        [100%]
+=================================== FAILURES ===================================
+________ test_codex_native_model_options_follow_labeled_foreign_bridge _________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f46777c6810>
+tmp_path = PosixPath('/tmp/pytest-of-coder/pytest-149/test_codex_native_model_option3')
+
+    @pytest.mark.asyncio
+    async def test_codex_native_model_options_follow_labeled_foreign_bridge(
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """
+        Model discovery follows a labeled live bridge across session rotation.
+    
+        The child session can read the app-server catalog while a parent-owned
+        bridge remains live, but mutating settings must stay owner-bound.
+        """
+        from omnigent import codex_native_app_server
+        from omnigent.spec.types import ExecutorSpec
+    
+        parent_id = "f3c1df05a73a4ab8a6e7d976c7f2db10"
+        child_id = "a0e2e4b3f6d64b6e9e0d52a9f9e4d6c1"
+        bridge_id = "bridge_parent_rotation"
+        bridge_label_key = codex_native_bridge.CODEX_NATIVE_BRIDGE_ID_LABEL_KEY
+        monkeypatch.setattr(codex_native_bridge, "_BRIDGE_ROOT", tmp_path / "codex-bridge")
+        codex_native_bridge.write_bridge_state(
+            codex_native_bridge.bridge_dir_for_bridge_id(bridge_id),
+            codex_native_bridge.CodexNativeBridgeState(
+                session_id=parent_id,
+                socket_path="ws://127.0.0.1:43210",
+                thread_id="thread_parent",
+                codex_home=str(tmp_path / "codex-home"),
+                active_turn_id=None,
+            ),
+        )
+    
+        # Auto-create on POST /v1/sessions would clear the child's own bridge
+        # then fail to launch (no terminal registry here). The labeled parent
+        # bridge above is what the child reads, so keep create returning 201
+        # without launching tmux; the parent bridge stays live for discovery.
+        _stub_codex_auto_create(monkeypatch)
+    
+        expected_models = [
+            {
+                "id": "gpt-5.5",
+                "model": "databricks-gpt-5-5",
+                "displayName": "GPT-5.5",
+                "defaultReasoningEffort": "high",
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "low", "description": "Low"},
+                ],
+                "isDefault": True,
+            }
+        ]
+        fake_client = _RecordingCodexAppServerClient(
+            transport="ws://127.0.0.1:43210",
+            client_name="omnigent-codex-native-runner",
+        )
+        fake_client.model_list_responses = [
+            {"result": {"data": expected_models, "nextCursor": None}}
+        ]
+    
+        def _fake_client_for_transport(
+            transport: str,
+            *,
+            client_name: str = "omnigent",
+        ) -> _RecordingCodexAppServerClient:
+            """Return the fake client for the labeled parent bridge."""
+            assert transport == fake_client.transport
+            assert client_name == fake_client.client_name
+            return fake_client
+    
+        monkeypatch.setattr(
+            codex_native_app_server,
+            "client_for_transport",
+            _fake_client_for_transport,
+        )
+    
+        class _LabeledServerClient(NullServerClient):
+            """Return the rotated bridge label for the child session."""
+    
+            async def get(
+                self,
+                url: str,
+                **kwargs: Any,
+            ) -> NullServerClient._Response:
+                if url.endswith("/labels"):
+    
+                    class _LabelsResponse(NullServerClient._Response):
+                        """Response containing the child session's bridge label."""
+    
+                        def json(self) -> dict[str, Any]:
+                            """Return the parent-owned bridge id."""
+                            return {"labels": {bridge_label_key: bridge_id}}
+    
+                    return _LabelsResponse()
+                return await super().get(url, **kwargs)
+    
+        codex_native_spec = AgentSpec(
+            spec_version=1,
+            name="t",
+            executor=ExecutorSpec(type="omnigent", config={"harness": "codex-native"}),
+        )
+    
+        async def _resolver(agent_id: str, session_id: str | None = None) -> AgentSpec:
+            """Return the codex-native spec for any agent id."""
+            del agent_id, session_id
+            return codex_native_spec
+    
+        app = create_runner_app(
+            process_manager=_FakeProcessManager(
+                _ScriptedHarnessClient([])
+            ),  # type: ignore[arg-type]
+            spec_resolver=_resolver,
+            server_client=_LabeledServerClient(),  # type: ignore[arg-type]
+        )
+    
+        async with _runner_client(app) as client:
+            create_resp = await client.post(
+                "/v1/sessions",
+                json={
+                    "session_id": child_id,
+                    "agent_id": "880b5afda28ad55ff74cbeb9b5fc67fb",
+                },
+            )
+            assert create_resp.status_code == 201, create_resp.text
+            model_resp = await client.get(
+                f"/v1/sessions/{child_id}/codex-model-options"
+            )
+            mutation_resp = await client.post(
+                f"/v1/sessions/{child_id}/events",
+                json={"type": "model_change", "model": "gpt-5.4"},
+            )
+    
+        assert model_resp.status_code == 200, model_resp.text
+        assert model_resp.json() == {"models": expected_models}
+>       assert mutation_resp.status_code == 204, mutation_resp.text
+E       AssertionError: {"error":"codex_native_settings_update_failed","detail":"Codex-native settings update requires a loaded Codex bridge."}
+E       assert 503 == 204
+E        +  where 503 = <Response [503 Service Unavailable]>.status_code
+
+tests/runner/test_app_sessions_native_events_lifecycle.py:1186: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-09-16T13:28:01.855326Z [warning  ] could not probe server /api/version ('version'); treating as unknown [omnigent.runner.app]
+2026-09-16T13:28:01.856033Z [info     ] Codex terminal transfer-inbound check: session=a0e2e4b3f6d64b6e9e0d52a9f9e4d6c1 terminal_inbound=False [omnigent.runner.app]
+2026-09-16T13:28:01.864701Z [info     ] post_session_events: conv=a0e2e4b3f6d64b6e9e0d52a9f9e4d6c1 type=model_change active=False buffer_len=0 content_types=[] model_override=None [omnigent.runner.app]
+2026-09-16T13:28:01.865831Z [warning  ] Codex-native settings update skipped for a0e2e4b3f6d64b6e9e0d52a9f9e4d6c1: bridge belongs to f3c1df05a73a4ab8a6e7d976c7f2db10. [omnigent.runner.app]
+------------------------------ Captured log call -------------------------------
+WARNING  omnigent.runner.app:app.py:332 could not probe server /api/version ('version'); treating as unknown
+INFO     omnigent.runner.app:app.py:3504 Codex terminal transfer-inbound check: session=a0e2e4b3f6d64b6e9e0d52a9f9e4d6c1 terminal_inbound=False
+INFO     omnigent.runner.app:app.py:7745 post_session_events: conv=a0e2e4b3f6d64b6e9e0d52a9f9e4d6c1 type=model_change active=False buffer_len=0 content_types=[] model_override=None
+WARNING  omnigent.runner.app:app.py:4535 Codex-native settings update skipped for a0e2e4b3f6d64b6e9e0d52a9f9e4d6c1: bridge belongs to f3c1df05a73a4ab8a6e7d976c7f2db10.
+_________________ test_execute_uc_function_warehouse_from_env __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f465c7eb890>
+
+    @pytest.mark.asyncio
+    async def test_execute_uc_function_warehouse_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+        """warehouse_id falls back to DATABRICKS_WAREHOUSE_ID env var.
+    
+        When the caller passes ``warehouse_id=None``, the env var
+        is used instead. Verifies the env value reaches the SDK call.
+        """
+        fake_response = _FakeStatementResponse(
+            status=_FakeStatementStatus(state=_FakeStatementState("SUCCEEDED")),
+            result=_FakeResultData(data_array=[["ok"]]),
+        )
+    
+        captured_calls: list[dict[str, object]] = []
+    
+        def _fake_execute_statement(**kwargs: object) -> _FakeStatementResponse:
+            captured_calls.append(kwargs)
+            return fake_response
+    
+        @dataclass
+        class _FakeStatementExecution:
+            execute_statement: object = None
+    
+        @dataclass
+        class _FakeClient:
+            statement_execution: _FakeStatementExecution = field(
+                default_factory=lambda: _FakeStatementExecution(
+                    execute_statement=_fake_execute_statement,
+                ),
+            )
+    
+        monkeypatch.setattr(
+            "omnigent.runner.uc_function._get_workspace_client",
+            lambda profile: _FakeClient(),
+        )
+    
+        @dataclass
+        class _FakeParam:
+            name: str
+            value: str | None = None
+    
+>       monkeypatch.setattr("databricks.sdk.service.sql.StatementParameterListItem", _FakeParam)
+
+tests/runner/test_uc_function.py:304: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.12/site-packages/_pytest/monkeypatch.py:104: in derive_importpath
+    target = resolve(module)
+             ^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+name = 'databricks.sdk.service.sql'
+
+    def resolve(name: str) -> object:
+        # Simplified from zope.dottedname.
+        parts = name.split(".")
+    
+        used = parts.pop(0)
+>       found: object = __import__(used)
+                        ^^^^^^^^^^^^^^^^
+E       ModuleNotFoundError: No module named 'databricks'
+
+.venv/lib/python3.12/site-packages/_pytest/monkeypatch.py:67: ModuleNotFoundError
+_______________________ test_execute_uc_function_success _______________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f465ba44560>
+
+    @pytest.mark.asyncio
+    async def test_execute_uc_function_success(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Successful UC function execution returns the scalar result.
+    
+        Verifies that:
+        - The correct SQL and warehouse_id are forwarded to the SDK.
+        - The scalar result from ``data_array[0][0]`` is returned.
+        """
+        # Build a fake response with a scalar result.
+        fake_response = _FakeStatementResponse(
+            status=_FakeStatementStatus(
+                state=_FakeStatementState("SUCCEEDED"),
+            ),
+            result=_FakeResultData(data_array=[["positive"]]),
+        )
+    
+        captured_calls: list[dict[str, Any]] = []
+    
+        def _fake_execute_statement(
+            *,
+            statement: str,
+            warehouse_id: str,
+            parameters: Any = None,
+        ) -> _FakeStatementResponse:
+            captured_calls.append(
+                {
+                    "statement": statement,
+                    "warehouse_id": warehouse_id,
+                    "parameters": parameters,
+                }
+            )
+            return fake_response
+    
+        # Stub the workspace client.
+        @dataclass
+        class _FakeStatementExecution:
+            execute_statement: Any = None
+    
+        @dataclass
+        class _FakeClient:
+            statement_execution: _FakeStatementExecution = field(
+                default_factory=lambda: _FakeStatementExecution(
+                    execute_statement=_fake_execute_statement,
+                ),
+            )
+    
+        fake_client = _FakeClient()
+    
+        monkeypatch.setattr(
+            "omnigent.runner.uc_function._get_workspace_client",
+            lambda profile: fake_client,
+        )
+    
+        # Also patch the SDK imports used inside execute_uc_function.
+        # StatementParameterListItem is used to wrap parameters.
+        @dataclass
+        class _FakeParam:
+            name: str
+            value: str | None = None
+    
+>       monkeypatch.setattr(
+            "databricks.sdk.service.sql.StatementParameterListItem",
+            _FakeParam,
+        )
+
+tests/runner/test_uc_function.py:382: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.12/site-packages/_pytest/monkeypatch.py:104: in derive_importpath
+    target = resolve(module)
+             ^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+name = 'databricks.sdk.service.sql'
+
+    def resolve(name: str) -> object:
+        # Simplified from zope.dottedname.
+        parts = name.split(".")
+    
+        used = parts.pop(0)
+>       found: object = __import__(used)
+                        ^^^^^^^^^^^^^^^^
+E       ModuleNotFoundError: No module named 'databricks'
+
+.venv/lib/python3.12/site-packages/_pytest/monkeypatch.py:67: ModuleNotFoundError
+__________________ test_execute_uc_function_failed_statement ___________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f465c67af00>
+
+    @pytest.mark.asyncio
+    async def test_execute_uc_function_failed_statement(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Failed statement execution raises RuntimeError with the error message."""
+        fake_response = _FakeStatementResponse(
+            status=_FakeStatementStatus(
+                state=_FakeStatementState("FAILED"),
+                error=_FakeStatementError(message="Function not found"),
+            ),
+        )
+    
+        @dataclass
+        class _FakeStatementExecution:
+            execute_statement: Any = None
+    
+        @dataclass
+        class _FakeClient:
+            statement_execution: _FakeStatementExecution = field(
+                default_factory=lambda: _FakeStatementExecution(
+                    execute_statement=lambda **kw: fake_response,
+                ),
+            )
+    
+        monkeypatch.setattr(
+            "omnigent.runner.uc_function._get_workspace_client",
+            lambda profile: _FakeClient(),
+        )
+    
+        @dataclass
+        class _FakeParam:
+            name: str
+            value: str | None = None
+    
+>       monkeypatch.setattr(
+            "databricks.sdk.service.sql.StatementParameterListItem",
+            _FakeParam,
+        )
+
+tests/runner/test_uc_function.py:440: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.12/site-packages/_pytest/monkeypatch.py:104: in derive_importpath
+    target = resolve(module)
+             ^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+name = 'databricks.sdk.service.sql'
+
+    def resolve(name: str) -> object:
+        # Simplified from zope.dottedname.
+        parts = name.split(".")
+    
+        used = parts.pop(0)
+>       found: object = __import__(used)
+                        ^^^^^^^^^^^^^^^^
+E       ModuleNotFoundError: No module named 'databricks'
+
+.venv/lib/python3.12/site-packages/_pytest/monkeypatch.py:67: ModuleNotFoundError
+_____________________ test_execute_uc_function_null_result _____________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f465c6bab70>
+
+    @pytest.mark.asyncio
+    async def test_execute_uc_function_null_result(monkeypatch: pytest.MonkeyPatch) -> None:
+        """NULL result from the function returns JSON null."""
+        fake_response = _FakeStatementResponse(
+            status=_FakeStatementStatus(
+                state=_FakeStatementState("SUCCEEDED"),
+            ),
+            result=None,
+        )
+    
+        @dataclass
+        class _FakeStatementExecution:
+            execute_statement: Any = None
+    
+        @dataclass
+        class _FakeClient:
+            statement_execution: _FakeStatementExecution = field(
+                default_factory=lambda: _FakeStatementExecution(
+                    execute_statement=lambda **kw: fake_response,
+                ),
+            )
+    
+        monkeypatch.setattr(
+            "omnigent.runner.uc_function._get_workspace_client",
+            lambda profile: _FakeClient(),
+        )
+    
+        @dataclass
+        class _FakeParam:
+            name: str
+            value: str | None = None
+    
+>       monkeypatch.setattr(
+            "databricks.sdk.service.sql.StatementParameterListItem",
+            _FakeParam,
+        )
+
+tests/runner/test_uc_function.py:491: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.12/site-packages/_pytest/monkeypatch.py:104: in derive_importpath
+    target = resolve(module)
+             ^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+name = 'databricks.sdk.service.sql'
+
+    def resolve(name: str) -> object:
+        # Simplified from zope.dottedname.
+        parts = name.split(".")
+    
+        used = parts.pop(0)
+>       found: object = __import__(used)
+                        ^^^^^^^^^^^^^^^^
+E       ModuleNotFoundError: No module named 'databricks'
+
+.venv/lib/python3.12/site-packages/_pytest/monkeypatch.py:67: ModuleNotFoundError
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /home/coder/omnigent-dev/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/runner/test_terminal_resource_attach_ws.py::test_direct_attach_listener_serves_probe_on_loopback
+  /home/coder/omnigent-dev/.venv/lib/python3.12/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
+    warnings.warn(  # deprecated in 14.0 - 2024-11-09
+
+tests/runner/test_terminal_resource_attach_ws.py::test_direct_attach_listener_serves_probe_on_loopback
+  /home/coder/omnigent-dev/.venv/lib/python3.12/site-packages/uvicorn/protocols/websockets/websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated
+    from websockets.server import WebSocketServerProtocol
+
+tests/runner/test_terminal_resource_attach_ws.py::test_direct_attach_listener_serves_probe_on_loopback
+tests/runner/test_terminal_resource_attach_ws.py::test_direct_attach_listener_serves_probe_on_loopback
+  /home/coder/omnigent-dev/.venv/lib/python3.12/site-packages/websockets/legacy/server.py:1178: DeprecationWarning: remove second argument of ws_handler
+    warnings.warn("remove second argument of ws_handler", DeprecationWarning)
+
+tests/runner/transports/ws_tunnel/test_serve.py::test_serve_tunnel_wake_forces_prompt_reconnect
+  /home/coder/omnigent-dev/.venv/lib/python3.12/site-packages/websockets/exceptions.py:117: DeprecationWarning: ConnectionClosed.code is deprecated; use Protocol.close_code or ConnectionClosed.rcvd.code
+    warnings.warn(  # deprecated in 13.1 - 2024-09-21
+
+tests/tools/builtins/test_nimble_research.py::test_create_without_usable_agent_id_is_protocol_error[42]
+  /home/coder/omnigent-dev/.venv/lib/python3.12/site-packages/pydantic/main.py:475: UserWarning: Pydantic serializer warnings:
+    PydanticSerializationUnexpectedValue(Expected `str` - serialized value may not be as expected [field_name='web_search_agent_id', input_value=42, input_type=int])
+    return self.__pydantic_serializer__.to_python(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================= Top tests by peak-RSS delta ==========================
++  161.4 MB  (now    161.4 MB)  tests/runner/test_acp_subagent_forwarding.py::test_mint_subagent_child_uses_the_acp_start_type
++   15.2 MB  (now    305.9 MB)  tests/tools/builtins/test_sys_session.py::test_peek_returns_items_chronological
++   13.2 MB  (now    319.2 MB)  tests/tools/builtins/test_sys_session.py::test_peek_content_limit_scenario[raised-limit]
++   13.0 MB  (now    192.2 MB)  tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_codex_native_model_change_without_bridge_fails_loud
++   10.0 MB  (now    331.4 MB)  tests/tools/builtins/test_sys_session.py::test_peek_content_limit_scenario[ceiling]
++    8.2 MB  (now    170.4 MB)  tests/runner/test_app_pi_native_model.py::test_auto_create_pi_terminal_threads_spec_model_into_models_json
++    8.1 MB  (now    266.9 MB)  tests/runner/test_runner_dispatch.py::test_runner_resolves_harness_from_fallback_when_no_agent_id
++    7.0 MB  (now    273.9 MB)  tests/runner/test_runner_dispatch.py::test_runner_post_returns_503_when_spec_resolver_fails
++    6.8 MB  (now    246.3 MB)  tests/runner/test_hindsight_local_dispatch.py::test_retain_dispatch_uses_agent_id_as_bank
++    5.2 MB  (now    340.5 MB)  tests/tools/builtins/test_sys_session.py::test_close_out_of_tree_conversation_is_rejected
++    4.8 MB  (now    231.2 MB)  tests/runner/test_app_sessions_native_workflow_init.py::test_stop_session_clears_in_flight_marker
++    3.2 MB  (now    223.4 MB)  tests/runner/test_app_sessions_native_terminals_runtime.py::test_create_session_threads_cursor_bridge_dir_without_dead_guard_env
++    3.0 MB  (now    215.1 MB)  tests/runner/test_app_sessions_native_supervision.py::test_interrupt_inserts_cancellation_items_in_history
++    2.7 MB  (now    177.8 MB)  tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_codex_native_settings_change_uses_thread_settings_update[model_change]
++    2.7 MB  (now    290.7 MB)  tests/tools/builtins/test_nimble_research.py::test_all_trust_string_fields_are_capped
++    2.6 MB  (now    335.3 MB)  tests/tools/builtins/test_sys_session.py::test_close_top_level_conversation_in_tree_is_rejected
++    2.6 MB  (now    233.8 MB)  tests/runner/test_app_sessions_native_workflow_messages.py::test_cancelled_turn_publishes_idle_so_client_unsticks
++    2.5 MB  (now    254.4 MB)  tests/runner/test_nimble_research_dispatch.py::test_dispatch_executes_v2_lifecycle
++    2.4 MB  (now    239.5 MB)  tests/runner/test_discovery_list_pagination.py::test_sys_agent_list_pages_local_configs_beyond_server_fetch_limit
++    2.2 MB  (now    321.4 MB)  tests/tools/builtins/test_sys_session.py::test_peek_content_limit_scenario[default-limit]
+================================== slow tests ==================================
+[slow] 27.28s tests/test_claude_native_bridge.py::test_curl_evaluate_policy_command_round_trips
+[slow] 20.19s tests/runner/test_app_sessions_native_terminals_runtime.py::test_auto_create_antigravity_prepends_gemini_dir_to_generated_flags
+[slow] 20.17s tests/runner/test_app_sessions_native_terminals_runtime.py::test_auto_create_antigravity_wires_omnigent_mcp_relay
+[slow] 20.15s tests/runner/test_app_sessions_native_terminals_runtime.py::test_cold_start_agy_conversation_rejects_a_foreign_agy_cascade
+[slow] 8.27s tests/terminals/test_control_bridge.py::test_control_bridge_coalesces_burst_when_send_lags
+[slow] 6.92s tests/runner/test_app_sessions_native_supervision.py::test_message_turn_lifecycle_status_suppressed_for_terminal_backed_harnesses[codex-native-expected_statuses1]
+[slow] 6.79s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_on_native_session_returns_503_when_bridge_not_ready
+[slow] 6.73s tests/runner/test_app_sessions_native_supervision.py::test_events_interrupt_on_native_session_503_skips_cleanup_when_inject_fails
+[slow] 6.66s tests/runner/test_app_sessions_native_supervision.py::test_message_turn_lifecycle_status_suppressed_for_terminal_backed_harnesses[claude-native-expected_statuses0]
+[slow] 6.61s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_mid_turn_defers_instead_of_failing
+[slow] 6.57s tests/runner/test_app_sessions_native_events_options.py::test_events_effort_change_on_native_session_returns_503_when_bridge_not_ready
+[slow] 6.49s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_confirms_against_the_status_file
+[slow] 6.48s tests/runner/test_app_sessions_native_events_options.py::test_events_compact_on_native_session_returns_503_when_bridge_not_ready
+[slow] 6.43s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_applies_the_picked_alias_verbatim[bare-login-bracket-alias-keeps-its-context-marker]
+[slow] 6.41s tests/runner/test_app_sessions_native_events_options.py::test_events_permission_mode_change_returns_503_when_mode_unreachable
+[slow] 6.41s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_rejects_a_model_the_picker_cannot_spell
+[slow] 6.41s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_unconfirmed_switch_answers_503
+[slow] 6.39s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_session_on_native_returns_503_when_kill_fails
+[slow] 6.38s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_session_on_native_kills_tmux_and_publishes_idle
+[slow] 6.31s tests/runner/test_app_sessions_native_events_options.py::test_events_effort_change_on_native_session_skips_inject_for_unsupported_level[none]
+[slow] 6.29s tests/runner/test_app_sessions_native_supervision.py::test_events_interrupt_on_native_session_injects_escape_without_marker
+[slow] 6.26s tests/runner/test_app_sessions_native_events_lifecycle.py::test_stop_session_on_native_subagent_without_parent_inbox_returns_204
+[slow] 6.25s tests/runner/test_app_sessions_native_events_options.py::test_events_native_dispatch_resolves_bridge_id_via_label_lookup[effort_change]
+[slow] 6.23s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_codex_native_model_change_without_bridge_fails_loud
+[slow] 6.20s tests/runner/test_app_sessions_native_events_lifecycle.py::test_cursor_native_model_options_failure_is_retryable
+[slow] 6.07s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_on_native_session_types_slash_command
+[slow] 6.03s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_on_native_session_skips_inject_for_empty_or_null[None]
+[slow] 6.01s tests/runner/test_app_sessions_native_workflow_init.py::test_native_session_create_seeds_harness_compaction_anchor
+[slow] 6.00s tests/runner/test_app_sessions_native_events_options.py::test_events_native_dispatch_resolves_bridge_id_via_label_lookup[model_change]
+[slow] 5.98s tests/runner/test_app_sessions_native_events_options.py::test_events_effort_change_on_native_session_skips_inject_for_unsupported_level[None]
+[slow] 5.96s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_applies_the_picked_alias_verbatim[gateway-unpinned-family-is-never-swapped-for-the-default]
+[slow] 5.93s tests/runner/test_app_sessions_native_events_options.py::test_events_compact_on_native_session_types_slash_command
+[slow] 5.85s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_applies_the_picked_alias_verbatim[pinned-bracket-alias-passes-through]
+[slow] 5.82s tests/runner/test_app_sessions_native_events_lifecycle.py::test_codex_native_model_options_returns_503_until_bridge_state_exists
+[slow] 5.79s tests/runner/test_app_sessions_native_events_options.py::test_events_permission_mode_change_on_native_session_switches_and_echoes_mode
+[slow] 5.77s tests/runner/test_app_sessions_native_events_options.py::test_events_effort_change_on_native_session_skips_inject_for_unsupported_level[minimal]
+[slow] 5.66s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_on_native_session_skips_inject_for_empty_or_null[   ]
+[slow] 5.65s tests/runner/test_app_sessions_native_workflow_messages.py::test_session_creation_does_not_replay_trailing_user_for_codex_native
+[slow] 5.65s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_codex_native_plan_mode_requires_loaded_bridge
+[slow] 5.62s tests/runner/test_app_sessions_native_events_lifecycle.py::test_kiro_native_model_options_failure_is_retryable
+[slow] 5.58s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_on_native_session_skips_inject_for_empty_or_null[]
+[slow] 5.49s tests/runner/test_app_sessions_native_workflow_messages.py::test_catch_up_scan_skips_codex_native_history_entries
+[slow] 5.48s tests/runner/test_app_sessions_native_events_lifecycle.py::test_stop_session_on_native_subagent_reclaims_work_entry
+[slow] 5.47s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_session_on_codex_native_hard_stops_without_marker
+[slow] 5.41s tests/runner/test_runner_dispatch.py::test_cross_path_resolution_contract[resolver_raises-background-async-failure]
+[slow] 5.41s tests/runner/test_app_sessions_native_workflow_messages.py::test_cancelled_turn_publishes_idle_so_client_unsticks
+[slow] 5.38s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_effort_change_on_native_session_types_slash_command
+[slow] 5.32s tests/runner/test_app_sessions_native_events_options.py::test_events_compact_on_pi_native_returns_503_when_inbox_unwritable
+[slow] 5.15s tests/runner/test_app_sessions_native_supervision.py::test_interrupt_inserts_cancellation_items_in_history
+[slow] 5.12s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_on_cursor_native_session_returns_503_when_not_ready
+[slow] 4.87s tests/runner/test_app_sessions_native_workflow_messages.py::test_interrupt_forwards_to_harness_before_cancelling
+[slow] 4.84s tests/runner/test_app_sessions_native_events_options.py::test_events_effort_change_on_cursor_native_session_is_disabled_noop[medium]
+[slow] 4.76s tests/runner/test_app_sessions_native_events_options.py::test_events_compact_on_cursor_native_503_dismisses_spinner_on_inject_failure[inject_exc1-oserror]
+[slow] 4.74s tests/runner/test_app_sessions_native_supervision.py::test_interrupt_marker_instructs_model_to_disregard_abandoned_request
+[slow] 4.74s tests/runner/test_app_sessions_native_workflow_init.py::test_stop_session_clears_in_flight_marker
+[slow] 4.72s tests/runner/test_app_sessions_native_events_lifecycle.py::test_cursor_native_model_options_use_cli_catalog
+[slow] 4.65s tests/runner/test_app_sessions_native_events_options.py::test_events_compact_on_cursor_native_503_dismisses_spinner_on_inject_failure[inject_exc0-runtime]
+[slow] 4.54s tests/runner/test_app_sessions_native_supervision.py::test_interrupt_cancel_floor_finalizes_stuck_turn
+[slow] 4.52s tests/runner/test_app_sessions_native_events_options.py::test_events_compact_on_qwen_native_503_dismisses_spinner_on_submit_failure
+[slow] 4.51s tests/runner/test_app_sessions_native_supervision.py::test_stop_session_cancels_inprocess_turn
+[slow] 4.50s tests/runner/test_app_sessions_native_supervision.py::test_message_turn_lifecycle_status_suppressed_for_terminal_backed_harnesses[antigravity-native-expected_statuses2]
+[slow] 4.36s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_on_cursor_native_session_skips_inject_for_empty[None]
+[slow] 4.27s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_on_codex_native_with_turn_and_mcp_stops_both
+[slow] 4.26s tests/runner/test_app_sessions_native_events_options.py::test_events_effort_change_on_cursor_native_session_is_disabled_noop[xhigh]
+[slow] 4.24s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_on_cursor_native_session_skips_inject_for_empty[]
+[slow] 4.21s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_on_cursor_native_session_types_slash_command
+[slow] 4.16s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_session_on_kiro_native_503_when_kill_fails
+[slow] 4.14s tests/runner/test_app_sessions_native_events_options.py::test_events_effort_change_on_cursor_native_session_is_disabled_noop[None]
+[slow] 4.11s tests/runner/test_app_sessions_native_terminals_runtime.py::test_create_session_threads_cursor_bridge_dir_without_dead_guard_env
+[slow] 4.06s tests/runner/test_app_sessions_native_events_options.py::test_events_effort_change_on_cursor_native_session_is_disabled_noop[]
+[slow] 4.06s tests/runner/test_app_sessions_native_events_options.py::test_events_compact_on_cursor_native_pastes_summarize_and_raises_spinner
+[slow] 4.02s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_on_cursor_native_session_skips_inject_for_empty[   ]
+[slow] 3.98s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_on_codex_native_cancels_mcp_startup_without_active_turn[interrupt]
+[slow] 3.97s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_on_codex_native_without_turn_or_mcp_is_noop
+[slow] 3.95s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_and_stop_on_pi_native_enqueue_bridge_interrupt[stop_session]
+[slow] 3.95s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_model_change_on_pi_native_enqueues_bridge_model_change
+[slow] 3.84s tests/runner/test_app_sessions_native_events_options.py::test_events_effort_change_on_cursor_native_session_is_disabled_noop[high]
+[slow] 3.83s tests/runner/test_app_sessions_native_events_options.py::test_events_compact_on_qwen_native_submits_compress_and_raises_spinner
+[slow] 3.83s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_on_kiro_native_503_skips_idle_when_inject_fails
+[slow] 3.80s tests/runner/test_app_sessions_native_events_options.py::test_events_compact_on_pi_native_enqueues_compact_payload
+[slow] 3.79s tests/runner/test_app_sessions_native_events_options.py::test_events_model_change_on_kiro_session_types_slash_command
+[slow] 3.78s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_on_kiro_native_routes_to_escape
+[slow] 3.77s tests/runner/test_app_sessions_native_events_options.py::test_events_effort_change_on_cursor_native_session_is_disabled_noop[low]
+[slow] 3.75s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_and_stop_on_pi_native_enqueue_bridge_interrupt[interrupt]
+[slow] 3.71s tests/runner/test_app_sessions_native_events_lifecycle.py::test_kiro_native_model_options_use_cli_catalog
+[slow] 3.70s tests/runner/test_app_sessions_native_events_lifecycle.py::test_opencode_native_model_options_uses_cli_catalog
+[slow] 3.55s tests/runner/test_app_sessions_native_terminals_runtime.py::test_create_session_threads_kiro_bridge_dir
+[slow] 3.45s tests/runner/test_runner_dispatch.py::test_runner_resolves_harness_from_fallback_when_no_agent_id
+[slow] 3.39s tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_session_on_kiro_native_kills_tmux_and_publishes_idle
+[slow] 3.32s tests/runner/test_runner_dispatch.py::test_runner_failed_status_carries_setup_error_message
+[slow] 3.31s tests/test_claude_native_bridge.py::test_inject_user_message_ignores_prompt_glyph_in_scrollback
+[slow] 3.20s tests/runner/test_app_sessions_native_terminal_routing.py::test_create_session_terminal_ensure_failure_returns_json_without_live_error
+[slow] 3.19s tests/runner/test_runner_dispatch.py::test_cross_path_resolution_contract[resolver_raises-no_harness-503]
+[slow] 3.10s tests/runner/test_runner_dispatch.py::test_runner_background_turn_emits_failed_when_spawn_env_build_raises
+[slow] 2.58s tests/runner/test_runner_dispatch.py::test_cross_path_resolution_contract[child_missing-background-parent]
+[slow] 2.47s tests/runner/test_delete_session_bridge_cleanup.py::test_spec_fill_parked_across_delete_discards
+[slow] 2.44s tests/runner/transports/test_tcp_transport.py::test_runner_tcp_subprocess_starts_and_binds_port
+[slow] 2.38s tests/runner/test_runner_dispatch.py::test_setup_cancel_does_not_leave_active_turn
+[slow] 2.36s tests/runner/test_discovery_list_pagination.py::test_sys_agent_list_pages_local_configs_beyond_server_fetch_limit
+[slow] 2.35s tests/runner/transports/test_tcp_transport.py::test_runner_tcp_subprocess_with_explicit_port
+[slow] 2.34s tests/runner/test_runner_dispatch.py::test_runner_post_returns_503_when_spec_resolver_fails
+[slow] 2.33s tests/runner/transports/test_tcp_transport.py::test_post_session_events_stub_via_tcp
+[slow] 2.30s tests/runner/transports/test_tcp_transport.py::test_health_round_trip_via_tcp
+[slow] 2.28s tests/runner/transports/test_uds_transport.py::test_health_round_trip_via_uds
+[slow] 2.27s tests/runner/transports/test_tcp_transport.py::test_runner_tcp_subprocess_cleans_up_on_exit
+[slow] 2.27s tests/runner/transports/test_uds_transport.py::test_post_session_events_stub_via_uds
+[slow] 2.26s tests/terminals/test_control_bridge.py::test_control_bridge_streams_large_output_burst
+[slow] 2.25s tests/runner/transports/test_uds_transport.py::test_runner_subprocess_starts_and_binds_socket
+[slow] 2.24s tests/runner/transports/test_uds_transport.py::test_runner_subprocess_with_explicit_socket_path
+[slow] 2.20s tests/runner/test_app_sessions_native_terminals_runtime.py::test_codex_discover_thread_and_forward_persists_workspace_as_bridge_cwd
+[slow] 2.19s tests/runner/transports/test_uds_transport.py::test_runner_subprocess_cleans_up_on_exit
+[slow] 2.14s tests/runner/test_runner_dispatch.py::test_cross_path_resolution_contract[child_present-background]
+[slow] 2.14s tests/runner/test_runner_dispatch.py::test_cross_path_resolution_contract[resolver_none-background]
+[slow] 2.13s tests/runner/test_runner_dispatch.py::test_cross_path_resolution_contract[resolver_none-no_harness-503]
+[slow] 2.12s tests/runner/test_runner_dispatch.py::test_cross_path_resolution_contract[cache_holds_child-background-shortcut]
+[slow] 2.08s tests/terminals/test_control_bridge.py::test_control_bridge_burst_then_exit_delivers_full_tail
+[slow] 2.02s tests/runner/test_comment_relay.py::test_failed_launch_rolls_back_the_relay_it_started
+[slow] 2.02s tests/test_claude_native_bridge.py::test_set_permission_mode_raises_when_footer_never_renders
+[slow] 1.92s tests/runner/test_hindsight_local_dispatch.py::test_retain_dispatch_uses_agent_id_as_bank
+[slow] 1.82s tests/runner/test_runner_dispatch.py::test_recovery_stream_mode_clears_gate_even_when_interrupt_fails
+[slow] 1.82s tests/test_claude_native_bridge.py::test_hook_evaluate_endpoint_fails_closed_on_unreachable_upstream
+[slow] 1.71s tests/runner/test_app_sessions_native_supervision.py::test_interrupt_during_setup_phase_recovers_stuck_turn
+[slow] 1.60s tests/runner/test_runner_dispatch.py::test_runner_read_inbox_continues_after_malformed_terminal_idle_item
+[slow] 1.55s tests/runner/test_comment_relay.py::test_relay_policy_evaluate_truncates_long_upstream_error
+[slow] 1.55s tests/terminals/test_control_bridge.py::test_control_bridge_seeds_streams_and_detaches
+[slow] 1.53s tests/runner/test_app_sessions_native_workflow_init.py::test_sessions_native_clears_in_flight_when_stream_errors
+[slow] 1.52s tests/runner/test_app_sessions_native_workflow_init.py::test_ensure_native_terminal_builder_error_returns_500
+[slow] 1.42s tests/runner/test_app_sessions_native_workflow_init.py::test_launch_native_terminal_publishes_start_error_on_failure
+[slow] 1.39s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_cursor_terminal_injects_spec_model
+[slow] 1.38s tests/test_claude_native_bridge.py::test_channel_server_relays_active_omnigent_tools
+[slow] 1.35s tests/terminals/test_ws_common.py::test_importing_claude_native_does_not_import_fastapi
+[slow] 1.35s tests/runner/test_app_sessions_native_events_options.py::test_events_compact_on_codex_native_returns_503_on_tmux_failure
+[slow] 1.34s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_cursor_terminal_wires_yolo_auto_accept[short-force]
+[slow] 1.34s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_cursor_terminal_wires_yolo_auto_accept[force]
+[slow] 1.33s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_cursor_terminal_omits_model_when_unusable[databricks-dash]
+[slow] 1.33s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_cursor_terminal_user_model_wins[split]
+[slow] 1.31s tests/test_claude_native_bridge.py::test_serve_mcp_survives_handler_exception_and_keeps_serving
+[slow] 1.29s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_cursor_terminal_wires_yolo_auto_accept[none]
+[slow] 1.28s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_cursor_terminal_wires_yolo_auto_accept[auto-review]
+[slow] 1.26s tests/terminals/test_control_bridge.py::test_control_bridge_read_only_drops_input
+[slow] 1.24s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_cursor_terminal_user_model_wins[joined]
+[slow] 1.24s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_cursor_terminal_omits_model_when_unusable[empty]
+[slow] 1.23s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_cursor_terminal_omits_model_when_unusable[none]
+[slow] 1.23s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_cursor_terminal_user_model_wins[short]
+reaped leaked omnigent process: /home/coder/omnigent-dev/.venv/bin/python3 -m omnigent.inner.os_env helper --config-fd 63
+
+reaped leaked omnigent process: /home/coder/omnigent-dev/.venv/bin/python3 -m omnigent.inner.os_env helper --config-fd 63
+
+reaped leaked omnigent process: /home/coder/omnigent-dev/.venv/bin/python3 -m omnigent.inner.os_env helper --config-fd 63
+
+reaped leaked omnigent process: /home/coder/omnigent-dev/.venv/bin/python3 -m omnigent.inner.os_env helper --config-fd 63
+
+[slow] 1.23s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_cursor_terminal_omits_model_when_unusable[databricks-slash]
+[slow] 1.20s tests/runner/test_runner_dispatch.py::test_runner_stream_emits_failed_when_tool_spec_resolver_fails
+[slow] 1.18s tests/runner/test_app_sessions_native_workflow_messages.py::test_midturn_message_not_double_delivered_to_harness
+[slow] 1.18s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_cursor_terminal_wires_yolo_auto_accept[yolo-off]
+[slow] 1.18s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_cursor_terminal_wires_yolo_auto_accept[yolo]
+[slow] 1.15s tests/runner/test_environment_filesystem.py::test_shell_timeout_returns_structured_result
+[slow] 1.07s tests/tools/builtins/test_sys_terminal.py::test_launch_does_not_deliver_idle_messages
+[slow] 1.06s tests/runner/test_comment_relay.py::test_relay_policy_evaluate_surfaces_upstream_error_in_502_body
+[slow] 1.06s tests/terminals/test_control_bridge.py::test_control_bridge_ignores_copy_without_recent_input
+[slow] 1.03s tests/runner/test_app_sessions_native_terminals_runtime.py::test_codex_discover_thread_and_forward_cleans_up_on_discovery_failure
+[slow] 1.03s tests/runner/test_app_sessions_native_terminals_autocreate.py::test_a_routed_claude_native_launch_keeps_the_spawn_gate_and_the_pin
+[slow] 1.01s tests/runner/test_runner_dispatch.py::test_get_client_isolates_respawn_hook_failure
+=========================== short test summary info ============================
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_codex_native_model_options_follow_labeled_foreign_bridge
+FAILED tests/runner/test_uc_function.py::test_execute_uc_function_warehouse_from_env
+FAILED tests/runner/test_uc_function.py::test_execute_uc_function_success - M...
+FAILED tests/runner/test_uc_function.py::test_execute_uc_function_failed_statement
+FAILED tests/runner/test_uc_function.py::test_execute_uc_function_null_result
+5 failed, 2726 passed, 2 skipped, 4 xfailed, 7 warnings in 2516.11s (0:41:56)

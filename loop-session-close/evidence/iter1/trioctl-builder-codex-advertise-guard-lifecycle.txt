@@ -1,0 +1,41 @@
+🤖 Done. Here's the report.
+
+## Files changed
+
+- `tests/runner/test_app_sessions_native_events_lifecycle.py` (+51 lines): added `_stub_codex_auto_create` helper next to the other fakes and called it from the 3 specified tests.
+
+Unrelated edits preserved (untouched): `omnigent/runner/native/orchestration.py` (getattr), `tests/runner/test_app_sessions_native_events_options.py`, `tests/runner/test_app_sessions_native_wake_forwarders.py`. No commit/push. `/home/coder/omnigent` untouched.
+
+## Summary
+
+Added one helper (34 lines, under the 40-line cap) that monkeypatches `omnigent.runner.native.orchestration._auto_create_codex_terminal` to return a `SessionResourceView` (already imported) without launching tmux or clearing bridge state — mirroring the compact 503 stub in `test_app_sessions_native_events_options.py`. Called it from the 3 listed tests, each with a comment explaining that auto-create on `POST /v1/sessions` would otherwise wipe the pre-seeded bridge state when no `terminal_registry` is configured. Did not stub production, did not skip, did not touch `test_uc_function.py`.
+
+## Exact verification results
+
+Command: `uv run --project /home/coder/omnigent-dev pytest -q <the 3 tests>`
+
+```
+1 failed, 4 passed in 1.05s
+PASSED test_events_codex_native_settings_change_uses_thread_settings_update[model_change]
+PASSED test_events_codex_native_settings_change_uses_thread_settings_update[effort_change]
+PASSED test_events_codex_native_settings_change_uses_thread_settings_update[plan_mode_change]
+PASSED test_events_interrupt_on_codex_native_uses_turn_interrupt_without_marker
+FAILED test_codex_native_model_options_follow_labeled_foreign_bridge
+```
+
+The 3 settings/interrupt tests the helper targets now pass. Test 2 fails at `assert mutation_resp.status_code == 204` (got 503).
+
+## Concerns
+
+**Test 2 is a different failure class — the helper cannot fix it, and the task's "only edit the test file / do not stub production / do not skip" constraints forbid the fix.**
+
+- Tests 1 & 3 seed the session's **own** bridge dir; `_auto_create_codex_terminal` calls `prepare_bridge_dir(session_id)` on that same dir, so auto-create wipes the seeded state → helper fixes them. ✓
+- Test 2 seeds a **labeled parent** bridge (`bridge_parent_rotation`, owned by `parent_id`). Auto-create uses the **child's** `session_id`, not the label, so it never touches the seeded parent bridge. The model-options GET reads the labeled parent bridge and returns 200 (passes). The mutation `model_change` resolves to the parent bridge, finds `state.session_id != child`, and production returns **503** ("bridge belongs to parent") — but the test asserts **204**.
+
+I verified this is pre-existing and helper-independent: at the test's own origin commit `c1128dc3c` (with original `orchestration.py`), test 2 already fails the same way. Production returns 503 for owner-bound mutations since commit `1732faf3f` (Aug 20), which predates the test (Sep 7) — so this test has never passed; it is **not** the "auto-create wipes bridge" class the task describes.
+
+To make test 2 pass, one of these is required (both outside my task scope):
+1. **Production change** (matches the test's intent): in `omnigent/runner/app.py` `_handle_codex_native_settings_update` / `_codex_native_bridge_state_for_session`, distinguish "no bridge" (503) from "owner-bound bridge" and return 204 for the latter. This contradicts "only edit the test file."
+2. **Test-assertion change**: assert `503` instead of `204`. This reverses the test's documented intent ("mutating settings must stay owner-bound" → no-op 204) and was not authorized.
+
+I left test 2's assertion untouched and did not modify production. Recommend the Lead confirm which path to take for test 2.

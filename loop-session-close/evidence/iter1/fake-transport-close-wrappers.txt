@@ -1,0 +1,6 @@
+Evaluator fake-transport (httpx.MockTransport, not live server).
+Unparsable title "Lead pass" + wrapper label → closed=true and
+POST /events type=stop_session for claude-native, codex-native,
+cursor-native. Top-level conv_root → session_not_a_sub_agent.
+
+OK: unparsable+wrapper stop_session for claude/codex/cursor; top-level refused

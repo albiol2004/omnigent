@@ -1,0 +1,1 @@
+trioctl: Cursor builder failed to run: Command '['/home/coder/.local/bin/cursor-agent', '-p', '--output-format', 'text', '--model', 'glm-5.2-max', '--force', '--trust', '--approve-mcps', '--workspace', '/home/coder/omnigent-dev']' timed out after 1800.0 seconds

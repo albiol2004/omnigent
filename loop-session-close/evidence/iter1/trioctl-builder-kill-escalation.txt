@@ -1,0 +1,66 @@
+All work is complete and verified. Here is the slice report.
+
+## Files changed (kill-escalation slice only)
+
+| File | Change |
+|------|--------|
+| `omnigent/native_tmux_kill.py` | **NEW** (147 lines, <200) — shared leftover-pane SIGKILL escalation: `recorded_tmux_pid`, `tmux_pane_pid`, `kill_leftover_tmux_process`, and combined `kill_session_with_escalation`. Reuses `_proc.process_alive`/`_proc._killpg` exactly as Claude did. |
+| `omnigent/claude_native_bridge.py` | `kill_session` now delegates to the shared helper (behavior unchanged). Removed the 3 inlined helpers + 2 kill-verify constants + the now-unused `from omnigent.inner import _proc`. |
+| `omnigent/cursor_native_bridge.py` | `kill_session` now escalates leftover pids (was plain `tmux kill-session`). |
+| `omnigent/codex_native_bridge.py` | `kill_session` now escalates leftover pids (was plain `tmux kill-session`). |
+| `tests/test_claude_native_bridge.py` | Repointed 4 `_proc` monkeypatch targets `claude_native_bridge._proc` → `native_tmux_kill._proc` (same module object); added import. |
+| `tests/test_cursor_native_bridge.py` | Added basic kill test + `test_kill_session_escalates_live_pane_after_tmux_kill`. |
+| `tests/test_codex_native_bridge.py` | Made existing basic kill test deterministic (patch `process_alive=False`); added `test_kill_session_escalates_live_pane_after_tmux_kill`. |
+
+## Summary
+
+Factored Claude's `_recorded_tmux_pid` / `_tmux_pane_pid` / `_kill_leftover_tmux_process` plus their two kill-verify timeout constants into a new focused `omnigent/native_tmux_kill.py` (147 lines, heavily commented). The new module exposes a combined `kill_session_with_escalation(bridge_dir, *, socket_path, tmux_target, kill_session_fn)` that resolves the pane pid (recorded in `tmux.json`, falling back to `tmux list-panes`), runs `kill-session` via the bridge's own `_run_tmux` callback (so each bridge's error messages stay authoritative), then SIGKILLs any leftover pane process group through `_proc._killpg` — the exact protocol Claude already used, no new kill protocol invented.
+
+Claude's `kill_session` now calls the shared helper with behavior preserved (same call sequence: list-panes → kill-session → SIGKILL). Cursor and Codex `kill_session` previously did a plain `tmux kill-session`; they now follow Claude's pattern and escalate leftover pids too. No other bridges were churned.
+
+## Exact verification results
+
+```
+$ uv run --project /home/coder/omnigent-dev pytest -q \
+    tests/test_claude_native_bridge.py tests/test_cursor_native_bridge.py tests/test_codex_native_bridge.py
+326 passed in 48.22s   (exit 0)
+```
+
+Plus the caller of `codex_native_bridge.kill_session` (stop-routing integration):
+```
+$ uv run --project /home/coder/omnigent-dev pytest -q tests/runner/test_native_interrupt_runner.py
+16 passed in 0.21s   (exit 0)
+```
+
+Ruff on all touched files:
+```
+$ uv run --project /home/coder/omnigent-dev ruff check <7 touched files>
+All checks passed!   (2 import-order issues auto-fixed first)
+```
+
+`python3 -m py_compile` on all 7 files: `PY_COMPILE_OK`.
+
+## Concerns
+
+- **Test patch target moved.** Removing `from omnigent.inner import _proc` from `claude_native_bridge` meant the Claude test's `monkeypatch.setattr(claude_native_bridge._proc, ...)` would break. I repointed those 4 references to `native_tmux_kill._proc` — the brief's anticipated "import path updates if tests patched `claude_native_bridge._proc`". `native_tmux_kill._proc` is the *same* `omnigent.inner._proc` module object, so attribute patching is equivalent. Verified no other file imports `_proc` from `claude_native_bridge`.
+- **`recorded_tmux_pid` JSON read** catches `OSError`/`ValueError` (slightly broader than Claude's old `FileNotFoundError`/`JSONDecodeError`). Observably identical for all tests; strictly more robust against a torn/unreadable `tmux.json`. No tested behavior changed.
+- **Existing codex basic kill test** wrote `pid=12345` and relied on codex *not* escalating. Now that codex escalates, I patched `process_alive=False` there to keep it deterministic and avoid any real `os.killpg` on pid 12345 — mirrors Claude's basic test exactly.
+- **Unrelated edits preserved.** `omnigent/runner/app.py`, `omnigent/terminals/pane_reaper.py`, `README.md`, `loop-session-close/STATE.md`, `tests/terminals/test_pane_reaper.py` are modified in the worktree by other slices (reaper/readme/stop-routing) — I did not touch them.
+- No commit/push. No mailbox files touched. No `/home/coder/omnigent`, port 6767, `omni` processes, or whole-file ingest of `tool_dispatch.py`/`app.py`.
+
+## How to verify (for a human)
+
+```
+uv run --project /home/coder/omnigent-dev pytest -q \
+  tests/test_claude_native_bridge.py \
+  tests/test_cursor_native_bridge.py \
+  tests/test_codex_native_bridge.py
+```
+Expect `326 passed`. To see the new escalation coverage specifically:
+```
+uv run --project /home/coder/omnigent-dev pytest -q \
+  tests/test_cursor_native_bridge.py::test_kill_session_escalates_live_pane_after_tmux_kill \
+  tests/test_codex_native_bridge.py::test_kill_session_escalates_live_pane_after_tmux_kill \
+  tests/test_claude_native_bridge.py::test_kill_session_escalates_live_pane_after_tmux_kill
+```
+Expect `3 passed`.

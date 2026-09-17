@@ -1,0 +1,105 @@
+All work is complete and verified. Here is my report.
+
+## Files changed
+
+- `omnigent/terminals/pane_reaper.py` — added `_ProcessManagerLike` protocol + `_pane_is_busy_after_harness` helper; imports extended with `Collection`, `Mapping`, `Protocol`.
+- `omnigent/runner/app.py` — `_native_pane_is_busy` now delegates to the helper; import updated (dropped now-unused `PANE_OUTPUT_BUSY_WINDOW_S`, added `_pane_is_busy_after_harness`).
+- `tests/terminals/test_pane_reaper.py` — added 9 busy-predicate unit tests + `_FakePM` + `_tmux_fakes` fixtures.
+
+No other files touched. Pre-existing `README.md` / `loop-session-close/*` edits preserved.
+
+## Summary
+
+The bug: after the 1h harness idle reaper calls `release`, `HarnessProcessManager.has_session` returns False, but `release` only pops the PM `_entries` — it does **not** close the native tmux pane. The vendor TUI (notably `cursor`) keeps redrawing, so the old `_native_pane_is_busy` stayed True forever via a stale `"running"` status (cleared only on `delete_session`) and fresh tmux `window_activity`. Leaked panes were never reaped.
+
+The fix: after the in-flight-turn check, if a `process_manager` exists and `not has_session(conv_id)` (harness subprocess gone), the pane is **orphaned** — only an attached tmux client (a human) spares it. Stale `"running"` and redraw-driven `window_activity` are ignored for that pane. When `process_manager is None` (tests/runners without a PM), the original busy signals are kept unchanged.
+
+The busy logic was extracted into `pane_reaper.py` so it is unit-testable without importing the 10k-line runner app:
+
+```96:162:omnigent/terminals/pane_reaper.py
+class _ProcessManagerLike(Protocol):
+    """Subset of ``HarnessProcessManager`` the busy predicate consults.
+
+    A narrow protocol keeps the helper testable with a fake and decouples it
+    from the runtime harness module, so tests never import the 10k-line app.
+    """
+
+    def has_session(self, conversation_id: str) -> bool:
+        """``True`` if a harness subprocess entry is registered for the id."""
+
+    def has_active_turn(self, conversation_id: str) -> bool:
+        """``True`` if an in-flight harness turn is streaming for the id."""
+
+
+async def _pane_is_busy_after_harness(
+    *,
+    conv_id: str,
+    socket_path: Path,
+    active_turns: Collection[str],
+    process_manager: _ProcessManagerLike | None,
+    native_pane_status: Mapping[str, str],
+    list_tmux_clients: Callable[[str, str], list[object]],
+    tmux_window_activity_at: Callable[[str, str], float | None],
+    now: float,
+) -> bool:
+    # ... more code ...
+    # Harness subprocess is gone. release() only pops the PM entry; it does NOT
+    # close the native tmux pane, and the vendor TUI keeps redrawing. A stale
+    # "running" status (cleared only on delete_session) or fresh window_activity
+    # would pin this leaked pane forever — only an attached human spares it.
+    if process_manager is not None and not process_manager.has_session(conv_id):
+        clients = await asyncio.to_thread(list_tmux_clients, str(socket_path), "main")
+        return bool(clients)
+    # ... more code ...
+    return activity_at is not None and now - activity_at < PANE_OUTPUT_BUSY_WINDOW_S
+```
+
+The app.py caller is now a thin delegate:
+
+```10641:10654:omnigent/runner/app.py
+        async def _native_pane_is_busy(pane: PaneRef) -> bool:
+            # Delegated to pane_reaper so the busy logic is unit-testable without
+            # importing this 10k-line app module. See _pane_is_busy_after_harness
+            # for why an orphaned pane (harness released) ignores stale "running"
+            # status and TUI-redraw window_activity — only a tmux client spares it.
+            return await _pane_is_busy_after_harness(
+                conv_id=pane.conversation_id,
+                socket_path=pane.socket_path,
+                active_turns=_active_turns,
+                process_manager=process_manager,
+                native_pane_status=_native_pane_status,
+                list_tmux_clients=_list_tmux_clients,
+                tmux_window_activity_at=_tmux_window_activity_at,
+                now=time.time(),
+            )
+```
+
+## Exact verification results
+
+```
+uv run --project /home/coder/omnigent-dev pytest -q tests/terminals/test_pane_reaper.py
+Running 24 items in this shard
+........................                                                 [100%]
+24 passed in 0.36s
+```
+
+- 15 pre-existing tests still pass (no regressions).
+- 9 new tests pass, covering all four required cases plus edge cases:
+  - orphaned + stale `"running"` + fresh activity + no clients → **not busy** (reapable) ✓
+  - live harness + `"running"` → busy ✓
+  - orphaned + attached client → busy ✓
+  - in-flight turn (PM `has_active_turn`) → busy even with no session entry ✓
+  - (extra) local `active_turns` turn with no PM → busy ✓
+  - (extra) no PM + `"running"` → busy (original logic preserved) ✓
+  - (extra) no PM + fresh `window_activity` → busy (stalled-pipeline guard preserved) ✓
+  - (extra) no PM + stale `window_activity` → reapable ✓
+  - (extra) live harness + no signals + no clients → reapable ✓
+
+Also confirmed: `ruff check` on all three files → `All checks passed!`; both modules import/byte-compile cleanly.
+
+## Concerns
+
+- **Behavior is `process_manager`-gated.** The orphaned-pane fast path only triggers when a `process_manager` is wired. Runners/tests that pass `process_manager=None` keep the old logic verbatim (by design, per the brief), so a leaked pane in a no-PM runner would still be pinned by stale `"running"`/activity — acceptable since the brief scoped the fix to the PM-backed path.
+- **`now` is passed explicitly** into the helper (app passes `time.time()`). This makes the `window_activity` window deterministic in tests; behavior is identical to the original `time.time()` call at runtime.
+- **`_ProcessManagerLike` is a structural `Protocol`** matching only `has_session`/`has_active_turn`. The real `HarnessProcessManager` satisfies it structurally; no runtime import coupling added.
+- No commit/push performed; no Trio mailbox files touched; `/home/coder/omnigent` untouched.

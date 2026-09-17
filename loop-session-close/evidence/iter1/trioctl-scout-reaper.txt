@@ -1,0 +1,89 @@
+I have all the evidence needed. Here are my findings.
+
+---
+
+## Scout findings: pane-reaper vs process_manager.release
+
+### Verdict: DISPROVED on mechanism (symptom real, cause different)
+
+The hypothesis claims `release` drops state that `native_panes()` listing or the busy-check depends on. It does not.
+
+### Evidence (file:line)
+
+**1. `release` does NOT pop `_in_flight_response_ids`; `_close_entry` does NOT touch terminals.**
+
+`omnigent/runtime/harnesses/process_manager.py:1040-1109` — `release` only pops `_entries[conversation_id]` (line 1101) and bumps `_release_generations`. The idle-skip guard (1090-1099) reads `_in_flight_response_ids` but never mutates it. Only `clear_in_flight` (1025-1038) pops it, called from `_on_proxy_stream_end` on every terminal path.
+
+`_close_entry` (1334-1375) closes the httpx client, SIGTERM/kills the subprocess, closes transport, cleans the socket. **No terminal-registry / tmux interaction.**
+
+**2. `native_panes()` does NOT consult process_manager.**
+
+`omnigent/terminals/registry.py:355-377` — pure read of `_by_conversation`, filtered by `key=="main"` and `name in NATIVE_PANE_TERMINAL_NAMES`. So after `release`, the native pane **stays listed** (the reaper still sees it).
+
+**3. The busy-check reads nothing `release` drops.**
+
+`omnigent/runner/app.py:10644-10662` (`_native_pane_is_busy`) reads:
+- `_active_turns` (runner state)
+- `process_manager.has_active_turn` → `_in_flight_response_ids` (not popped by `release`)
+- `_native_pane_status.get(conv_id) == "running"` (runner state)
+- tmux clients + tmux `window_activity` (<120s)
+
+`release` touches none of these. The harness idle reaper also **skips** in-flight convs (`process_manager.py:1093`), so reaped convs were not in `_in_flight_response_ids` → `has_active_turn` is `False` after release. Confirmed by the log: all 7 convs were harness-reaped, so none were in-flight.
+
+**4. Who writes `_native_pane_status`, and can it stick at `"running"`?**
+
+Only writer: `_publish_event` on `type=="session.status"` (`app.py:2535-2538`). Only clearer: `delete_session` (`app.py:3882`). `release` never clears it.
+
+For cursor-native, status comes from the PTY watcher (`resource_registry.py:1166-1168` — "cursor-native has no forwarder/hook … the PTY watcher is its only status source"):
+- `_on_activity` (1264) → `_publish_status("running")` on every pane redraw
+- `_on_idle` (1326) → `_publish_status("idle")` only after the pane is quiet for `_CLAUDE_NATIVE_STATUS_IDLE_THRESHOLD_SECONDS`
+
+A cursor TUI that redraws periodically (spinner/status bar) never goes quiet → `_on_idle` never fires → `_native_pane_status` sticks at `"running"` forever (until `delete_session`). And tmux `window_activity` stays fresh (<120s) on every redraw → signal #5 also stays True.
+
+### Actual cause
+
+The 5 never-reaped panes have cursor TUIs that keep redrawing, so **both signal #3 (`_native_pane_status=="running"`) and signal #5 (tmux window_activity) stay True indefinitely** — independent of the harness subprocess. The 2 reaped convs (492e2359 @18:58:44, b3dbfcd8 @08:49:12) had cursor CLIs that went truly quiet (>idle threshold + >1h), so both signals cleared. The harness reaper firing at ~1h is **correlated, not causal** — both reapers share a 1h window; the harness reaper kills the SDK proxy, but the pane's busy signals are driven by the PTY watcher + tmux, which `release` never touches.
+
+### Smallest fix site
+
+`_native_pane_is_busy` at `omnigent/runner/app.py:10644-10662`. Once the harness subprocess is released, the pane is **orphaned** — TUI redraws and stale `"running"` should not pin it. Gate signals #3 and #5 on harness liveness, falling through to the tmux-client check only (a human still watching spares it):
+
+```python
+# After harness release the pane is orphaned; only an attached
+# human client still spares it. Stale "running" + TUI redraws must
+# not pin a leaked pane forever.
+if process_manager is not None and not process_manager.has_entry(conv_id):
+    clients = await asyncio.to_thread(_list_tmux_clients, str(pane.socket_path), "main")
+    return bool(clients)
+```
+
+`has_entry` (`process_manager.py:~978`, `conversation_id in self._entries`) is a valid liveness signal: native harnesses register via `get_client` (`process_manager.py:840`), confirmed by the log (harness reaper fired for all 7 native convs). Place this guard **after** the `_active_turns`/`has_active_turn` check (a turn in flight still spares the pane) and **before** the `_native_pane_status`/window-activity checks.
+
+### Unit test (no live server)
+
+Fake `process_manager` + fake `list_native_panes` + an `is_busy` mirroring `_native_pane_is_busy`:
+
+```python
+class FakePM:
+    def __init__(self, entries, inflight):
+        self._entries, self._inflight = entries, inflight
+    def has_entry(self, c): return c in self._entries
+    def has_active_turn(self, c): return c in self._inflight
+
+async def fake_is_busy(conv, pm, status, activity_at, clients):
+    if pm.has_active_turn(conv): return True
+    if pm is not None and not pm.has_entry(conv):
+        return bool(clients)              # orphaned → client-only
+    if status == "running": return True
+    if clients: return True
+    return activity_at is not None and time.time() - activity_at < 120
+
+# Assert: orphaned + stale "running" + fresh activity + no client → reapable
+assert await fake_is_busy("c1", FakePM(set(), set()), "running", time.time(), []) is False
+# Assert: alive harness + "running" → busy
+assert await fake_is_busy("c1", FakePM({"c1"}, set()), "running", None, []) is True
+# Assert: orphaned + attached client → spared
+assert await fake_is_busy("c1", FakePM(set(), set()), "running", time.time(), ["x"]) is True
+```
+
+This directly encodes the gating logic and needs no server, tmux, or subprocess.

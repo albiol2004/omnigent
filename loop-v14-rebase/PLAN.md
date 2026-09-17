@@ -156,3 +156,161 @@ tests above are not decisive.
 
 After product commits:
 `python3 /home/coder/personal/trio-agent-loop/metrics/trio-shadow.py --mailbox loop-v14-rebase --require-commits`
+
+```yaml
+slices:
+  - id: kill-on-close
+    repo: .
+    writes:
+      - omnigent/harnesses/claude_native/bridge.py
+      - omnigent/runner/native/interrupt.py
+      - omnigent/runner/tool_dispatch.py
+      - tests/inner/test_proc_and_platform.py
+      - tests/runner/test_native_interrupt_runner.py
+      - tests/runner/test_runner_dispatch.py
+      - tests/test_claude_native_bridge.py
+    reads:
+      - loop-v14-rebase/GOAL.md
+      - loop-v14-rebase/PLAN.md
+    gate: true
+    status: complete
+    iteration: 1
+  - id: codex-bridge-owner
+    repo: .
+    writes:
+      - omnigent/runner/app.py
+      - tests/runner/test_app_sessions_native_events_lifecycle.py
+    reads:
+      - loop-v14-rebase/GOAL.md
+      - loop-v14-rebase/PLAN.md
+    gate: true
+    status: complete
+    iteration: 1
+  - id: compact-on-fork-cross-harness
+    repo: .
+    writes:
+      - omnigent/harnesses/codex_native/main.py
+      - tests/test_codex_native.py
+    reads:
+      - loop-v14-rebase/GOAL.md
+      - loop-v14-rebase/PLAN.md
+    gate: true
+    status: complete
+    iteration: 1
+  - id: session-contract
+    repo: .
+    writes:
+      - omnigent/server/routes/sessions/__init__.py
+      - omnigent/harnesses/claude_native/bridge.py
+    reads:
+      - loop-v14-rebase/GOAL.md
+      - loop-v14-rebase/PLAN.md
+    gate: true
+    status: complete
+    iteration: 1
+  - id: close-guard
+    repo: .
+    writes:
+      - omnigent/runner/tool_dispatch.py
+      - omnigent/tools/builtins/spawn.py
+      - tests/runner/test_runner_dispatch.py
+      - tests/tools/builtins/test_sys_session.py
+    reads:
+      - loop-v14-rebase/GOAL.md
+      - loop-v14-rebase/PLAN.md
+    gate: true
+    status: complete
+    iteration: 1
+  - id: stop-routing
+    repo: .
+    writes:
+      - omnigent/harnesses/codex_native/bridge.py
+      - omnigent/runner/native/interrupt.py
+      - omnigent/runner/native/orchestration.py
+      - omnigent/runner/tool_dispatch.py
+      - tests/runner/test_app_sessions_native_events_lifecycle.py
+      - tests/runner/test_native_interrupt_runner.py
+      - tests/runner/test_runner_dispatch.py
+      - tests/test_codex_native_bridge.py
+    reads:
+      - loop-v14-rebase/GOAL.md
+      - loop-v14-rebase/PLAN.md
+    gate: true
+    status: complete
+    iteration: 1
+  - id: kill-escalation
+    repo: .
+    writes:
+      - omnigent/harnesses/claude_native/bridge.py
+      - omnigent/harnesses/codex_native/bridge.py
+      - omnigent/harnesses/cursor_native/bridge.py
+      - omnigent/native_tmux_kill.py
+      - tests/test_claude_native_bridge.py
+      - tests/test_codex_native_bridge.py
+      - tests/test_cursor_native_bridge.py
+    reads:
+      - loop-v14-rebase/GOAL.md
+      - loop-v14-rebase/PLAN.md
+    gate: true
+    status: complete
+    iteration: 1
+  - id: reaper
+    repo: .
+    writes:
+      - omnigent/terminals/pane_reaper.py
+      - omnigent/runner/app.py
+      - tests/terminals/test_pane_reaper.py
+    reads:
+      - loop-v14-rebase/GOAL.md
+      - loop-v14-rebase/PLAN.md
+    gate: true
+    status: complete
+    iteration: 1
+  - id: codex-advertise-guard
+    repo: .
+    writes:
+      - omnigent/runner/native/orchestration.py
+      - tests/runner/test_app_sessions_native_events_lifecycle.py
+      - tests/runner/test_app_sessions_native_events_options.py
+      - tests/runner/test_app_sessions_native_wake_forwarders.py
+    reads:
+      - loop-v14-rebase/GOAL.md
+      - loop-v14-rebase/PLAN.md
+    gate: true
+    status: complete
+    iteration: 1
+  - id: mailbox
+    repo: .
+    writes:
+      - loop-session-close/
+    reads:
+      - loop-v14-rebase/GOAL.md
+      - loop-v14-rebase/PLAN.md
+    gate: true
+    status: complete
+    iteration: 1
+  - id: readme
+    repo: .
+    writes:
+      - README.md
+    reads:
+      - loop-v14-rebase/GOAL.md
+      - loop-v14-rebase/PLAN.md
+    gate: false
+    status: complete
+    iteration: 1
+  - id: import-paths
+    repo: .
+    writes:
+      - omnigent/harnesses/codex_native/bridge.py
+      - omnigent/runner/native/interrupt.py
+      - omnigent/runner/native/orchestration.py
+      - tests/runner/test_native_interrupt_runner.py
+      - tests/test_codex_native_bridge.py
+    reads:
+      - loop-v14-rebase/GOAL.md
+      - loop-v14-rebase/PLAN.md
+    gate: true
+    status: complete
+    iteration: 1
+```

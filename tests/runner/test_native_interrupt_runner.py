@@ -344,7 +344,7 @@ async def test_claude_stop_cancels_forwarder_after_teardown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Claude stop tears down terminals before cancelling its transcript forwarder."""
-    import omnigent.claude_native_bridge as claude_bridge
+    import omnigent.harnesses.claude_native.bridge as claude_bridge
     from omnigent.runner.native import interrupt as interrupt_mod
 
     async def _fake_bridge_id(*, server_client: Any, session_id: str) -> str:
@@ -394,7 +394,7 @@ async def test_codex_stop_kills_tears_down_and_goes_idle(
     transcript forwarder itself, so there is no separate
     ``_cancel_auto_forwarder_task`` call after the terminal teardown.
     """
-    import omnigent.codex_native_bridge as codex_bridge
+    import omnigent.harnesses.codex_native.bridge as codex_bridge
     from omnigent.runner.native import interrupt as interrupt_mod
 
     calls: list[tuple[str, Any]] = []
@@ -439,7 +439,7 @@ async def test_codex_stop_is_idempotent_without_advertised_tmux(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An already-absent Codex pane still completes stop teardown."""
-    import omnigent.codex_native_bridge as codex_bridge
+    import omnigent.harnesses.codex_native.bridge as codex_bridge
     from omnigent.runner.native import interrupt as interrupt_mod
 
     async def _teardown_app_server(conv_id: str) -> None:

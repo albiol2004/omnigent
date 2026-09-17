@@ -539,7 +539,7 @@ class NativeInterruptRunner:
     async def _codex_stop(self, conv_id: str) -> Response:
         from pathlib import Path
 
-        from omnigent.codex_native_bridge import (
+        from omnigent.harnesses.codex_native.bridge import (
             TmuxSessionNotAdvertised,
             bridge_dir_for_bridge_id,
             cancel_pending_mcp_startup,

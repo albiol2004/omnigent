@@ -4698,7 +4698,7 @@ async def _auto_create_codex_terminal(
         if terminal_registry is not None:
             instance = terminal_registry.get(session_id, "codex", "main")
             if instance is not None and instance.running:
-                from omnigent.codex_native_bridge import write_tmux_target
+                from omnigent.harnesses.codex_native.bridge import write_tmux_target
 
                 write_tmux_target(
                     bridge_dir,

@@ -1322,7 +1322,8 @@ def kill_session(bridge_dir: Path, *, timeout_s: float = _TMUX_READY_TIMEOUT_S) 
 
     Terminates the ``codex`` TUI pane outright — the analog of the user
     manually exiting the attached TUI, for the web UI's "Stop session"
-    affordance. Mirrors :func:`omnigent.claude_native_bridge.kill_session`.
+    affordance. Mirrors
+    :func:`omnigent.harnesses.claude_native.bridge.kill_session`.
 
     :raises TmuxSessionNotAdvertised: If the tmux target is not advertised
         within *timeout_s* (no live session to kill).

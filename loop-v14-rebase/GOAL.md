@@ -1,0 +1,3 @@
+
+## Addendum (coordinator, 2026-09-17)
+`trioctl omnigent doctor` (`/home/coder/personal/trio-agent-loop/omnigent/trioctl` ~396-400) probes the session contract by importing `_resolve_agent_spec` from `omnigent.server.routes.sessions`; upstream v0.14.0 only has `_resolve_subagent_spec`, so the probe fails against this tree. Therefore `fd38b1ea8` is NOT obsolete: re-port it as a thin re-export alias of the upstream `_resolve_subagent_spec` (or whatever upstream symbol now carries the registered-root-spec resolution) so the doctor passes, and note in REPORT.md whether trioctl should instead be updated. Verify by running `trioctl omnigent doctor` from this worktree (cwd puts the worktree package first on sys.path) and requiring `omnigent:session-contract` PASS.

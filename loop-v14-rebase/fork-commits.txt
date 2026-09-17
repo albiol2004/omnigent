@@ -1,0 +1,21 @@
+005399286 docs(session-close): note leak rationale and close-scope in fork README
+863d1cf97 loop-session-close: record post-SHIP documentation brief
+bd0cdd0a1 loop-session-close: iteration 1 state bookkeeping after SHIP
+24cfce751 loop: iteration 1 — SHIP
+254714d8d loop-session-close: iteration 1 lead notes and evidence
+ec696c5fc slice(codex-advertise-guard): do not abort Codex auto-create when tmux advertise is missing
+d18393174 slice(readme): note trio-v0.12.0-fixes-close until live adopt
+eea0c6862 slice(reaper): reap native panes after harness subprocess release
+208aada58 slice(kill-escalation): share leftover-pane SIGKILL across native bridges
+97d84a2fc slice(stop-routing): hard-stop Claude, Codex and Cursor on close
+cc40d1513 slice(close-guard): close tree-scoped children with unparsable titles
+6220807f3 loop-session-close: initialize mailbox for native session close and teardown mission
+96b5639d8 fix(claude-native): preserve compacted context on resume (#6364)
+fd38b1ea8 fix(sessions): re-export _resolve_agent_spec from the sessions package
+6bb85ac39 slice(compact-on-fork-cross-harness): replay summary-only Codex compaction markers
+c1128dc3c slice(codex-bridge-owner): serve Codex model options from a labeled live bridge
+0c8082af2 slice(codex-writer-resume): treat Codex active-writer resume as already loaded
+c04442f16 fix(sessions): derive native launch args from registered root spec.
+6d97d3ecc fix(cursor-native): drop phantom cards for stale yolo markers.
+4292b1a7d fix(cursor-native): queue-aware yolo auto-accept for batched tools.
+760441438 slice(kill-on-close): stop the target harness on sys_session_close.

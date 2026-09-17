@@ -645,19 +645,27 @@ the service. To opt out, follow our instructions in
 ## trio-v0.14.0-fixes (this worktree)
 
 Stock `v0.14.0` plus the Trio keeper set re-ported from
-`trio-v0.12.0-fixes`. Live install `/home/coder/omnigent` (`~/omnigent`)
-stays on `trio-v0.12.0-fixes` until this branch is adopted. Motivation:
-idle native role TUIs from finished Trio loops leaked ~5 GB (upstream
-omnigent-ai/omnigent#7498); `sys_session_close` now closes tree-scoped
-children whose title does not parse as `<agent>:<title>` (top-level and
-`config_path` anchors still refused) and tears down the Claude, Codex,
-and Cursor native tmux panes, terminals, and Codex app-server. Keepers:
-kill-on-close leftover tmux SIGKILL, queue-aware Cursor yolo auto-accept
-(and drop of phantom cards for stale yolo markers), Codex labeled-bridge
-model options, summary-only Codex compaction replay, and the pane reaper
-after harness subprocess release. Do not treat this as upstream `main`.
-`trioctl omnigent doctor` still imports `_resolve_agent_spec`; this
-tree aliases it to upstream `_resolve_subagent_spec`.
+`trio-v0.12.0-fixes` (cherry-picked `-x`). Live install
+`/home/coder/omnigent` (`~/omnigent`) stays on `trio-v0.12.0-fixes`
+until adopted. Motivation: idle native role TUIs from finished Trio loops
+leaked ~5 GB (upstream omnigent-ai/omnigent#7498, still open in v0.14.0);
+`sys_session_close` now closes tree-scoped children whose title does not
+parse as `<agent>:<title>` and tears down the Claude, Codex, and Cursor
+native tmux panes, terminals, and Codex app-server.
+
+Keepers: kill-on-close, queue-aware Cursor yolo (+ phantom-card drop), Codex
+labeled-bridge model options, summary-only Codex compaction replay, close-guard,
+stop-routing (Claude/Codex/Cursor), kill-escalation (`omnigent/native_tmux_kill.py`),
+pane reaper after harness release, Codex advertise guard.
+
+Dropped on the 0.14 re-port (upstream now covers them):
+- `96b5639d8` — Claude compaction on resume (#6364).
+- `c04442f16` — launch args derived from spec (#6156/#6388).
+- `0c8082af2` — Codex writer-resume rewrite (#7055/#7147).
+
+Do not treat this as upstream `main`. `fd38b1ea8` stays as a thin alias
+`_resolve_agent_spec = _resolve_subagent_spec` since `trioctl omnigent
+doctor` imports the old name; follow-up: import `_resolve_subagent_spec`.
 
 ---
 

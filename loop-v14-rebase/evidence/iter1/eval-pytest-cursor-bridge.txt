@@ -1,0 +1,5 @@
+=== eval iter1 test_cursor_native_bridge.py at c45506dee ===
+26 passed in 0.49s
+exit:0
+baseline: 24 passed
+delta: +2; no new failures

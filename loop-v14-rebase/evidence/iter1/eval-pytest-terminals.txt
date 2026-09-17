@@ -1,0 +1,5 @@
+=== eval iter1 tests/terminals at c45506dee ===
+100 passed, 1 skipped in 30.50s
+exit:0
+baseline: 91 passed, 1 skipped
+delta: +9 passed (pane reaper keepers); no new failures

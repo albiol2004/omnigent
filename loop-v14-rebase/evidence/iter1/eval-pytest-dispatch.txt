@@ -1,0 +1,6 @@
+=== eval iter1 test_runner_dispatch.py at c45506dee ===
+Running 275 items in this shard
+274 passed, 1 skipped in 164.40s (0:02:44)
+exit:0
+baseline: 270 passed, 1 skipped
+delta: +4 passed (expected from kept close/stop tests); no new failures

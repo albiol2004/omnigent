@@ -1,0 +1,5 @@
+=== eval iter1 test_claude_native_bridge.py at c45506dee ===
+393 passed in 60.97s
+exit:0
+baseline: 392 passed
+delta: +1; no new failures

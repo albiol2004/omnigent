@@ -1,0 +1,5 @@
+=== old-import grep (py) ===
+=== old-import grep (non-py, excluding git/loop evidence) ===
+./docs/cursor-native-cost-tracking.md:55:  python -m omnigent.cursor_native_usage record-usage --bridge-dir <dir>
+./designs/opencode-native-gaps-qa.md:52:    entry whose command is `… -m omnigent.claude_native_bridge serve-mcp
+./docs/QWEN_FOLLOWUPS.md:271:  (`omnigent.claude_native_bridge serve-mcp`, `mcpServers.omnigent`,

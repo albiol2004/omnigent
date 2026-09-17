@@ -1,0 +1,16 @@
+=== eval iter1 fake-transport close + kill/teardown at c45506dee ===
+tests/runner/test_runner_dispatch.py::test_session_close_patches_tombstoned_title
+tests/runner/test_runner_dispatch.py::test_session_close_routes_native_wrappers_to_stop_session
+tests/runner/test_native_interrupt_runner.py::test_uniform_stop_kills_tears_down_and_goes_idle
+tests/runner/test_native_interrupt_runner.py::test_claude_stop_cancels_forwarder_after_teardown
+tests/runner/test_native_interrupt_runner.py::test_codex_stop_kills_tears_down_and_goes_idle
+tests/test_claude_native_bridge.py::test_kill_session_issues_kill_session_on_target
+tests/test_codex_native_bridge.py::test_kill_session_issues_kill_session_on_target
+tests/test_cursor_native_bridge.py::test_kill_session_issues_kill_session_on_target
+9 passed in 0.76s
+exit:0
+
+Close hop (httpx.MockTransport): Claude/Codex/Cursor children POST stop_session.
+Stop hop (monkeypatched bridges): Cursor _uniform_stop, Claude _claude_stop,
+Codex _codex_stop each call kill_session then teardown (terminals; Codex also
+teardown_codex_native_app_server).

@@ -1,0 +1,20 @@
+cmd: trioctl omnigent run scout --prompt-file loop-v14-rebase/briefs/eval-scout-yolo-close.md --workspace .
+exit:0
+
+Q1 Cursor registered spec --yolo: YES
+- _derive_terminal_launch_args_from_spec helpers.py:9256 body 9339-9412
+- cursor-native branch helpers.py:9359-9376 returns ["--yolo"] unless yolo:false or auto-review
+- test_native_subagent_yolo_args_derived_from_trusted_spec cursor-native expected_args ["--yolo"] (line 1330-1374)
+
+Q2 close kill/teardown:
+- tool_dispatch _session_close_via_rest 6087-6176 POSTs stop_session for CLAUDE/CODEX/CURSOR wrapper labels (6147-6160)
+- interrupt.stop 339-362: claude->_claude_stop, codex->_codex_stop, cursor->_UNIFORM_STOP->_uniform_stop
+- _uniform_stop 432-465: kill_session then _teardown_session_terminals
+- _claude_stop 496-535: kill_session then teardown
+- _codex_stop 539-590: kill_session then teardown then teardown_codex_native_app_server
+- Cursor IS in _UNIFORM_STOP (interrupt.py:210-215)
+
+Independent pristine v0.14.0 pytest (import /tmp/omnigent-v014-eval/omnigent):
+test_native_subagent_yolo_args_derived_from_trusted_spec 3 passed (incl. cursor-native --yolo)
+test_claude_transcript_records_handles_native_compaction_messages 1 passed
+preload/unreadable writer tests 15 passed

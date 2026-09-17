@@ -1,0 +1,5 @@
+=== eval iter1 test_native_interrupt_runner.py at c45506dee ===
+18 passed in 0.37s
+exit:0
+baseline: 15 passed
+delta: +3 passed (codex/claude stop kill+teardown tests); no new failures

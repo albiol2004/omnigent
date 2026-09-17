@@ -1,0 +1,23 @@
+=== import ===
+/tmp/omnigent-v014-eval/omnigent/__init__.py
+
+=== drop c04442f16 yolo launch args (cursor+claude+codex) ===
+Running 3 items in this shard
+...                                                                      [100%]
+========================= Top tests by peak-RSS delta ==========================
++  176.1 MB  (now    176.1 MB)  tests/server/integration/test_sessions_child_sessions.py::test_native_subagent_yolo_args_derived_from_trusted_spec[claude-native-sub_config0-expected_args0]
++   13.4 MB  (now    202.6 MB)  tests/server/integration/test_sessions_child_sessions.py::test_native_subagent_yolo_args_derived_from_trusted_spec[cursor-native-sub_config2-expected_args2]
++   13.1 MB  (now    189.2 MB)  tests/server/integration/test_sessions_child_sessions.py::test_native_subagent_yolo_args_derived_from_trusted_spec[codex-native-sub_config1-expected_args1]
+3 passed in 8.83s
+
+=== drop 96b5639d8 compaction ===
+Running 1 items in this shard
+.                                                                        [100%]
+1 passed in 2.50s
+
+=== drop 0c8082af2 writer/unreadable ===
+Running 15 items in this shard
+...............                                                          [100%]
+========================= Top tests by peak-RSS delta ==========================
++  143.2 MB  (now    143.2 MB)  tests/test_codex_native.py::test_preload_codex_thread_for_resume_manages_subscription[False]
+15 passed in 2.56s

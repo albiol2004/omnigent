@@ -1,0 +1,5 @@
+=== eval iter1 test_cursor_native_permissions.py at c45506dee ===
+63 passed in 7.49s
+exit:0
+baseline: 59 passed
+delta: +4; no new failures

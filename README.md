@@ -627,6 +627,25 @@ the service. To opt out, follow our instructions in
 
 ---
 
+## trio-v0.14.0-fixes (this worktree)
+
+Stock `v0.14.0` plus the Trio keeper set re-ported from
+`trio-v0.12.0-fixes`. Live install `/home/coder/omnigent` (`~/omnigent`)
+stays on `trio-v0.12.0-fixes` until this branch is adopted. Motivation:
+idle native role TUIs from finished Trio loops leaked ~5 GB (upstream
+omnigent-ai/omnigent#7498); `sys_session_close` now closes tree-scoped
+children whose title does not parse as `<agent>:<title>` (top-level and
+`config_path` anchors still refused) and tears down the Claude, Codex,
+and Cursor native tmux panes, terminals, and Codex app-server. Keepers:
+kill-on-close leftover tmux SIGKILL, queue-aware Cursor yolo auto-accept
+(and drop of phantom cards for stale yolo markers), Codex labeled-bridge
+model options, summary-only Codex compaction replay, and the pane reaper
+after harness subprocess release. Do not treat this as upstream `main`.
+`trioctl omnigent doctor` still imports `_resolve_agent_spec`; this
+tree aliases it to upstream `_resolve_subagent_spec`.
+
+---
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](https://github.com/omnigent-ai/omnigent/blob/main/CONTRIBUTING.md) for how to set up your environment, run the checks, and open a pull request.

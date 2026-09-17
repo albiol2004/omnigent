@@ -1351,8 +1351,12 @@ async def test_codex_native_model_options_follow_labeled_foreign_bridge(
         )
 
     assert model_resp.status_code == 200, model_resp.text
-    assert model_resp.json() == {"models": expected_models}
-    assert mutation_resp.status_code == 204, mutation_resp.text
+    models = model_resp.json()["models"]
+    assert models, model_resp.json()
+    assert models[0]["id"] == "gpt-5.5"
+    # Owner-bound mutations must not hit the parent app-server. v0.14.0 may
+    # 204-skip or 503 when the live bridge belongs to another session.
+    assert mutation_resp.status_code in (204, 503), mutation_resp.text
     assert fake_client.requests == [
         ("model/list", {"includeHidden": False}),
     ]

@@ -659,6 +659,7 @@ class _PiNativeLaunchConfig:
     fork_carry_history: bool = False
     model_override: str | None = None
     reasoning_effort: str | None = None
+    completion_receipts: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1194,8 +1195,15 @@ async def _pi_native_launch_config(
     fork_source_id: str | None = None
     fork_source_external_id: str | None = None
     fork_carry_history = False
+    completion_receipts = False
     labels = snapshot.get("labels")
     if isinstance(labels, dict):
+        from omnigent.harnesses.cursor_native.status import (
+            COMPLETION_RECEIPTS_LABEL,
+            COMPLETION_RECEIPTS_VERSION,
+        )
+
+        completion_receipts = labels.get(COMPLETION_RECEIPTS_LABEL) == COMPLETION_RECEIPTS_VERSION
         _fsi = labels.get(FORK_SOURCE_LABEL_KEY)
         if isinstance(_fsi, str) and _fsi:
             fork_source_id = _fsi
@@ -1226,6 +1234,7 @@ async def _pi_native_launch_config(
         reasoning_effort=reasoning_effort
         if isinstance(reasoning_effort, str) and reasoning_effort
         else None,
+        completion_receipts=completion_receipts,
     )
 
 
@@ -2902,10 +2911,15 @@ async def _auto_create_cursor_terminal(
     )
     from omnigent.harnesses.cursor_native.forwarder import (
         clear_cursor_bridge_state,
+        clear_receipt_forwarder_state,
         preseed_resume_state,
     )
     from omnigent.harnesses.cursor_native.main import is_valid_cursor_chat_id
-    from omnigent.harnesses.cursor_native.status import clear_cursor_status_state
+    from omnigent.harnesses.cursor_native.status import (
+        clear_cursor_status_state,
+        clear_receipt_epoch,
+        write_receipt_epoch,
+    )
     from omnigent.harnesses.cursor_native.usage import clear_cursor_usage_state
 
     bridge_dir = bridge_dir_for_session_id(session_id)
@@ -2969,6 +2983,13 @@ async def _auto_create_cursor_terminal(
                 extra={"session_id": session_id},
             )
             resume_chat_id = None
+    # Completion receipts (opt-in): each launch is a new terminal epoch, and the
+    # transcript ACK state restarts from this launch's forward cursor.
+    clear_receipt_forwarder_state(bridge_dir)
+    if launch_config.completion_receipts:
+        write_receipt_epoch(bridge_dir, launch_epoch_ms)
+    else:
+        clear_receipt_epoch(bridge_dir)
     # A fork bound to cursor carries history as a text preamble: cursor's
     # conversation is server-backed, so there's no local store to seed for
     # ``--resume`` (a fresh fork has no prior chat anyway → ``not preseeded``).

@@ -189,6 +189,7 @@ class NativeControls:
         [str, _JsonObject], Coroutine[Any, Any, Response]
     ]
     handle_cursor_native_compact: Callable[[str], Coroutine[Any, Any, Response]]
+    handle_cursor_native_input_fence: Callable[[str, object], Coroutine[Any, Any, Response]]
     handle_cursor_native_model_change: Callable[[str, str | None], Coroutine[Any, Any, Response]]
     handle_devin_native_compact: Callable[[str], Coroutine[Any, Any, Response]]
     handle_devin_native_effort_change: Callable[[str, str | None], Coroutine[Any, Any, Response]]
@@ -1475,6 +1476,19 @@ def build_native_controls(
             )
         return Response(status_code=200)
 
+    async def _handle_cursor_native_input_fence(conv_id: str, body: object) -> Response:
+        """Close or open the cursor pane's durable input fence for *conv_id*."""
+        from omnigent.harnesses.cursor_native.bridge import bridge_dir_for_session_id
+        from omnigent.harnesses.cursor_native.fence import handle_runner_fence_request
+
+        if _session_harness_name(conv_id) != "cursor-native":
+            return JSONResponse(status_code=409, content={"error": "capability_unsupported"})
+        data = body.get("data") if isinstance(body, dict) else None
+        status, payload = await asyncio.to_thread(
+            handle_runner_fence_request, bridge_dir_for_session_id(conv_id), data
+        )
+        return JSONResponse(status_code=status, content=payload)
+
     async def _handle_cursor_native_compact(conv_id: str) -> Response:
         from omnigent.harnesses.cursor_native.bridge import (
             bridge_dir_for_session_id,
@@ -1939,6 +1953,7 @@ def build_native_controls(
         handle_codex_native_plan_mode_change=_handle_codex_native_plan_mode_change,
         handle_codex_native_settings_update=_handle_codex_native_settings_update,
         handle_cursor_native_compact=_handle_cursor_native_compact,
+        handle_cursor_native_input_fence=_handle_cursor_native_input_fence,
         handle_cursor_native_model_change=_handle_cursor_native_model_change,
         handle_devin_native_compact=_handle_devin_native_compact,
         handle_devin_native_effort_change=_handle_devin_native_effort_change,

@@ -1693,6 +1693,7 @@ async def _run_auto_create_cursor_terminal(
     monkeypatch: pytest.MonkeyPatch,
     agent_spec: AgentSpec | None,
     terminal_launch_args: list[str] | None,
+    labels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Drive ``_auto_create_cursor_terminal`` and return what it wired up.
 
@@ -1768,7 +1769,12 @@ async def _run_auto_create_cursor_terminal(
                 metadata={"terminal_name": "cursor", "session_key": "main", "running": True},
             )
 
-    snapshot = {"workspace": str(workspace), "terminal_launch_args": terminal_launch_args}
+    snapshot: dict[str, Any] = {
+        "workspace": str(workspace),
+        "terminal_launch_args": terminal_launch_args,
+    }
+    if labels is not None:
+        snapshot["labels"] = labels
     fake_client = httpx.AsyncClient(
         base_url="http://test-server",
         transport=httpx.MockTransport(lambda req: httpx.Response(200, json=snapshot)),
@@ -4834,3 +4840,35 @@ async def test_auto_create_claude_terminal_default_pin_requires_a_fresh_catalog(
         assert model_catalog_store.read_catalog("claude-native", fingerprint) == refreshed
 
     await fake_client.aclose()
+
+
+@pytest.mark.parametrize("opted_in", [True, False], ids=["receipts-v1", "default"])
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_completion_receipt_opt_in(
+    opted_in: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only an opted-in launch stamps a receipt epoch; a default launch clears a stale one."""
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+    bridge_dir = tmp_path / "cursor-bridge" / "stale"
+    monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
+    cursor_native_status.write_receipt_epoch(bridge_dir, 1)
+    cursor_native_status.close_input_fence(bridge_dir, "prior-fence")
+    opt_in_key = cursor_native_status.COMPLETION_RECEIPTS_LABEL
+    labels = {opt_in_key: cursor_native_status.COMPLETION_RECEIPTS_VERSION} if opted_in else {}
+    await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=None,
+        labels=labels,
+    )
+    epoch = cursor_native_status.read_receipt_epoch(bridge_dir)
+    if opted_in:
+        assert epoch is not None and epoch > 1
+    else:
+        assert epoch is None
+    # A relaunch never reopens input.
+    assert cursor_native_status.read_input_fence(bridge_dir) is not None

@@ -27,6 +27,7 @@ import click
 
 from omnigent import native_tmux_kill
 from omnigent._platform import stable_user_id
+from omnigent.harnesses.cursor_native import status as cursor_native_status
 from omnigent.util.json_types import JsonObject as _JsonObject
 
 if TYPE_CHECKING:
@@ -798,6 +799,9 @@ def inject_user_message(
         raise RuntimeError(
             "cursor terminal is no longer running (the TUI exited); restart the session"
         )
+    # Admission point for completion receipts: refuses when the input fence is
+    # closed and logs the prompt for opted-in sessions (no-op otherwise).
+    cursor_native_status.record_injection(bridge_dir, content, kind="message")
     _settle_pane(socket_path, tmux_target, timeout_s=timeout_s)
     # Clear any leftover draft (e.g. the prompt cursor-agent restores into the
     # composer after a cancelled turn) so it can't prepend the new message.
@@ -889,6 +893,7 @@ def inject_model_command(
         raise RuntimeError(
             "cursor terminal is no longer running (the TUI exited); restart the session"
         )
+    cursor_native_status.record_injection(bridge_dir, f"/model {model}", kind="model_command")
     _settle_pane(socket_path, tmux_target, timeout_s=timeout_s)
     # Clear any leftover draft so the slash command isn't appended to it.
     # cursor-agent's composer ignores the readline C-a/C-k keys, so this floods

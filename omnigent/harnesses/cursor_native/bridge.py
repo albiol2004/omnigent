@@ -651,6 +651,8 @@ def prepare_completion_receipts(
 
     :returns: ``"not_opted_in"``, a pre-write hold reason, or ``None``; pass it
         to :func:`arm_completion_receipts` as *precheck*.
+    :raises ReceiptEpochClearError: the prior epoch could not be removed, opted
+        in or not; the launch must abort before the terminal starts.
     """
     cursor_native_status.clear_receipt_epoch(bridge_dir)
     if not opted_in:
@@ -678,6 +680,7 @@ def arm_completion_receipts(
     the fence answers ``capability_unsupported`` and Trio holds.
 
     :returns: ``None`` when armed, ``"not_opted_in"``, or the hold reason.
+    :raises ReceiptEpochClearError: the prior epoch could not be removed.
     """
     cursor_native_status.clear_receipt_epoch(bridge_dir)
     if not opted_in:

@@ -8,9 +8,11 @@ same way as ``test_cursor_native_bridge``.
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import io
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -873,3 +875,109 @@ async def test_restart_mid_pass_keeps_a_skipped_row_unacked(
     transcript = recorder.posts[-1]["transcript"]
     assert transcript["unacked_rowids"] == [2]
     assert transcript["observed_max_acked"] is False
+
+
+# --- clearing a prior epoch: verified absence or a hard failure ---------------------------
+
+_needs_nonroot = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores directory modes"
+)
+
+
+def test_clear_receipt_epoch_is_idempotent_when_absent(tmp_path: Path) -> None:
+    bridge_dir = tmp_path / "bridge"
+    status.clear_receipt_epoch(bridge_dir)  # the bridge dir does not exist yet
+    bridge_dir.mkdir()
+    status.clear_receipt_epoch(bridge_dir)
+    status.write_receipt_epoch(bridge_dir, _EPOCH)
+    status.clear_receipt_epoch(bridge_dir)
+    status.clear_receipt_epoch(bridge_dir)
+    assert status.read_receipt_epoch(bridge_dir) is None
+    assert not (bridge_dir / status.RECEIPT_EPOCH_FILE).exists()
+
+
+@_needs_nonroot
+def test_clear_receipt_epoch_absent_in_read_only_dir_is_not_an_error(tmp_path: Path) -> None:
+    bridge_dir = tmp_path / "bridge"
+    bridge_dir.mkdir()
+    os.chmod(bridge_dir, 0o500)
+    try:
+        status.clear_receipt_epoch(bridge_dir)
+    finally:
+        os.chmod(bridge_dir, 0o700)
+
+
+@_needs_nonroot
+def test_clear_receipt_epoch_raises_when_read_only_dir_keeps_it(tmp_path: Path) -> None:
+    bridge_dir = tmp_path / "bridge"
+    status.write_receipt_epoch(bridge_dir, _EPOCH)
+    os.chmod(bridge_dir, 0o500)
+    try:
+        with pytest.raises(status.ReceiptEpochClearError) as info:
+            status.clear_receipt_epoch(bridge_dir)
+    finally:
+        os.chmod(bridge_dir, 0o700)
+    message = str(info.value)
+    assert str(bridge_dir / status.RECEIPT_EPOCH_FILE) in message
+    assert "relaunch" in message
+    assert isinstance(info.value.__cause__, PermissionError)
+    # Nothing was hidden: the prior epoch is still there and still reported.
+    assert status.read_receipt_epoch(bridge_dir) == _EPOCH
+
+
+@_needs_nonroot
+def test_clear_receipt_epoch_raises_when_absence_cannot_be_checked(tmp_path: Path) -> None:
+    # No search permission: unlink and lstat both fail with EACCES, and
+    # read_receipt_epoch would report None while the file is still there.
+    bridge_dir = tmp_path / "bridge"
+    status.write_receipt_epoch(bridge_dir, _EPOCH)
+    os.chmod(bridge_dir, 0o600)
+    try:
+        assert status.read_receipt_epoch(bridge_dir) is None
+        with pytest.raises(status.ReceiptEpochClearError):
+            status.clear_receipt_epoch(bridge_dir)
+    finally:
+        os.chmod(bridge_dir, 0o700)
+    assert status.read_receipt_epoch(bridge_dir) == _EPOCH
+
+
+@pytest.mark.parametrize("code", [errno.EBUSY, errno.EPERM, errno.EROFS, errno.EIO])
+def test_clear_receipt_epoch_raises_on_failed_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    bridge_dir = tmp_path / "bridge"
+    status.write_receipt_epoch(bridge_dir, _EPOCH)
+
+    def _fail(self: Path, missing_ok: bool = False) -> None:
+        raise OSError(code, os.strerror(code), str(self))
+
+    monkeypatch.setattr(Path, "unlink", _fail)
+    with pytest.raises(status.ReceiptEpochClearError) as info:
+        status.clear_receipt_epoch(bridge_dir)
+    assert info.value.__cause__ is not None and info.value.__cause__.errno == code
+    monkeypatch.undo()
+    assert status.read_receipt_epoch(bridge_dir) == _EPOCH
+
+
+def test_clear_receipt_epoch_accepts_failed_unlink_when_file_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # e.g. a concurrent remover won the race: absence is what matters.
+    bridge_dir = tmp_path / "bridge"
+    status.write_receipt_epoch(bridge_dir, _EPOCH)
+    real_unlink = Path.unlink
+
+    def _remove_then_fail(self: Path, missing_ok: bool = False) -> None:
+        real_unlink(self)
+        raise OSError(errno.EIO, "I/O error", str(self))
+
+    monkeypatch.setattr(Path, "unlink", _remove_then_fail)
+    status.clear_receipt_epoch(bridge_dir)
+    assert status.read_receipt_epoch(bridge_dir) is None
+
+
+def test_clear_receipt_epoch_raises_when_a_directory_squats_the_name(tmp_path: Path) -> None:
+    bridge_dir = tmp_path / "bridge"
+    (bridge_dir / status.RECEIPT_EPOCH_FILE).mkdir(parents=True)
+    with pytest.raises(status.ReceiptEpochClearError):
+        status.clear_receipt_epoch(bridge_dir)

@@ -2906,6 +2906,7 @@ async def _auto_create_cursor_terminal(
         approve_mcp_server_for_workspace,
         arm_completion_receipts,
         bridge_dir_for_session_id,
+        prepare_completion_receipts,
         write_fork_preamble,
         write_hooks_config,
         write_mcp_config,
@@ -2983,23 +2984,11 @@ async def _auto_create_cursor_terminal(
     # Completion receipts (opt-in): each launch is a new terminal epoch, and the
     # transcript ACK state restarts from this launch's forward cursor.
     clear_receipt_forwarder_state(bridge_dir)
-    # Checked before write_hooks_config below rewrites the project hooks.json. A
-    # foreign ``stop`` hook (or an unreadable/malformed hooks config) leaves this
-    # launch without receipts, so the fence answers capability_unsupported.
-    receipt_hold = arm_completion_receipts(
-        bridge_dir,
-        Path(workspace),
-        launch_epoch_ms,
-        opted_in=launch_config.completion_receipts,
+    # Drops the prior epoch and checks the project hooks.json before
+    # write_hooks_config below rewrites it (a malformed file would be dropped).
+    receipt_precheck = prepare_completion_receipts(
+        bridge_dir, Path(workspace), opted_in=launch_config.completion_receipts
     )
-    if launch_config.completion_receipts and receipt_hold is not None:
-        _logger.warning(
-            "cursor-native: completion receipts disabled for this launch (%s); "
-            "input_fence will report capability_unsupported (session=%s).",
-            receipt_hold,
-            session_id,
-            extra={"session_id": session_id},
-        )
     # A fork bound to cursor carries history as a text preamble: cursor's
     # conversation is server-backed, so there's no local store to seed for
     # ``--resume`` (a fresh fork has no prior chat anyway → ``not preseeded``).
@@ -3027,6 +3016,25 @@ async def _auto_create_cursor_terminal(
     # Register the cursor ``stop`` hook that captures per-turn token usage into
     # the bridge dir for the usage forwarder below (see cursor_native_usage).
     write_hooks_config(Path(workspace), bridge_dir)
+    # Armed on the hooks files the TUI will load: only this launch's own project
+    # stop hook may remain. Anything else (a foreign or shared-scope stop hook,
+    # an unreadable/malformed config, workspace == HOME) leaves this launch
+    # without receipts, so the fence answers capability_unsupported.
+    receipt_hold = arm_completion_receipts(
+        bridge_dir,
+        Path(workspace),
+        launch_epoch_ms,
+        opted_in=launch_config.completion_receipts,
+        precheck=receipt_precheck,
+    )
+    if launch_config.completion_receipts and receipt_hold is not None:
+        _logger.warning(
+            "cursor-native: completion receipts disabled for this launch (%s); "
+            "input_fence will report capability_unsupported (session=%s).",
+            receipt_hold,
+            session_id,
+            extra={"session_id": session_id},
+        )
     cursor_command = resolve_cursor_executable()
     cursor_args = list(launch_config.terminal_launch_args or [])
     if "--approve-mcps" not in cursor_args:

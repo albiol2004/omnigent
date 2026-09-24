@@ -325,8 +325,11 @@ async def _scenario(
     # The runner's launch steps for an opted-in session, in its order.
     status.clear_cursor_status_state(bridge_dir)
     fwd.clear_receipt_forwarder_state(bridge_dir)
-    hold_reason = cbridge.arm_completion_receipts(bridge_dir, ws, launch_ms, opted_in=True)
+    precheck = cbridge.prepare_completion_receipts(bridge_dir, ws, opted_in=True)
     cbridge.write_hooks_config(ws, bridge_dir, python_executable=_hook_python(tmp_path))
+    hold_reason = cbridge.arm_completion_receipts(
+        bridge_dir, ws, launch_ms, opted_in=True, precheck=precheck
+    )
     _route_runner_to(monkeypatch, bridge_dir)
     _route_forwarder_to(monkeypatch, app, _Faults())
     pane = _Pane(tmp_path, bridge_dir, ws, {"turn_s": 1.0, **cfg})
@@ -345,7 +348,11 @@ async def _scenario(
     executor = CursorNativeExecutor(bridge_dir)
     prompt = f"TASK nonce={uuid.uuid4().hex} implement slice S and run tests"
     sent: list[str] = []
-    record: dict[str, Any] = {"passed_rev3_before_fence": [], "hold_reason": hold_reason}
+    record: dict[str, Any] = {
+        "passed_rev3_before_fence": [],
+        "hold_reason": hold_reason,
+        "bridge_dir": str(bridge_dir),
+    }
     try:
         async for _ev in executor.run_turn([{"role": "user", "content": prompt}], [], ""):
             pass
@@ -854,11 +861,10 @@ async def test_malformed_project_hooks_config_holds(
 async def test_owned_hooks_only_stays_capable(
     auth_app, auth_client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Control: only Omnigent's own hooks (this launch's plus a stale one) → receipts work."""
+    """Control: only Omnigent's own project hooks (a stale one is replaced) → receipts work."""
     stale = cbridge.build_hooks_config(
         tmp_path / "older-bridge", python_executable=_hook_python(tmp_path)
     )
-    _write_hooks(Path(os.environ["HOME"]) / ".cursor" / "hooks.json", stale)
 
     async def _act(executor, pane, prompt, sent) -> None:
         await _repost(executor, prompt, sent)
@@ -871,9 +877,130 @@ async def test_owned_hooks_only_stays_capable(
         cfg={"hooks_from_config": True, "turn_s_by_prefix": {"TASK": 2.5}},
         during_turn_1=_act,
         fence_on=3,
+        setup_hooks=lambda ws: _write_hooks(ws / ".cursor" / "hooks.json", stale),
     )
     _dump("owned_hooks_only_stays_capable", rec)
     assert rec["hold_reason"] is None
     assert (rec["fence"]["verified"], rec["fence"]["reason"]) == (True, None), rec["fence"]
     assert rec["turns_ending_after_fence"] == []
     assert rec["final_core"]["turn_end_count"] == rec["expect_turn_end_count"] == 2
+    ran = [e["command"] for e in rec["tui_events"] if e["ev"] == "config_stop_hook"]
+    assert stale["hooks"]["stop"][0]["command"] not in ran
+
+
+async def test_owned_shaped_user_hook_holds(
+    auth_app, auth_client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An Omnigent-shaped hook in the shared user file is not owned by any launch."""
+    shared = cbridge.build_hooks_config(
+        tmp_path / "older-bridge", python_executable=_hook_python(tmp_path)
+    )
+    user = Path(os.environ["HOME"]) / ".cursor" / "hooks.json"
+    _write_hooks(user, shared)
+    before = user.read_bytes()
+
+    async def _act(executor, pane, prompt, sent) -> None:
+        await _repost(executor, prompt, sent)
+
+    rec = await _scenario(
+        tmp_path,
+        monkeypatch,
+        auth_app,
+        auth_client,
+        cfg={"hooks_from_config": True, "turn_s_by_prefix": {"TASK": 2.5}},
+        during_turn_1=_act,
+        fence_on=3,
+        hold_until_stops=2,
+    )
+    _dump("owned_shaped_user_hook_holds", rec)
+    _assert_held(rec, f"foreign_stop_hook:{user}")
+    assert user.read_bytes() == before
+
+
+async def test_workspace_that_is_home_holds(
+    auth_app, auth_client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """workspace == HOME (through a symlink alias): the project file is the user file."""
+    alias = tmp_path / "home-alias"
+    alias.symlink_to(tmp_path / "ws", target_is_directory=True)
+    monkeypatch.setenv("HOME", str(alias))
+
+    async def _act(executor, pane, prompt, sent) -> None:
+        return None
+
+    rec = await _scenario(
+        tmp_path,
+        monkeypatch,
+        auth_app,
+        auth_client,
+        cfg={"hooks_from_config": True, "turn_s_by_prefix": {"TASK": 1.5}},
+        during_turn_1=_act,
+        fence_on=3,
+        hold_until_stops=1,
+    )
+    _dump("workspace_that_is_home_holds", rec)
+    _assert_held(rec, "workspace_is_home:")
+
+
+async def test_shared_user_hook_from_another_session_cannot_close_a_running_turn(
+    auth_app, auth_client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live F4 shape: after A armed cleanly, a user-scope hook bound to A's bridge
+    appears, and session B (another chat on the same HOME) ends a turn while A's turn
+    still runs. B's stop lands in A's bridge but never closes A's row; A stays held.
+    """
+    others: list[_Pane] = []
+    b_dir = tmp_path / "b"
+    b_dir.mkdir()
+
+    async def _act(executor, pane, prompt, sent) -> None:
+        bridge_a = executor._bridge_dir
+        shared = cbridge.build_hooks_config(bridge_a, python_executable=_hook_python(tmp_path))
+        _write_hooks(Path(os.environ["HOME"]) / ".cursor" / "hooks.json", shared)
+        ws_b = tmp_path / "ws-b"
+        ws_b.mkdir()
+        pane_b = _Pane(b_dir, b_dir / "bridge", ws_b, {"hooks_from_config": True, "turn_s": 0.5})
+        others.append(pane_b)
+        await asyncio.sleep(0.5)
+        pane_b.type_line("OTHER session prompt")
+
+        async def _b_stopped() -> bool:
+            return any(e["ev"] == "stop_hook" for e in pane_b.events())
+
+        await _wait(_b_stopped, 20, "session B turn end")
+        a_events = pane.events()
+        assert not any(e["ev"] == "stop_hook" for e in a_events), "A ended before B's stop"
+
+    try:
+        rec = await _scenario(
+            tmp_path,
+            monkeypatch,
+            auth_app,
+            auth_client,
+            cfg={"hooks_from_config": True, "turn_s_by_prefix": {"TASK": 6.0}},
+            during_turn_1=_act,
+            fence_on=3,
+            hold_until_stops=1,
+        )
+    finally:
+        for other in others:
+            other.close()
+    _dump("shared_user_hook_from_another_session_cannot_close_a_running_turn", rec)
+    assert rec["hold_reason"] is None  # A armed on a clean launch
+    assert rec["receipt_seen"] is True
+    assert rec["passed_rev3_before_fence"] == []
+    assert "fence" not in rec, rec.get("fence")
+    binding = json.loads(rec["final_labels"][input_fence.TURN_RECEIPT_BINDING_LABEL])
+    assert (binding["bound"], binding["reason"]) == (False, "turn_end_foreign"), binding
+    bridge_a = Path(rec["bridge_dir"])
+    ends = [
+        json.loads(line) for line in (bridge_a / status.TURN_END_FILE).read_text().splitlines()
+    ]
+    foreign = [e for e in ends if e.get("conversation_check") == "mismatch"]
+    own = [e for e in ends if e.get("conversation_check") == "match"]
+    assert foreign and own, ends
+    # B's stop landed first, while A's row existed, and was never positioned locally.
+    assert ends[0]["conversation_check"] == "mismatch"
+    assert ends[0]["hook_conversation_id"] != ends[0]["observed_store_chat"]
+    assert (ends[0]["store_chat_at_end"], ends[0]["store_rowid_at_end"]) == (None, None)
+    assert {e["hook_conversation_id"] for e in own} == {e["store_chat_at_end"] for e in own}

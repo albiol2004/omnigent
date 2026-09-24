@@ -4882,6 +4882,10 @@ async def test_auto_create_cursor_terminal_completion_receipt_opt_in(
 
 
 _FOREIGN_STOP_HOOKS = json.dumps({"version": 1, "hooks": {"stop": [{"command": "./followup.sh"}]}})
+#: An Omnigent-shaped usage hook for some other session's bridge.
+_SHARED_OWNED_HOOKS = json.dumps(
+    cursor_native_bridge.build_hooks_config(Path("/tmp/omnigent-1000/cursor-native/other"))
+)
 
 
 @pytest.mark.parametrize(
@@ -4890,8 +4894,9 @@ _FOREIGN_STOP_HOOKS = json.dumps({"version": 1, "hooks": {"stop": [{"command": "
         ("project", _FOREIGN_STOP_HOOKS, "foreign_stop_hook"),
         ("user", _FOREIGN_STOP_HOOKS, "foreign_stop_hook"),
         ("project", "{not json", "hooks_config_malformed"),
+        ("user", _SHARED_OWNED_HOOKS, "foreign_stop_hook"),
     ],
-    ids=["project-foreign", "user-foreign", "project-malformed"],
+    ids=["project-foreign", "user-foreign", "project-malformed", "user-owned-shape"],
 )
 @pytest.mark.asyncio
 async def test_auto_create_cursor_terminal_foreign_stop_hook_withholds_receipts(
@@ -4942,6 +4947,38 @@ async def test_auto_create_cursor_terminal_foreign_stop_hook_withholds_receipts(
         assert "./followup.sh" in commands
     if where == "user":
         assert (home / ".cursor" / "hooks.json").read_text() == hooks
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_workspace_home_alias_withholds_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """HOME reaching the workspace through a symlink still makes it the user scope."""
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+    alias = tmp_path / "home-alias"
+    alias.symlink_to(tmp_path / "ws", target_is_directory=True)
+    monkeypatch.setenv("HOME", str(alias))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    bridge_dir = tmp_path / "cursor-bridge" / "home"
+    monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
+    labels = {
+        cursor_native_status.COMPLETION_RECEIPTS_LABEL: (
+            cursor_native_status.COMPLETION_RECEIPTS_VERSION
+        )
+    }
+    with caplog.at_level("WARNING"):
+        await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+            labels=labels,
+        )
+    assert cursor_native_status.read_receipt_epoch(bridge_dir) is None
+    assert "completion receipts disabled for this launch (workspace_is_home:" in caplog.text
 
 
 @pytest.mark.asyncio

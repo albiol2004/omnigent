@@ -10,6 +10,7 @@ The clear now floods ``Backspace`` until the pane stops changing.
 
 from __future__ import annotations
 
+import types
 from pathlib import Path
 
 import click
@@ -647,7 +648,7 @@ class TestCompletionReceiptHookGate:
 
     def _reason(self, tmp_path: Path, system: tuple[Path, ...] = ()) -> str | None:
         return cursor_native_bridge.completion_receipt_hook_hold_reason(
-            tmp_path / "ws", home=tmp_path / "home", system_paths=system
+            tmp_path / "ws", Path("/tmp/bridge-x"), home=tmp_path / "home", system_paths=system
         )
 
     def test_owned_command_matches_generated_shapes(self) -> None:
@@ -689,14 +690,118 @@ class TestCompletionReceiptHookGate:
             {
                 "version": 1,
                 "hooks": {
-                    "stop": [{"command": self._owned()}, {"command": self._owned("/tmp/old")}],
+                    "stop": [{"command": self._owned()}],
                     "preToolUse": [{"command": "./guard.sh"}],
                     "afterFileEdit": "not-a-list-but-not-a-stop-event",
                 },
             },
         )
-        self._write(tmp_path / "home" / ".cursor" / "hooks.json", {"version": 1})
+        self._write(
+            tmp_path / "home" / ".cursor" / "hooks.json",
+            {"version": 1, "hooks": {"preToolUse": [{"command": "./user-guard.sh"}]}},
+        )
         assert self._reason(tmp_path) is None
+
+    def test_stale_project_hook_passes_precheck_but_not_the_armed_check(
+        self, tmp_path: Path
+    ) -> None:
+        """A stale project hook is replaced before arming; left in place, it holds."""
+        path = self._write(
+            tmp_path / "ws" / ".cursor" / "hooks.json",
+            {"version": 1, "hooks": {"stop": [{"command": self._owned("/tmp/old")}]}},
+        )
+        precheck = cursor_native_bridge.completion_receipt_project_precheck(
+            tmp_path / "ws", home=tmp_path / "home"
+        )
+        assert precheck is None
+        assert self._reason(tmp_path) == f"foreign_stop_hook:{path}"
+
+    @pytest.mark.parametrize("where", ["user", "system"])
+    @pytest.mark.parametrize(
+        "bridge", ["/tmp/bridge-x", "/tmp/other-session"], ids=["this-bridge", "other-bridge"]
+    )
+    def test_owned_shaped_hook_in_a_shared_file_holds(
+        self, tmp_path: Path, where: str, bridge: str
+    ) -> None:
+        """Every Cursor session loads the user/system file, so no entry there is owned."""
+        path = self._write(
+            tmp_path / ("home/.cursor/hooks.json" if where == "user" else "etc/hooks.json"),
+            {"version": 1, "hooks": {"stop": [{"command": self._owned(bridge)}]}},
+        )
+        before = path.read_bytes()
+        reason = self._reason(tmp_path, system=(tmp_path / "etc" / "hooks.json",))
+        assert reason == f"foreign_stop_hook:{path}"
+        assert path.read_bytes() == before
+
+    def test_legacy_usage_module_hook_in_user_file_holds(self, tmp_path: Path) -> None:
+        path = self._write(
+            tmp_path / "home" / ".cursor" / "hooks.json",
+            {
+                "version": 1,
+                "hooks": {
+                    "stop": [
+                        {
+                            "command": "/usr/bin/python3 -I -m omnigent.cursor_native_usage "
+                            "record-usage --bridge-dir /tmp/bridge-x"
+                        }
+                    ]
+                },
+            },
+        )
+        assert self._reason(tmp_path) == f"foreign_stop_hook:{path}"
+
+    def test_project_hook_bridge_matches_through_path_aliases(self, tmp_path: Path) -> None:
+        real = tmp_path / "bridges" / "b1"
+        real.mkdir(parents=True)
+        alias = tmp_path / "bridge-link"
+        alias.symlink_to(real)
+        self._write(
+            tmp_path / "ws" / ".cursor" / "hooks.json",
+            {"version": 1, "hooks": {"stop": [{"command": self._owned(str(alias))}]}},
+        )
+        reason = cursor_native_bridge.completion_receipt_hook_hold_reason(
+            tmp_path / "ws", real, home=tmp_path / "home", system_paths=()
+        )
+        assert reason is None
+
+    @pytest.mark.parametrize("alias", ["same", "symlink", "dotdot", "cursor_dir_link"])
+    def test_workspace_that_is_home_refuses_receipts(self, tmp_path: Path, alias: str) -> None:
+        """With workspace == HOME the project hooks file is the user hooks file."""
+        home = tmp_path / "home"
+        home.mkdir()
+        if alias == "same":
+            ws = home
+        elif alias == "symlink":
+            ws = tmp_path / "ws-link"
+            ws.symlink_to(home)
+        elif alias == "dotdot":
+            (home / "sub").mkdir()
+            ws = home / "sub" / ".."
+        else:
+            ws = tmp_path / "ws"
+            ws.mkdir()
+            (home / ".cursor").mkdir()
+            (ws / ".cursor").symlink_to(home / ".cursor")
+        want = f"workspace_is_home:{ws}"
+        assert cursor_native_bridge.completion_receipt_project_precheck(ws, home=home) == want
+        reason = cursor_native_bridge.completion_receipt_hook_hold_reason(
+            ws, Path("/tmp/bridge-x"), home=home, system_paths=()
+        )
+        assert reason == want
+
+    def test_account_home_is_refused_even_when_home_env_differs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import pwd
+
+        account_home = tmp_path / "account-home"
+        account_home.mkdir()
+        entry = types.SimpleNamespace(pw_dir=str(account_home))
+        monkeypatch.setattr(pwd, "getpwuid", lambda _uid: entry)
+        reason = cursor_native_bridge.completion_receipt_project_precheck(
+            account_home, home=tmp_path / "env-home"
+        )
+        assert reason == f"workspace_is_home:{account_home}"
 
     @pytest.mark.parametrize("where", ["project", "user", "system"])
     @pytest.mark.parametrize("event", ["stop", "subagentStop"])
@@ -769,6 +874,60 @@ class TestCompletionReceiptHookGate:
         assert status.read_receipt_epoch(bridge) is None
         assert not (bridge / status.RECEIPT_EPOCH_FILE).exists()
         assert path.read_bytes() == before
+
+    def _launch(self, tmp_path: Path, bridge: Path, epoch: int) -> str | None:
+        """The runner's order: prepare → write_hooks_config → arm."""
+        ws = tmp_path / "ws"
+        kw = {"home": tmp_path / "home"}
+        precheck = cursor_native_bridge.prepare_completion_receipts(
+            bridge, ws, opted_in=True, **kw
+        )
+        cursor_native_bridge.write_hooks_config(ws, bridge, python_executable=self._PY)
+        return cursor_native_bridge.arm_completion_receipts(
+            bridge, ws, epoch, opted_in=True, precheck=precheck, system_paths=(), **kw
+        )
+
+    def test_relaunch_and_new_session_arm_after_owned_replacement(self, tmp_path: Path) -> None:
+        from omnigent.harnesses.cursor_native import status
+
+        (tmp_path / "ws").mkdir()
+        first, second = tmp_path / "bridge-1", tmp_path / "bridge-2"
+        assert self._launch(tmp_path, first, 111) is None
+        # Relaunch of the same session: its own project hook is already there.
+        assert self._launch(tmp_path, first, 222) is None
+        assert status.read_receipt_epoch(first) == 222
+        # A new session in the same workspace replaces the prior session's hook.
+        assert self._launch(tmp_path, second, 333) is None
+        assert status.read_receipt_epoch(second) == 333
+        import json
+
+        written = json.loads((tmp_path / "ws" / ".cursor" / "hooks.json").read_text())
+        assert [e["command"] for e in written["hooks"]["stop"]] == [self._owned(str(second))]
+
+    def test_malformed_project_file_holds_although_the_rewrite_cleans_it(
+        self, tmp_path: Path
+    ) -> None:
+        from omnigent.harnesses.cursor_native import status
+
+        path = self._write(tmp_path / "ws" / ".cursor" / "hooks.json", "{not json")
+        bridge = tmp_path / "bridge"
+        status.write_receipt_epoch(bridge, 1)
+        assert self._launch(tmp_path, bridge, 111) == f"hooks_config_malformed:{path}"
+        assert status.read_receipt_epoch(bridge) is None
+
+    def test_shared_user_hook_holds_at_launch_and_is_left_alone(self, tmp_path: Path) -> None:
+        from omnigent.harnesses.cursor_native import status
+
+        (tmp_path / "ws").mkdir()
+        bridge = tmp_path / "bridge"
+        user = self._write(
+            tmp_path / "home" / ".cursor" / "hooks.json",
+            {"version": 1, "hooks": {"stop": [{"command": self._owned(str(bridge))}]}},
+        )
+        before = user.read_bytes()
+        assert self._launch(tmp_path, bridge, 111) == f"foreign_stop_hook:{user}"
+        assert status.read_receipt_epoch(bridge) is None
+        assert user.read_bytes() == before
 
     def test_arm_not_opted_in_ignores_hooks(self, tmp_path: Path) -> None:
         from omnigent.harnesses.cursor_native import status

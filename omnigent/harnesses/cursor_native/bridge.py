@@ -506,12 +506,37 @@ def is_owned_usage_hook_command(command: object) -> bool:
     return " ".join(shlex.quote(part) for part in argv) == command
 
 
-def _stop_hooks_hold_reason(path: Path) -> str | None:
+def _owned_hook_bridge(command: object) -> str | None:
+    """The ``--bridge-dir`` of an owned usage hook command, else ``None``."""
+    import shlex
+
+    if not is_owned_usage_hook_command(command):
+        return None
+    return shlex.split(str(command))[6]
+
+
+def _same_path(a: str | Path, b: str | Path) -> bool:
+    """Whether *a* and *b* name one location (symlinks, ``..``, bind mounts)."""
+    if os.path.realpath(a) == os.path.realpath(b):
+        return True
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _stop_hooks_hold_reason(
+    path: Path, *, owned_bridge: Path | None = None, stale_ok: bool = False
+) -> str | None:
     """Why *path* rules out completion receipts, or ``None`` if it does not.
 
     A missing file is fine. An unreadable or malformed one fails closed, as does
     any entry under a stop-type event (``stop``, ``subagentStop``, matched
-    case-insensitively) that is not an owned Omnigent usage hook.
+    case-insensitively) that is not an owned Omnigent usage hook for this
+    launch: its ``--bridge-dir`` must be *owned_bridge*, or, with *stale_ok*,
+    any bridge (a project entry the launch is about to replace). With neither,
+    as for the user and system files, every stop entry holds: those files are
+    shared by every Cursor session on the machine.
     """
     try:
         raw = path.read_bytes()
@@ -538,13 +563,53 @@ def _stop_hooks_hold_reason(path: Path) -> str | None:
         for entry in entries:
             if not isinstance(entry, dict):
                 return f"hooks_config_malformed:{path}"
-            if not is_owned_usage_hook_command(entry.get("command")):
+            bridge = _owned_hook_bridge(entry.get("command"))
+            if bridge is None:
+                return f"foreign_stop_hook:{path}"
+            if not stale_ok and (owned_bridge is None or not _same_path(bridge, owned_bridge)):
                 return f"foreign_stop_hook:{path}"
     return None
 
 
+def _home_candidates(home: Path | None) -> list[Path]:
+    """``$HOME`` (what Cursor reads user hooks from) and the account's home dir."""
+    candidates = [home if home is not None else Path.home()]
+    with contextlib.suppress(KeyError, ImportError):
+        import pwd
+
+        candidates.append(Path(pwd.getpwuid(os.getuid()).pw_dir))
+    return candidates
+
+
+def _workspace_home_reason(workspace: Path, home: Path | None) -> str | None:
+    """Refuse a workspace whose project hooks file is the user hooks file."""
+    for candidate in _home_candidates(home):
+        if _same_path(workspace, candidate) or _same_path(
+            workspace / ".cursor", candidate / ".cursor"
+        ):
+            return f"workspace_is_home:{workspace}"
+    return None
+
+
+def completion_receipt_project_precheck(
+    workspace: Path, *, home: Path | None = None
+) -> str | None:
+    """Pre-write gate: run before :func:`write_hooks_config` rewrites the project file.
+
+    That rewrite drops a malformed file and replaces stale Omnigent hooks, so
+    this is the only point where a malformed or foreign project file is seen.
+    Stale owned hooks for other bridges pass here; they are replaced by the
+    rewrite and :func:`completion_receipt_hook_hold_reason` re-checks the result.
+    """
+    reason = _workspace_home_reason(workspace, home)
+    if reason is not None:
+        return reason
+    return _stop_hooks_hold_reason(workspace / ".cursor" / _HOOKS_CONFIG_FILE, stale_ok=True)
+
+
 def completion_receipt_hook_hold_reason(
     workspace: Path,
+    bridge_dir: Path,
     *,
     home: Path | None = None,
     system_paths: tuple[Path, ...] | None = None,
@@ -552,24 +617,45 @@ def completion_receipt_hook_hold_reason(
     """Check the hooks.json files Cursor loads for this launch before receipts arm.
 
     A non-Omnigent ``stop`` hook can answer ``followup_message`` and start a turn
-    that no receipt binds correctly, so any such hook, in the
-    project (``<workspace>/.cursor/hooks.json``), user (``~/.cursor/hooks.json``)
-    or system file, disables receipts for the launch. User hooks are never
-    edited to gain the capability. Read once, before :func:`write_hooks_config`
-    rewrites the project file (which would drop a malformed one).
+    that no receipt binds correctly, and an Omnigent hook in a shared file
+    records other sessions' stops, so only this launch's own hook in the
+    project file (``<workspace>/.cursor/hooks.json``) is allowed; any stop hook
+    in the user (``~/.cursor/hooks.json``) or system file holds. Hooks outside
+    the project file are never edited to gain the capability. Run after
+    :func:`write_hooks_config`, on the files the TUI will load.
 
     :returns: ``None`` when no such hook exists, else the first hold reason.
     """
-    paths = [
-        workspace / ".cursor" / _HOOKS_CONFIG_FILE,
+    reason = _workspace_home_reason(workspace, home)
+    if reason is not None:
+        return reason
+    reason = _stop_hooks_hold_reason(
+        workspace / ".cursor" / _HOOKS_CONFIG_FILE, owned_bridge=bridge_dir
+    )
+    if reason is not None:
+        return reason
+    for path in (
         (home if home is not None else Path.home()) / ".cursor" / _HOOKS_CONFIG_FILE,
         *(_SYSTEM_HOOKS_PATHS if system_paths is None else system_paths),
-    ]
-    for path in paths:
+    ):
         reason = _stop_hooks_hold_reason(path)
         if reason is not None:
             return reason
     return None
+
+
+def prepare_completion_receipts(
+    bridge_dir: Path, workspace: Path, *, opted_in: bool, home: Path | None = None
+) -> str | None:
+    """First launch step: drop the prior epoch and run the pre-write project gate.
+
+    :returns: ``"not_opted_in"``, a pre-write hold reason, or ``None``; pass it
+        to :func:`arm_completion_receipts` as *precheck*.
+    """
+    cursor_native_status.clear_receipt_epoch(bridge_dir)
+    if not opted_in:
+        return "not_opted_in"
+    return completion_receipt_project_precheck(workspace, home=home)
 
 
 def arm_completion_receipts(
@@ -578,22 +664,27 @@ def arm_completion_receipts(
     launch_epoch_ms: int,
     *,
     opted_in: bool,
+    precheck: str | None = None,
     home: Path | None = None,
     system_paths: tuple[Path, ...] | None = None,
 ) -> str | None:
     """Set this launch's completion-receipt capability from the opt-in and hooks.
 
-    Always drops the prior launch's epoch first, so neither a refused launch nor
-    one that fails midway keeps a stale capability. Writes a fresh epoch only
-    when opted in and :func:`completion_receipt_hook_hold_reason` finds nothing;
-    without an epoch the fence answers ``capability_unsupported`` and Trio holds.
+    Called after :func:`write_hooks_config`. Always drops the prior launch's
+    epoch first, so neither a refused launch nor one that fails midway keeps a
+    stale capability. Writes a fresh epoch only when opted in, *precheck* (from
+    :func:`prepare_completion_receipts`) is ``None`` and
+    :func:`completion_receipt_hook_hold_reason` finds nothing; without an epoch
+    the fence answers ``capability_unsupported`` and Trio holds.
 
-    :returns: ``None`` when armed, ``"not_opted_in"``, or the hook hold reason.
+    :returns: ``None`` when armed, ``"not_opted_in"``, or the hold reason.
     """
     cursor_native_status.clear_receipt_epoch(bridge_dir)
     if not opted_in:
         return "not_opted_in"
-    reason = completion_receipt_hook_hold_reason(workspace, home=home, system_paths=system_paths)
+    reason = precheck or completion_receipt_hook_hold_reason(
+        workspace, bridge_dir, home=home, system_paths=system_paths
+    )
     if reason is None:
         cursor_native_status.write_receipt_epoch(bridge_dir, launch_epoch_ms)
     return reason

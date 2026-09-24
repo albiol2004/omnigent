@@ -69,6 +69,8 @@ BIND_REASONS = frozenset(
     {
         "inject_unhashed",
         "user_rows_mismatch",
+        "turn_end_foreign",
+        "turn_end_unattributed",
         "turn_end_unbound",
         "duplicate_turn_end",
         "turn_open",

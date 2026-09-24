@@ -337,6 +337,8 @@ def record_turn_end(bridge_dir: Path, payload: object | None = None) -> None:
     :param bridge_dir: The cursor-native bridge dir (where the forwarder reads).
     :param payload: The cursor ``stop`` hook payload, if any — its
         ``generation_id`` and authoritative ``status`` are retained when present.
+        Under receipts its ``conversation_id`` must equal the tailed chat for the
+        turn end to carry a store position; otherwise it is kept unpositioned.
     """
     line: dict[str, object] = {"ts": time.time()}
     if isinstance(payload, dict):
@@ -358,9 +360,12 @@ def record_turn_end(bridge_dir: Path, payload: object | None = None) -> None:
     raw = payload if isinstance(payload, dict) else {}
     status = raw.get("status")
     conversation_id = raw.get("conversation_id")
+    if not isinstance(conversation_id, str) or not conversation_id:
+        conversation_id = None
     # The store position at hook time binds this turn end to the user rows that
     # exist when it fires (cursor blocks the next turn on this hook).
     store_chat, store_rowid = _hook_store_position(bridge_dir)
+    check = _conversation_check(conversation_id, store_chat)
     with receipt_lock(bridge_dir):
         turn_ends = _epoch_records(bridge_dir / TURN_END_FILE, epoch)
         injects = _epoch_records(bridge_dir / INJECT_FILE, epoch)
@@ -371,15 +376,30 @@ def record_turn_end(bridge_dir: Path, payload: object | None = None) -> None:
                 # Message-injection units, the same units as ``inject_count``.
                 "inject_count_at_end": _message_inject_count(injects),
                 "stop_status_raw": status if isinstance(status, str) else None,
-                "hook_conversation_id": (
-                    conversation_id if isinstance(conversation_id, str) else None
-                ),
-                "store_chat_at_end": store_chat,
-                "store_rowid_at_end": store_rowid,
+                "hook_conversation_id": conversation_id,
+                "conversation_check": check,
+                # A stop that is not provably this chat's gets no local position.
+                "store_chat_at_end": store_chat if check == "match" else None,
+                "store_rowid_at_end": store_rowid if check == "match" else None,
             }
         )
+        if check != "match":
+            line["observed_store_chat"] = store_chat
         with open(bridge_dir / TURN_END_FILE, "a", encoding="utf-8") as handle:
             handle.write("\n" + json.dumps(line, sort_keys=True) + "\n")
+
+
+def _conversation_check(conversation_id: str | None, store_chat: str | None) -> str:
+    """Whether a stop's ``conversation_id`` names the chat this bridge tails.
+
+    A shared (user/system) hooks.json can deliver another session's ``stop``
+    here, so only ``"match"`` may position a turn end in the local store.
+    """
+    if conversation_id is None:
+        return "missing"
+    if store_chat is None:
+        return "store_unbound"
+    return "match" if conversation_id == store_chat else "mismatch"
 
 
 def _hook_store_position(bridge_dir: Path) -> tuple[str | None, int | None]:

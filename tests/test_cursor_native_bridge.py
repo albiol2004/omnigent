@@ -75,11 +75,11 @@ def test_clear_composer_floods_backspace_until_pane_stable(
     bursts: the third sees no change and returns. It must never send the old
     ``C-a``/``C-k`` keys, which cursor-agent's composer ignores.
     """
-    # previous=capture#1 (draft); round1 sees #2 (empty, changed -> continue);
-    # round2 sees #3 (empty, unchanged -> stop).
+    # #1 is the placeholder check (a draft hides it); previous=#2 (draft); round1
+    # sees #3 (empty, changed -> continue); round2 sees #4 (unchanged -> stop).
     captured = _install_fake_tmux(
         monkeypatch,
-        pane_captures=["draft-content", "empty", "empty"],
+        pane_captures=["draft-content", "draft-content", "empty", "empty"],
     )
 
     cursor_native_bridge._clear_composer(_SOCK, _TARGET)
@@ -133,8 +133,8 @@ def test_clear_composer_is_bounded_when_pane_never_settles(
 
     cursor_native_bridge._clear_composer(_SOCK, _TARGET)
 
-    # One capture seeds `previous`, then one per round up to the cap.
-    assert counter["n"] == cursor_native_bridge._COMPOSER_CLEAR_MAX_ROUNDS + 1
+    # The placeholder check, one capture seeding `previous`, then one per round.
+    assert counter["n"] == cursor_native_bridge._COMPOSER_CLEAR_MAX_ROUNDS + 2
 
 
 def test_inject_user_message_clears_before_pasting(
@@ -153,9 +153,14 @@ def test_inject_user_message_clears_before_pasting(
         socket_path=Path(_SOCK),
         tmux_target=_TARGET,
     )
-    # Pane always reports an idle marker: _settle_pane returns immediately, the
-    # clear settles at once, and the paste-commit poll sees the needle.
-    captured = _install_fake_tmux(monkeypatch, pane_captures=["Add a follow-up hello marker"])
+    cursor_native_bridge._mark_composer_ready(bridge_dir)
+    # Settle sees the running placeholder; the clear then sees a draft (which
+    # hides it), floods until the pane settles, and the paste-commit poll sees
+    # the needle.
+    captured = _install_fake_tmux(
+        monkeypatch,
+        pane_captures=["Add a follow-up", "leftover", "leftover", "hello marker", "hello marker"],
+    )
     # Avoid real sleeps in the paste-commit settle.
     monkeypatch.setattr(cursor_native_bridge.time, "sleep", lambda *_a, **_k: None)
 
@@ -170,6 +175,111 @@ def test_inject_user_message_clears_before_pasting(
     assert not any("C-a" in cmd or "C-k" in cmd for cmd in captured)
     # Submit still happens last.
     assert any("send-keys" in cmd and "Enter" in cmd for cmd in captured)
+
+
+def test_clear_composer_sends_nothing_when_placeholder_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A visible placeholder means an empty composer: no End and no Backspace at all.
+
+    On a still-booting TUI a Backspace burst is stored as literal DELs ahead of
+    the next paste, and the pane cannot show it.
+    """
+    for marker in cursor_native_bridge._IDLE_MARKERS:
+        captured = _install_fake_tmux(monkeypatch, pane_captures=[f"> {marker}"])
+
+        cursor_native_bridge._clear_composer(_SOCK, _TARGET)
+
+        assert _send_keys_calls(captured) == []
+
+
+class TestColdStartReadiness:
+    """The first injection into a fresh TUI waits for a stable composer, or sends nothing."""
+
+    def test_settle_requires_consecutive_identical_captures(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        n = cursor_native_bridge._COMPOSER_READY_STABLE_CAPTURES
+        booting = [f"{_IDLE}\nstarting {i}" for i in range(4)]
+        captured = _install_fake_tmux(monkeypatch, pane_captures=["", *booting, _IDLE])
+        monkeypatch.setattr(cursor_native_bridge.time, "sleep", lambda *_a, **_k: None)
+
+        ready = cursor_native_bridge._settle_pane(
+            _SOCK, _TARGET, timeout_s=5.0, require_stable=True
+        )
+
+        assert ready
+        captures = [c for c in captured if "capture-pane" in c]
+        assert len(captures) == 1 + len(booting) + n
+
+    def test_warm_settle_returns_on_first_marker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured = _install_fake_tmux(monkeypatch, pane_captures=[f"{_IDLE} 1", f"{_IDLE} 2"])
+
+        assert cursor_native_bridge._settle_pane(_SOCK, _TARGET, timeout_s=5.0)
+        assert len([c for c in captured if "capture-pane" in c]) == 1
+
+    def test_cold_inject_times_out_without_typing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pane that never settles: raise before any key, paste or Enter."""
+        bridge_dir = _prepare_bridge(tmp_path)
+        counter = {"n": 0}
+        captured: list[list[str]] = []
+
+        def _fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            del kwargs
+            captured.append(cmd)
+            if "capture-pane" in cmd:
+                counter["n"] += 1
+                return _FakeCompleted(stdout=f"{_IDLE}\nstarting {counter['n']}")
+            return _FakeCompleted()
+
+        monkeypatch.setattr("subprocess.run", _fake_run)
+
+        with pytest.raises(RuntimeError, match="not stably ready"):
+            cursor_native_bridge.inject_user_message(bridge_dir, content="hello", timeout_s=0.5)
+
+        keys = ("send-keys", "load-buffer", "paste-buffer")
+        typed = [c for c in captured if any(k in c for k in keys)]
+        assert typed == []
+        assert not cursor_native_bridge._composer_ready_seen(bridge_dir)
+
+    def test_ready_stamp_follows_the_tui_instance(self, tmp_path: Path) -> None:
+        """A relaunch rewrites tmux.json, so the next injection is cold again."""
+        bridge_dir = _prepare_bridge(tmp_path)
+        assert not cursor_native_bridge._composer_ready_seen(bridge_dir)
+        cursor_native_bridge._mark_composer_ready(bridge_dir)
+        assert cursor_native_bridge._composer_ready_seen(bridge_dir)
+
+        write_tmux_target(bridge_dir, socket_path=Path(_SOCK), tmux_target=_TARGET, pid=4242)
+
+        assert not cursor_native_bridge._composer_ready_seen(bridge_dir)
+
+    def test_warm_inject_skips_the_stability_wait(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Once stamped, a changing pane (a running turn) does not delay steering."""
+        bridge_dir = _prepare_bridge(tmp_path)
+        cursor_native_bridge._mark_composer_ready(bridge_dir)
+        counter = {"n": 0}
+        captured: list[list[str]] = []
+
+        def _fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            del kwargs
+            captured.append(cmd)
+            if "capture-pane" in cmd:
+                counter["n"] += 1
+                return _FakeCompleted(stdout=f"{_IDLE} hello marker {counter['n']}")
+            return _FakeCompleted()
+
+        monkeypatch.setattr("subprocess.run", _fake_run)
+        monkeypatch.setattr(cursor_native_bridge.time, "sleep", lambda *_a, **_k: None)
+
+        cursor_native_bridge.inject_user_message(bridge_dir, content="hello marker", timeout_s=0.5)
+
+        tails = _send_keys_calls(captured)
+        assert tails == [["-t", _TARGET, "Enter"]]  # no clear keys, one submit
+        assert counter["n"] == 3  # settle, placeholder check, needle poll
 
 
 # Idle marker so _settle_pane returns and _clear_composer settles at once.

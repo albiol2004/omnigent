@@ -106,6 +106,18 @@ _TRUST_MARKER = "Trust this workspace"
 # deletions comfortably exceed any real draft.
 _COMPOSER_CLEAR_CHUNK = 200
 _COMPOSER_CLEAR_MAX_ROUNDS = 50
+# Cold-start readiness (see _settle_pane): cursor-agent paints the input
+# placeholder before its key handler is wired, so keys sent then are taken as
+# literal text (a Backspace burst landed as 200 DELs ahead of a first prompt) or
+# dropped. The first injection into a freshly launched TUI therefore also needs
+# the pane unchanged across this many consecutive captures (~1s at
+# _POLL_INTERVAL_S) once a placeholder is up. Later injections skip it: a running
+# turn's pane never stops changing, and mid-turn steering must stay fast.
+_COMPOSER_READY_STABLE_CAPTURES = 6
+# Per-bridge stamp: the tmux.json instance (see _tmux_instance_key) whose
+# composer has been seen stably ready. A relaunch rewrites tmux.json, so the
+# next injection is cold again.
+_COMPOSER_READY_FILE = "composer_ready.json"
 # After a cancel, cursor-agent restores the interrupted prompt into the composer
 # slightly after the turn stops. Wait for the pane to stop changing (generation
 # ended and the draft settled) before clearing it, bounded by this timeout.
@@ -939,27 +951,80 @@ def _submit_needle(content: str) -> str:
     return stripped[:24] if len(stripped) >= 4 else ""
 
 
-def _settle_pane(socket_path: str, tmux_target: str, *, timeout_s: float) -> None:
-    """Best-effort wait until the Cursor input box is ready to receive a paste.
+def _settle_pane(
+    socket_path: str,
+    tmux_target: str,
+    *,
+    timeout_s: float,
+    require_stable: bool = False,
+) -> bool:
+    """Wait until the Cursor input box is ready to receive a paste.
 
     Accepts the first-run "Trust this workspace" modal (sends ``a`` at most once)
-    so the input box can mount, then waits for an idle/running input marker. Falls
-    through after the timeout (mid-turn steering has no idle placeholder) rather
-    than raising.
+    so the input box can mount, then waits for an idle/running input marker. With
+    *require_stable* (a cold TUI) the pane must also stay byte-identical, marker
+    visible, for :data:`_COMPOSER_READY_STABLE_CAPTURES` consecutive captures.
+
+    :returns: Whether readiness was seen before *timeout_s*. Warm callers ignore
+        a ``False`` and fall through (mid-turn steering may show no placeholder).
     """
     deadline = time.monotonic() + timeout_s
     trust_accepted = False
+    stable_pane: str | None = None
+    stable_count = 0
     while time.monotonic() < deadline:
         pane = _capture_pane(socket_path, tmux_target)
         if any(marker in pane for marker in _IDLE_MARKERS):
-            return
-        # One-shot, only when no input marker is up (so a later transcript that
-        # merely echoes the phrase can't spray repeated keystrokes into the TUI).
-        if not trust_accepted and _TRUST_MARKER in pane:
-            trust_accepted = True
-            with contextlib.suppress(RuntimeError):
-                _run_tmux(socket_path, "send-keys", "-t", tmux_target, "a")
+            if not require_stable:
+                return True
+            if pane == stable_pane:
+                stable_count += 1
+            else:
+                stable_pane, stable_count = pane, 1
+            if stable_count >= _COMPOSER_READY_STABLE_CAPTURES:
+                return True
+        else:
+            stable_pane, stable_count = None, 0
+            # One-shot, only when no input marker is up (so a later transcript that
+            # merely echoes the phrase can't spray repeated keystrokes into the TUI).
+            if not trust_accepted and _TRUST_MARKER in pane:
+                trust_accepted = True
+                with contextlib.suppress(RuntimeError):
+                    _run_tmux(socket_path, "send-keys", "-t", tmux_target, "a")
         time.sleep(_POLL_INTERVAL_S)
+    return False
+
+
+def _tmux_instance_key(bridge_dir: Path) -> str | None:
+    """Identify the advertised TUI instance: a hash of ``tmux.json`` (rewritten per launch)."""
+    try:
+        raw = (bridge_dir / _TMUX_FILE).read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _composer_ready_seen(bridge_dir: Path) -> bool:
+    """Whether this TUI instance's composer was already seen stably ready."""
+    key = _tmux_instance_key(bridge_dir)
+    if key is None:
+        return False
+    try:
+        data = json.loads((bridge_dir / _COMPOSER_READY_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("tmux") == key
+
+
+def _mark_composer_ready(bridge_dir: Path) -> None:
+    """Stamp this TUI instance as warm (best effort: a lost stamp only re-waits)."""
+    key = _tmux_instance_key(bridge_dir)
+    if key is None:
+        return
+    tmp = bridge_dir / (_COMPOSER_READY_FILE + ".tmp")
+    with contextlib.suppress(OSError):
+        tmp.write_text(json.dumps({"tmux": key}), encoding="utf-8")
+        os.replace(tmp, bridge_dir / _COMPOSER_READY_FILE)
 
 
 def _clear_composer(socket_path: str, tmux_target: str) -> None:
@@ -970,10 +1035,15 @@ def _clear_composer(socket_path: str, tmux_target: str) -> None:
     widget ignores the readline ``C-a``/``C-k``/``C-u`` keys we'd otherwise use
     to clear a line — only ``Backspace`` deletes. So jump to the end (``End``)
     and flood ``Backspace`` in ``send-keys -N`` bursts until the pane stops
-    changing (the draft is gone) or a generous round cap is hit. A burst against
-    an already-empty composer is a harmless no-op (unlike ``C-c``, which would
-    arm cursor-agent's exit), so this is safe to run before every injection.
+    changing (the draft is gone) or a generous round cap is hit.
+
+    A visible input placeholder means the composer is already empty, so no key
+    is sent at all: on a TUI that is still booting the burst is taken as literal
+    ``\x7f`` text ahead of the next paste, which the unchanged pane cannot reveal.
     """
+    pane = _capture_pane(socket_path, tmux_target)
+    if any(marker in pane for marker in _IDLE_MARKERS):
+        return
     _run_tmux(socket_path, "send-keys", "-t", tmux_target, "End")
     previous = _capture_pane(socket_path, tmux_target)
     for _ in range(_COMPOSER_CLEAR_MAX_ROUNDS):
@@ -1009,8 +1079,9 @@ def inject_user_message(
     :param bridge_dir: The cursor-native bridge dir holding ``tmux.json``.
     :param content: User text (non-empty).
     :param timeout_s: Per-readiness-gate timeout.
-    :raises RuntimeError: If the tmux target is never advertised or a tmux
-        command fails.
+    :raises RuntimeError: If the tmux target is never advertised, a tmux
+        command fails, or a freshly launched TUI's input box is not stably ready
+        within *timeout_s* (nothing is typed in that case).
     """
     if not content:
         raise RuntimeError("cursor-native injection requires non-empty content")
@@ -1027,7 +1098,18 @@ def inject_user_message(
     # Admission point for completion receipts: refuses when the input fence is
     # closed and logs the prompt for opted-in sessions (no-op otherwise).
     cursor_native_status.record_injection(bridge_dir, content, kind="message")
-    _settle_pane(socket_path, tmux_target, timeout_s=timeout_s)
+    # A freshly launched TUI must be stably ready before any key reaches it; if
+    # it never is, fail before typing anything (the logged injection then holds
+    # as undelivered — never retried here).
+    cold = not _composer_ready_seen(bridge_dir)
+    ready = _settle_pane(socket_path, tmux_target, timeout_s=timeout_s, require_stable=cold)
+    if cold:
+        if not ready:
+            raise RuntimeError(
+                f"cursor input box was not stably ready within {timeout_s:.0f}s after launch; "
+                "the message was not sent"
+            )
+        _mark_composer_ready(bridge_dir)
     # Clear any leftover draft (e.g. the prompt cursor-agent restores into the
     # composer after a cancelled turn) so it can't prepend the new message.
     _clear_composer(socket_path, tmux_target)

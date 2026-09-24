@@ -468,6 +468,137 @@ def write_hooks_config(
     return path
 
 
+#: System-wide ``hooks.json`` locations from Cursor's hooks documentation
+#: (Linux, macOS). Checked when present; not verified against a live install.
+_SYSTEM_HOOKS_PATHS = (
+    Path("/etc/cursor/hooks.json"),
+    Path("/Library/Application Support/Cursor/hooks.json"),
+)
+
+
+#: The fixed argv between the interpreter and the bridge dir in an owned hook.
+_OWNED_HOOK_ARGS = ("-I", "-m", _USAGE_HOOK_MODULE, "record-usage", "--bridge-dir")
+
+
+def is_owned_usage_hook_command(command: object) -> bool:
+    """Whether *command* is exactly a command :func:`build_hooks_config` generates.
+
+    Stricter than :func:`_is_omnigent_usage_hook`: the command must be the
+    canonical quoted argv ``<abs python> -I -m <usage module> record-usage
+    --bridge-dir <abs dir>`` and nothing else, so a foreign hook that merely
+    mentions the module (``sh -c '…usage record-usage…; echo …'``) is not owned.
+    """
+    import shlex
+
+    if not isinstance(command, str):
+        return False
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    if len(argv) != 7 or tuple(argv[1:6]) != _OWNED_HOOK_ARGS:
+        return False
+    python, bridge = argv[0], argv[6]
+    if not (os.path.isabs(python) and os.path.basename(python).startswith("python")):
+        return False
+    if not os.path.isabs(bridge):
+        return False
+    return " ".join(shlex.quote(part) for part in argv) == command
+
+
+def _stop_hooks_hold_reason(path: Path) -> str | None:
+    """Why *path* rules out completion receipts, or ``None`` if it does not.
+
+    A missing file is fine. An unreadable or malformed one fails closed, as does
+    any entry under a stop-type event (``stop``, ``subagentStop``, matched
+    case-insensitively) that is not an owned Omnigent usage hook.
+    """
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return f"hooks_config_unreadable:{path}"
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return f"hooks_config_malformed:{path}"
+    if not isinstance(data, dict):
+        return f"hooks_config_malformed:{path}"
+    hooks = data.get("hooks")
+    if hooks is None:
+        return None
+    if not isinstance(hooks, dict):
+        return f"hooks_config_malformed:{path}"
+    for event, entries in hooks.items():
+        if not str(event).casefold().endswith("stop"):
+            continue
+        if not isinstance(entries, list):
+            return f"hooks_config_malformed:{path}"
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return f"hooks_config_malformed:{path}"
+            if not is_owned_usage_hook_command(entry.get("command")):
+                return f"foreign_stop_hook:{path}"
+    return None
+
+
+def completion_receipt_hook_hold_reason(
+    workspace: Path,
+    *,
+    home: Path | None = None,
+    system_paths: tuple[Path, ...] | None = None,
+) -> str | None:
+    """Check the hooks.json files Cursor loads for this launch before receipts arm.
+
+    A non-Omnigent ``stop`` hook can answer ``followup_message`` and start a turn
+    that no receipt binds correctly, so any such hook, in the
+    project (``<workspace>/.cursor/hooks.json``), user (``~/.cursor/hooks.json``)
+    or system file, disables receipts for the launch. User hooks are never
+    edited to gain the capability. Read once, before :func:`write_hooks_config`
+    rewrites the project file (which would drop a malformed one).
+
+    :returns: ``None`` when no such hook exists, else the first hold reason.
+    """
+    paths = [
+        workspace / ".cursor" / _HOOKS_CONFIG_FILE,
+        (home if home is not None else Path.home()) / ".cursor" / _HOOKS_CONFIG_FILE,
+        *(_SYSTEM_HOOKS_PATHS if system_paths is None else system_paths),
+    ]
+    for path in paths:
+        reason = _stop_hooks_hold_reason(path)
+        if reason is not None:
+            return reason
+    return None
+
+
+def arm_completion_receipts(
+    bridge_dir: Path,
+    workspace: Path,
+    launch_epoch_ms: int,
+    *,
+    opted_in: bool,
+    home: Path | None = None,
+    system_paths: tuple[Path, ...] | None = None,
+) -> str | None:
+    """Set this launch's completion-receipt capability from the opt-in and hooks.
+
+    Always drops the prior launch's epoch first, so neither a refused launch nor
+    one that fails midway keeps a stale capability. Writes a fresh epoch only
+    when opted in and :func:`completion_receipt_hook_hold_reason` finds nothing;
+    without an epoch the fence answers ``capability_unsupported`` and Trio holds.
+
+    :returns: ``None`` when armed, ``"not_opted_in"``, or the hook hold reason.
+    """
+    cursor_native_status.clear_receipt_epoch(bridge_dir)
+    if not opted_in:
+        return "not_opted_in"
+    reason = completion_receipt_hook_hold_reason(workspace, home=home, system_paths=system_paths)
+    if reason is None:
+        cursor_native_status.write_receipt_epoch(bridge_dir, launch_epoch_ms)
+    return reason
+
+
 def approve_mcp_server_for_workspace(workspace: Path) -> None:
     """Approve the workspace-scoped Omnigent MCP server in Cursor's state.
 

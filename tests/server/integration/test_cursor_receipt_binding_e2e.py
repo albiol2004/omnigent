@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -144,6 +145,8 @@ def _env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv(input_fence.SINGLE_SERVER_ENV, "1")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir()
+    # System hooks.json paths are host state; the unit tests cover them explicitly.
+    monkeypatch.setattr(cbridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
     input_fence.reset_for_tests()
     pending_inputs.reset_for_tests()
 
@@ -303,17 +306,27 @@ async def _scenario(
     cfg: dict,
     during_turn_1: Callable[[CursorNativeExecutor, _Pane, str, list[str]], Awaitable[None]],
     fence_on: int,
+    setup_hooks: Callable[[Path], None] | None = None,
+    hold_until_stops: int | None = None,
 ) -> dict[str, Any]:
-    """Dispatch one prompt, act during turn 1, then fence when the rev-*fence_on* rules pass."""
+    """Dispatch one prompt, act during turn 1, then fence when the rev-*fence_on* rules pass.
+
+    With *hold_until_stops*, the launch is expected to be held by the hook gate:
+    poll as a rev3 consumer until that many turn ends, fencing only if the
+    consumer passes, then probe the fence once.
+    """
     sid = await _opted_in_session(client)
     bridge_dir = cbridge.bridge_dir_for_session_id(sid)
     ws = tmp_path / "ws"
     ws.mkdir()
+    if setup_hooks is not None:
+        setup_hooks(ws)
     launch_ms = int(time.time() * 1000) - 1000
-    # The runner's launch steps for an opted-in session.
+    # The runner's launch steps for an opted-in session, in its order.
     status.clear_cursor_status_state(bridge_dir)
     fwd.clear_receipt_forwarder_state(bridge_dir)
-    status.write_receipt_epoch(bridge_dir, launch_ms)
+    hold_reason = cbridge.arm_completion_receipts(bridge_dir, ws, launch_ms, opted_in=True)
+    cbridge.write_hooks_config(ws, bridge_dir, python_executable=_hook_python(tmp_path))
     _route_runner_to(monkeypatch, bridge_dir)
     _route_forwarder_to(monkeypatch, app, _Faults())
     pane = _Pane(tmp_path, bridge_dir, ws, {"turn_s": 1.0, **cfg})
@@ -332,7 +345,7 @@ async def _scenario(
     executor = CursorNativeExecutor(bridge_dir)
     prompt = f"TASK nonce={uuid.uuid4().hex} implement slice S and run tests"
     sent: list[str] = []
-    record: dict[str, Any] = {"passed_rev3_before_fence": []}
+    record: dict[str, Any] = {"passed_rev3_before_fence": [], "hold_reason": hold_reason}
     try:
         async for _ev in executor.run_turn([{"role": "user", "content": prompt}], [], ""):
             pass
@@ -343,6 +356,9 @@ async def _scenario(
 
         await _wait(_turn_1_started, 20, "turn 1 start")
         await during_turn_1(executor, pane, prompt, sent)
+        if hold_until_stops is not None:
+            await _held(client, sid, pane, launch_ms, sent, record, hold_until_stops)
+            return record
 
         async def _consumer_pass() -> tuple[dict, dict] | None:
             snap = await _snapshot(client, sid)
@@ -376,6 +392,78 @@ async def _scenario(
         fwd_task.cancel()
         await asyncio.gather(fwd_task, return_exceptions=True)
         pane.close()
+
+
+def _hook_python(tmp_path: Path) -> str:
+    """A ``python`` for the generated hook command that works in the test sandbox.
+
+    The real command runs ``<python> -I -m …``; ``-I`` would ignore the
+    PYTHONPATH that points the sandbox at the tree under test, so this wrapper
+    drops it. The hook command keeps its canonical, owned shape.
+    """
+    wrapper = tmp_path / "pybin" / "python"
+    if not wrapper.exists():
+        wrapper.parent.mkdir(parents=True, exist_ok=True)
+        wrapper.write_text(
+            '#!/bin/sh\n[ "$1" = "-I" ] && shift\nexec ' + shlex.quote(sys.executable) + ' "$@"\n'
+        )
+        wrapper.chmod(0o755)
+    return str(wrapper)
+
+
+async def _held(
+    client: httpx.AsyncClient,
+    sid: str,
+    pane: _Pane,
+    launch_ms: int,
+    sent: list[str],
+    record: dict[str, Any],
+    stops: int,
+) -> None:
+    """Act as a rev3 consumer until *stops* turn ends, then probe the fence."""
+    record["receipt_seen"] = False
+
+    async def _poll() -> bool:
+        snap = await _snapshot(client, sid)
+        if input_fence.TURN_RECEIPT_LABEL in (snap.get("labels") or {}):
+            record["receipt_seen"] = True
+        if "fence" not in record:
+            why, ctx = consumer(snap, launch_ms, sent, rev=3)
+            if why == "ok":
+                record["passed_rev3_before_fence"].append(ctx["binding"])
+                record["t_fence"] = time.time()
+                record["fence"] = await _fence_close(client, sid, ctx["core"])
+        return sum(e["ev"] == "stop_hook" for e in pane.events()) >= stops
+
+    await _wait(_poll, 40, f"{stops} turn ends")
+    await asyncio.sleep(2.0)  # give the forwarder time to post anything it would
+    await _poll()
+    events = pane.events()
+    record["tui_events"] = events
+    if "t_fence" in record:
+        record["turns_ending_after_fence"] = [
+            e for e in events if e["ev"] == "stop_hook" and e["t"] > record["t_fence"]
+        ]
+    resp = await client.post(
+        f"/v1/sessions/{sid}/events",
+        json={
+            "type": "input_fence",
+            "data": {
+                "action": "close",
+                "fence_id": uuid.uuid4().hex,
+                "expect": {
+                    "epoch": launch_ms,
+                    "turn_seq": stops,
+                    "inject_count": len(sent),
+                    "turn_end_count": stops,
+                    "chat_id": "probe",
+                },
+            },
+        },
+        headers=_OWNER,
+    )
+    record["fence_probe"] = {"status": resp.status_code, "body": resp.json()}
+    record["final_labels"] = (await _snapshot(client, sid)).get("labels")
 
 
 async def _repost(executor: CursorNativeExecutor, prompt: str, sent: list[str]) -> None:
@@ -628,3 +716,164 @@ async def test_lost_row_without_restart_stays_unacked(
     assert rec["server_has_alpha"] is False
     assert (rec["detail"]["observed_max_acked"], rec["detail"]["unacked"]) == (False, 1)
     assert rec["consumer"] == "R4_unacked"
+
+
+# --------------------------------------------------------------------------- #
+# Launch hook gate: a foreign stop hook disables receipts.
+# --------------------------------------------------------------------------- #
+
+#: The follow-up a foreign stop hook asks for at stop 1 is queued
+#: BEHIND the queued repost, and its user row lands 2 s into its own turn.
+_FOLLOWUP_BEHIND_REPOST_CFG = {
+    "hooks_from_config": True,
+    "turn_s_by_prefix": {"TASK": 2.5, "Continue": 4.0},
+    "followup_front": False,
+    "user_row_delay_by_origin": {"stop_hook_followup": 2.0},
+}
+
+
+def _foreign_followup_hook(tmp_path: Path) -> dict[str, Any]:
+    """A user's stop hook that answers ``followup_message`` at its first stop only."""
+    script = tmp_path / "followup_hook.py"
+    script.write_text(
+        "import json, pathlib, sys\n"
+        "json.load(sys.stdin)\n"
+        "n = pathlib.Path(sys.argv[1])\n"
+        "seen = int(n.read_text()) if n.exists() else 0\n"
+        "n.write_text(str(seen + 1))\n"
+        f"print(json.dumps({{'followup_message': {_FOLLOWUP!r}}}) if seen == 0 else '')\n"
+    )
+    command = " ".join(
+        shlex.quote(p) for p in (sys.executable, str(script), str(tmp_path / "followups"))
+    )
+    return {"version": 1, "hooks": {"stop": [{"command": command}]}}
+
+
+def _write_hooks(path: Path, cfg: dict[str, Any] | str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(cfg if isinstance(cfg, str) else json.dumps(cfg))
+
+
+def _assert_held(rec: dict[str, Any], reason_prefix: str) -> None:
+    assert rec["hold_reason"] is not None and rec["hold_reason"].startswith(reason_prefix)
+    # No receipt ever, so no consumer pass and no fence close was attempted …
+    assert rec["receipt_seen"] is False
+    assert rec["passed_rev3_before_fence"] == []
+    assert "fence" not in rec, rec.get("fence")
+    # … and even a fence probe never verifies: the runner refuses it as unsupported.
+    fence = rec["fence_probe"]["body"]["fence"]
+    assert (fence["verified"], fence["reason"]) == (False, "runner_rejected_409"), fence
+    assert fence["runner_ack"] == {"error": "capability_unsupported"}
+    assert input_fence.TURN_RECEIPT_LABEL not in (rec["final_labels"] or {})
+
+
+async def test_foreign_project_followup_hook_holds(
+    auth_app, auth_client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A project follow-up stop hook disables receipts at launch.
+
+    Without the gate this ordering false-completes: the rev3 consumer passes,
+    the fence verifies, and the follow-up turn ends after it.
+    """
+    hooks = _foreign_followup_hook(tmp_path)
+
+    async def _act(executor, pane, prompt, sent) -> None:
+        await _repost(executor, prompt, sent)
+
+    rec = await _scenario(
+        tmp_path,
+        monkeypatch,
+        auth_app,
+        auth_client,
+        cfg=_FOLLOWUP_BEHIND_REPOST_CFG,
+        during_turn_1=_act,
+        fence_on=3,
+        setup_hooks=lambda ws: _write_hooks(ws / ".cursor" / "hooks.json", hooks),
+        hold_until_stops=3,
+    )
+    _dump("foreign_project_followup_hook_holds", rec)
+    _assert_held(rec, "foreign_stop_hook:")
+    # The ordering really ran: prompt, queued repost, then the follow-up.
+    starts = [e["origin"] for e in rec["tui_events"] if e["ev"] == "turn_start"]
+    assert starts == ["pane", "pane", "stop_hook_followup"], starts
+    # The user's hook was kept and ran next to Omnigent's own.
+    ran = {e["command"] for e in rec["tui_events"] if e["ev"] == "config_stop_hook"}
+    assert hooks["hooks"]["stop"][0]["command"] in ran
+    assert any(cbridge.is_owned_usage_hook_command(c) for c in ran)
+
+
+async def test_foreign_user_followup_hook_holds(
+    auth_app, auth_client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same ordering with the follow-up hook in the user-level ``~/.cursor/hooks.json``."""
+    hooks = _foreign_followup_hook(tmp_path)
+    _write_hooks(Path(os.environ["HOME"]) / ".cursor" / "hooks.json", hooks)
+
+    async def _act(executor, pane, prompt, sent) -> None:
+        await _repost(executor, prompt, sent)
+
+    rec = await _scenario(
+        tmp_path,
+        monkeypatch,
+        auth_app,
+        auth_client,
+        cfg=_FOLLOWUP_BEHIND_REPOST_CFG,
+        during_turn_1=_act,
+        fence_on=3,
+        hold_until_stops=3,
+    )
+    _dump("foreign_user_followup_hook_holds", rec)
+    _assert_held(rec, "foreign_stop_hook:")
+    starts = [e["origin"] for e in rec["tui_events"] if e["ev"] == "turn_start"]
+    assert starts == ["pane", "pane", "stop_hook_followup"], starts
+
+
+async def test_malformed_project_hooks_config_holds(
+    auth_app, auth_client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed project hooks.json fails closed, although the launch rewrites it clean."""
+
+    async def _act(executor, pane, prompt, sent) -> None:
+        await _repost(executor, prompt, sent)
+
+    rec = await _scenario(
+        tmp_path,
+        monkeypatch,
+        auth_app,
+        auth_client,
+        cfg={"hooks_from_config": True, "turn_s_by_prefix": {"TASK": 2.5}},
+        during_turn_1=_act,
+        fence_on=3,
+        setup_hooks=lambda ws: _write_hooks(ws / ".cursor" / "hooks.json", "{not json"),
+        hold_until_stops=2,
+    )
+    _dump("malformed_project_hooks_config_holds", rec)
+    _assert_held(rec, "hooks_config_malformed:")
+
+
+async def test_owned_hooks_only_stays_capable(
+    auth_app, auth_client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Control: only Omnigent's own hooks (this launch's plus a stale one) → receipts work."""
+    stale = cbridge.build_hooks_config(
+        tmp_path / "older-bridge", python_executable=_hook_python(tmp_path)
+    )
+    _write_hooks(Path(os.environ["HOME"]) / ".cursor" / "hooks.json", stale)
+
+    async def _act(executor, pane, prompt, sent) -> None:
+        await _repost(executor, prompt, sent)
+
+    rec = await _scenario(
+        tmp_path,
+        monkeypatch,
+        auth_app,
+        auth_client,
+        cfg={"hooks_from_config": True, "turn_s_by_prefix": {"TASK": 2.5}},
+        during_turn_1=_act,
+        fence_on=3,
+    )
+    _dump("owned_hooks_only_stays_capable", rec)
+    assert rec["hold_reason"] is None
+    assert (rec["fence"]["verified"], rec["fence"]["reason"]) == (True, None), rec["fence"]
+    assert rec["turns_ending_after_fence"] == []
+    assert rec["final_core"]["turn_end_count"] == rec["expect_turn_end_count"] == 2

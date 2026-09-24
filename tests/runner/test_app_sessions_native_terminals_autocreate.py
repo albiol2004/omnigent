@@ -1694,6 +1694,7 @@ async def _run_auto_create_cursor_terminal(
     agent_spec: AgentSpec | None,
     terminal_launch_args: list[str] | None,
     labels: dict[str, str] | None = None,
+    workspace_hooks: str | None = None,
 ) -> dict[str, Any]:
     """Drive ``_auto_create_cursor_terminal`` and return what it wired up.
 
@@ -1712,6 +1713,9 @@ async def _run_auto_create_cursor_terminal(
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
+    if workspace_hooks is not None:
+        (workspace / ".cursor").mkdir()
+        (workspace / ".cursor" / "hooks.json").write_text(workspace_hooks)
     monkeypatch.setattr(cursor_native_bridge, "_BRIDGE_ROOT", tmp_path / "cursor-bridge")
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://127.0.0.1:8000")
     monkeypatch.setattr(
@@ -4852,6 +4856,9 @@ async def test_auto_create_cursor_terminal_completion_receipt_opt_in(
     """Only an opted-in launch stamps a receipt epoch; a default launch clears a stale one."""
     from omnigent.harnesses.cursor_native import status as cursor_native_status
 
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+
     bridge_dir = tmp_path / "cursor-bridge" / "stale"
     monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
     cursor_native_status.write_receipt_epoch(bridge_dir, 1)
@@ -4872,3 +4879,96 @@ async def test_auto_create_cursor_terminal_completion_receipt_opt_in(
         assert epoch is None
     # A relaunch never reopens input.
     assert cursor_native_status.read_input_fence(bridge_dir) is not None
+
+
+_FOREIGN_STOP_HOOKS = json.dumps({"version": 1, "hooks": {"stop": [{"command": "./followup.sh"}]}})
+
+
+@pytest.mark.parametrize(
+    ("where", "hooks", "reason"),
+    [
+        ("project", _FOREIGN_STOP_HOOKS, "foreign_stop_hook"),
+        ("user", _FOREIGN_STOP_HOOKS, "foreign_stop_hook"),
+        ("project", "{not json", "hooks_config_malformed"),
+    ],
+    ids=["project-foreign", "user-foreign", "project-malformed"],
+)
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_foreign_stop_hook_withholds_receipts(
+    where: str,
+    hooks: str,
+    reason: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An opted-in (re)launch next to a non-Omnigent stop hook arms no receipts.
+
+    A stale epoch from the prior launch must not survive either, and the user's
+    hook is kept next to Omnigent's usage hook.
+    """
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    if where == "user":
+        (home / ".cursor").mkdir(parents=True)
+        (home / ".cursor" / "hooks.json").write_text(hooks)
+    bridge_dir = tmp_path / "cursor-bridge" / "stale"
+    monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
+    cursor_native_status.write_receipt_epoch(bridge_dir, 1)
+    labels = {
+        cursor_native_status.COMPLETION_RECEIPTS_LABEL: (
+            cursor_native_status.COMPLETION_RECEIPTS_VERSION
+        )
+    }
+    with caplog.at_level("WARNING"):
+        await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+            labels=labels,
+            workspace_hooks=hooks if where == "project" else None,
+        )
+    assert cursor_native_status.read_receipt_epoch(bridge_dir) is None
+    assert not (bridge_dir / cursor_native_status.RECEIPT_EPOCH_FILE).exists()
+    assert f"completion receipts disabled for this launch ({reason}:" in caplog.text
+    written = json.loads((tmp_path / "ws" / ".cursor" / "hooks.json").read_text())
+    commands = [entry["command"] for entry in written["hooks"]["stop"]]
+    assert any(cursor_native_bridge.is_owned_usage_hook_command(c) for c in commands)
+    if where == "project" and reason == "foreign_stop_hook":
+        assert "./followup.sh" in commands
+    if where == "user":
+        assert (home / ".cursor" / "hooks.json").read_text() == hooks
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_owned_stop_hook_keeps_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale Omnigent usage hook from an earlier launch does not disable receipts."""
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    bridge_dir = tmp_path / "cursor-bridge" / "fresh"
+    monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
+    stale = cursor_native_bridge.build_hooks_config(tmp_path / "older-bridge")
+    labels = {
+        cursor_native_status.COMPLETION_RECEIPTS_LABEL: (
+            cursor_native_status.COMPLETION_RECEIPTS_VERSION
+        )
+    }
+    await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=None,
+        labels=labels,
+        workspace_hooks=json.dumps(stale),
+    )
+    epoch = cursor_native_status.read_receipt_epoch(bridge_dir)
+    assert epoch is not None and epoch > 1

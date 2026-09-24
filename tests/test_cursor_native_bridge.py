@@ -539,6 +539,7 @@ class TestMcpBridgeConfigSecureDir:
             cursor_native_bridge.write_mcp_bridge_config(bridge_dir)
         assert not (bridge_dir / "bridge.json").exists()
 
+
 def test_kill_session_issues_kill_session_on_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -619,3 +620,167 @@ def test_kill_session_escalates_live_pane_after_tmux_kill(
         ["tmux", "-S", _SOCK, "kill-session", "-t", _TARGET],
     ]
     assert killed == [(24680, native_tmux_kill._proc._SIGKILL)]
+
+
+class TestCompletionReceiptHookGate:
+    """Receipts arm only when no non-Omnigent ``stop`` hook is configured."""
+
+    _PY = "/usr/bin/python3"
+
+    def _owned(self, bridge: str = "/tmp/bridge-x") -> str:
+        cfg = cursor_native_bridge.build_hooks_config(Path(bridge), python_executable=self._PY)
+        hooks = cfg["hooks"]
+        assert isinstance(hooks, dict)
+        return hooks["stop"][0]["command"]
+
+    def _write(self, path: Path, payload: object) -> Path:
+        import json
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(payload, bytes):
+            path.write_bytes(payload)
+        elif isinstance(payload, str):
+            path.write_text(payload)
+        else:
+            path.write_text(json.dumps(payload))
+        return path
+
+    def _reason(self, tmp_path: Path, system: tuple[Path, ...] = ()) -> str | None:
+        return cursor_native_bridge.completion_receipt_hook_hold_reason(
+            tmp_path / "ws", home=tmp_path / "home", system_paths=system
+        )
+
+    def test_owned_command_matches_generated_shapes(self) -> None:
+        assert cursor_native_bridge.is_owned_usage_hook_command(self._owned())
+        assert cursor_native_bridge.is_owned_usage_hook_command(self._owned("/tmp/dir with space"))
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Incidental substrings of the module / subcommand in a foreign command.
+            "sh -c 'python -m omnigent.harnesses.cursor_native.usage record-usage'",
+            "/usr/bin/python3 -I -m omnigent.harnesses.cursor_native.usage record-usage "
+            '--bridge-dir /tmp/b; echo \'{"followup_message":"go"}\'',
+            "/usr/bin/python3 -I -m omnigent.harnesses.cursor_native.usage record-usage "
+            "--bridge-dir /tmp/b&&./followup.sh",
+            "/usr/bin/python3 -m omnigent.harnesses.cursor_native.usage record-usage "
+            "--bridge-dir /tmp/b",
+            "/bin/bash -I -m omnigent.harnesses.cursor_native.usage record-usage "
+            "--bridge-dir /tmp/b",
+            "python3 -I -m omnigent.harnesses.cursor_native.usage record-usage "
+            "--bridge-dir /tmp/b",
+            "/usr/bin/python3 -I -m omnigent.harnesses.cursor_native.usage record-usage "
+            "--bridge-dir rel/b",
+            "./scripts/followup.sh omnigent.harnesses.cursor_native.usage",
+            "'unterminated",
+            None,
+            ["/usr/bin/python3"],
+        ],
+    )
+    def test_owned_command_rejects_lookalikes(self, command: object) -> None:
+        assert not cursor_native_bridge.is_owned_usage_hook_command(command)
+
+    def test_no_hooks_files_is_capable(self, tmp_path: Path) -> None:
+        assert self._reason(tmp_path) is None
+
+    def test_owned_and_non_stop_hooks_are_capable(self, tmp_path: Path) -> None:
+        self._write(
+            tmp_path / "ws" / ".cursor" / "hooks.json",
+            {
+                "version": 1,
+                "hooks": {
+                    "stop": [{"command": self._owned()}, {"command": self._owned("/tmp/old")}],
+                    "preToolUse": [{"command": "./guard.sh"}],
+                    "afterFileEdit": "not-a-list-but-not-a-stop-event",
+                },
+            },
+        )
+        self._write(tmp_path / "home" / ".cursor" / "hooks.json", {"version": 1})
+        assert self._reason(tmp_path) is None
+
+    @pytest.mark.parametrize("where", ["project", "user", "system"])
+    @pytest.mark.parametrize("event", ["stop", "subagentStop"])
+    def test_foreign_stop_hook_anywhere_holds(
+        self, tmp_path: Path, where: str, event: str
+    ) -> None:
+        paths = {
+            "project": tmp_path / "ws" / ".cursor" / "hooks.json",
+            "user": tmp_path / "home" / ".cursor" / "hooks.json",
+            "system": tmp_path / "etc" / "hooks.json",
+        }
+        path = self._write(
+            paths[where],
+            {"version": 1, "hooks": {event: [{"command": self._owned()}, {"command": "./f.sh"}]}},
+        )
+        reason = self._reason(tmp_path, system=(paths["system"],))
+        assert reason == f"foreign_stop_hook:{path}"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "{not json",
+            b"\xff\xfe{}",
+            [],
+            {"hooks": []},
+            {"hooks": {"stop": {"command": "./f.sh"}}},
+            {"hooks": {"stop": ["./f.sh"]}},
+            {"hooks": {"stop": [{"cmd": "./f.sh"}]}},
+        ],
+    )
+    def test_malformed_hooks_config_holds(self, tmp_path: Path, payload: object) -> None:
+        path = self._write(tmp_path / "home" / ".cursor" / "hooks.json", payload)
+        reason = self._reason(tmp_path)
+        assert reason is not None
+        assert reason.endswith(str(path))
+        assert reason.split(":", 1)[0] in {"hooks_config_malformed", "foreign_stop_hook"}
+
+    def test_unreadable_hooks_config_holds(self, tmp_path: Path) -> None:
+        # A directory where the file should be cannot be read as a file.
+        path = tmp_path / "ws" / ".cursor" / "hooks.json"
+        path.mkdir(parents=True)
+        assert self._reason(tmp_path) == f"hooks_config_unreadable:{path}"
+
+    def test_arm_writes_epoch_only_when_capable(self, tmp_path: Path) -> None:
+        from omnigent.harnesses.cursor_native import status
+
+        bridge = tmp_path / "bridge"
+        ws = tmp_path / "ws"
+        kw = {"home": tmp_path / "home", "system_paths": ()}
+        assert (
+            cursor_native_bridge.arm_completion_receipts(bridge, ws, 111, opted_in=True, **kw)
+            is None
+        )
+        assert status.read_receipt_epoch(bridge) == 111
+
+    def test_arm_refused_drops_stale_epoch_and_keeps_user_hooks(self, tmp_path: Path) -> None:
+        from omnigent.harnesses.cursor_native import status
+
+        bridge = tmp_path / "bridge"
+        ws = tmp_path / "ws"
+        status.write_receipt_epoch(bridge, 111)  # a prior launch's capability
+        path = self._write(
+            ws / ".cursor" / "hooks.json",
+            {"version": 1, "hooks": {"stop": [{"command": "./f.sh"}]}},
+        )
+        before = path.read_bytes()
+        kw = {"home": tmp_path / "home", "system_paths": ()}
+        reason = cursor_native_bridge.arm_completion_receipts(bridge, ws, 222, opted_in=True, **kw)
+        assert reason == f"foreign_stop_hook:{path}"
+        assert status.read_receipt_epoch(bridge) is None
+        assert not (bridge / status.RECEIPT_EPOCH_FILE).exists()
+        assert path.read_bytes() == before
+
+    def test_arm_not_opted_in_ignores_hooks(self, tmp_path: Path) -> None:
+        from omnigent.harnesses.cursor_native import status
+
+        bridge = tmp_path / "bridge"
+        status.write_receipt_epoch(bridge, 111)
+        self._write(tmp_path / "ws" / ".cursor" / "hooks.json", "{not json")
+        kw = {"home": tmp_path / "home", "system_paths": ()}
+        assert (
+            cursor_native_bridge.arm_completion_receipts(
+                bridge, tmp_path / "ws", 222, opted_in=False, **kw
+            )
+            == "not_opted_in"
+        )
+        assert status.read_receipt_epoch(bridge) is None

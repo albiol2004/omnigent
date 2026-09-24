@@ -2904,6 +2904,7 @@ async def _auto_create_cursor_terminal(
     await _cancel_auto_forwarder_task(session_id)
     from omnigent.harnesses.cursor_native.bridge import (
         approve_mcp_server_for_workspace,
+        arm_completion_receipts,
         bridge_dir_for_session_id,
         write_fork_preamble,
         write_hooks_config,
@@ -2915,11 +2916,7 @@ async def _auto_create_cursor_terminal(
         preseed_resume_state,
     )
     from omnigent.harnesses.cursor_native.main import is_valid_cursor_chat_id
-    from omnigent.harnesses.cursor_native.status import (
-        clear_cursor_status_state,
-        clear_receipt_epoch,
-        write_receipt_epoch,
-    )
+    from omnigent.harnesses.cursor_native.status import clear_cursor_status_state
     from omnigent.harnesses.cursor_native.usage import clear_cursor_usage_state
 
     bridge_dir = bridge_dir_for_session_id(session_id)
@@ -2986,10 +2983,23 @@ async def _auto_create_cursor_terminal(
     # Completion receipts (opt-in): each launch is a new terminal epoch, and the
     # transcript ACK state restarts from this launch's forward cursor.
     clear_receipt_forwarder_state(bridge_dir)
-    if launch_config.completion_receipts:
-        write_receipt_epoch(bridge_dir, launch_epoch_ms)
-    else:
-        clear_receipt_epoch(bridge_dir)
+    # Checked before write_hooks_config below rewrites the project hooks.json. A
+    # foreign ``stop`` hook (or an unreadable/malformed hooks config) leaves this
+    # launch without receipts, so the fence answers capability_unsupported.
+    receipt_hold = arm_completion_receipts(
+        bridge_dir,
+        Path(workspace),
+        launch_epoch_ms,
+        opted_in=launch_config.completion_receipts,
+    )
+    if launch_config.completion_receipts and receipt_hold is not None:
+        _logger.warning(
+            "cursor-native: completion receipts disabled for this launch (%s); "
+            "input_fence will report capability_unsupported (session=%s).",
+            receipt_hold,
+            session_id,
+            extra={"session_id": session_id},
+        )
     # A fork bound to cursor carries history as a text preamble: cursor's
     # conversation is server-backed, so there's no local store to seed for
     # ``--resume`` (a fresh fork has no prior chat anyway → ``not preseeded``).

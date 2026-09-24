@@ -14,7 +14,17 @@ only the externally visible behaviour the receipt/fence design depends on:
   documented cursor ``stop``-hook follow-up loop — firing ``stop`` again.
 
 Config JSON (``--cfg``): ``{"turn_s": float, "turn_s_by_prefix": {prefix: s},
-"followup_after_turns": [int], "followup_text": str}``.
+"followup_after_turns": [int], "followup_text": str}``. Optional knobs:
+
+* ``"followup_front": false`` queues the follow-up BEHIND already-queued prompts
+  (default in front); which order real cursor uses is unverified;
+* ``"user_row_delay_by_origin": {origin: s}`` commits that origin's user row
+  ``s`` seconds into its turn (still before its ``stop``, so B1 holds);
+* ``"hooks_from_config": true`` replaces the scripted hooks above: at each turn
+  end the TUI reads the ``stop`` entries of ``<workspace>/.cursor/hooks.json``
+  then ``$HOME/.cursor/hooks.json``, runs each through ``/bin/sh -c`` with the
+  payload on stdin, and queues any ``followup_message`` one answers. Real
+  cursor's load/merge/reload rules are not modelled beyond that.
 Events are appended to ``--log`` as JSONL for assertions.
 """
 
@@ -43,6 +53,7 @@ PASTE_END = b"\x1b[201~"
 class Tui:
     def __init__(self, args: argparse.Namespace) -> None:
         self.bridge_dir = args.bridge_dir
+        self.workspace = args.workspace
         self.cfg = json.loads(Path(args.cfg).read_text())
         self.log_path = Path(args.log)
         self.chat_dir = (
@@ -115,6 +126,28 @@ class Tui:
         )
         return proc.stdout
 
+    def _configured_stop_hooks(self, payload: dict) -> list[str]:
+        """Run the configured ``stop`` hooks; return the follow-ups they ask for."""
+        followups: list[str] = []
+        for path in (
+            Path(self.workspace) / ".cursor" / "hooks.json",
+            Path(os.environ["HOME"]) / ".cursor" / "hooks.json",
+        ):
+            try:
+                entries = json.loads(path.read_text())["hooks"]["stop"]
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            for entry in entries:
+                out = self._run_hook(["/bin/sh", "-c", entry["command"]], payload)
+                self.log(ev="config_stop_hook", path=str(path), command=entry["command"])
+                try:
+                    answer = json.loads(out) if out.strip() else {}
+                except ValueError:
+                    answer = {}
+                if isinstance(answer, dict) and answer.get("followup_message"):
+                    followups.append(str(answer["followup_message"]))
+        return followups
+
     def worker(self) -> None:
         while True:
             self.wake.wait(0.1)
@@ -129,13 +162,16 @@ class Tui:
             self.log(ev="turn_start", turn=turn_no, text=text, origin=origin)
             self.lines.append(f"USER({origin}): {text}")
             self.render()
+            row_delay = float((self.cfg.get("user_row_delay_by_origin") or {}).get(origin, 0.0))
+            time.sleep(row_delay)
             self.blob(
                 {
                     "role": "user",
                     "content": [{"type": "text", "text": f"<user_query>\n{text}\n</user_query>"}],
                 }
             )
-            time.sleep(self._turn_seconds(text))
+            self.log(ev="user_row", turn=turn_no, origin=origin)
+            time.sleep(max(0.0, self._turn_seconds(text) - row_delay))
             answer = f"done: {text[:60]}"
             self.blob({"role": "assistant", "content": [{"type": "text", "text": answer}]})
             self.lines.append(f"AGENT: {answer}")
@@ -145,6 +181,19 @@ class Tui:
                 "generation_id": uuid.uuid4().hex,
                 "loop_count": 0,
             }
+            if self.cfg.get("hooks_from_config"):
+                followups = self._configured_stop_hooks(payload)
+                self.log(ev="stop_hook", turn=turn_no, text=text)
+                with self.lock:
+                    self.busy = False
+                for followup in followups:
+                    self.submit(
+                        followup,
+                        "stop_hook_followup",
+                        front=bool(self.cfg.get("followup_front", True)),
+                    )
+                self.render()
+                continue
             # 1) Omnigent's own stop hook (the REAL module/CLI under test).
             self._run_hook(
                 [
@@ -179,7 +228,7 @@ class Tui:
                 self.submit(
                     self.cfg.get("followup_text", "Continue and verify."),
                     "stop_hook_followup",
-                    front=True,
+                    front=bool(self.cfg.get("followup_front", True)),
                 )
             self.render()
 

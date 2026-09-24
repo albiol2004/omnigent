@@ -2917,7 +2917,10 @@ async def _auto_create_cursor_terminal(
         preseed_resume_state,
     )
     from omnigent.harnesses.cursor_native.main import is_valid_cursor_chat_id
-    from omnigent.harnesses.cursor_native.status import clear_cursor_status_state
+    from omnigent.harnesses.cursor_native.status import (
+        ReceiptEpochClearError,
+        clear_cursor_status_state,
+    )
     from omnigent.harnesses.cursor_native.usage import clear_cursor_usage_state
 
     bridge_dir = bridge_dir_for_session_id(session_id)
@@ -2986,9 +2989,22 @@ async def _auto_create_cursor_terminal(
     clear_receipt_forwarder_state(bridge_dir)
     # Drops the prior epoch and checks the project hooks.json before
     # write_hooks_config below rewrites it (a malformed file would be dropped).
-    receipt_precheck = prepare_completion_receipts(
-        bridge_dir, Path(workspace), opted_in=launch_config.completion_receipts
-    )
+    # A prior epoch that cannot be removed would leave this launch armed under
+    # the old capability (even when held or not opted in), so abort before the
+    # terminal starts.
+    try:
+        receipt_precheck = prepare_completion_receipts(
+            bridge_dir, Path(workspace), opted_in=launch_config.completion_receipts
+        )
+    except ReceiptEpochClearError:
+        _logger.error(
+            "cursor-native: not starting the terminal; the prior completion-receipt "
+            "epoch could not be removed (session=%s).",
+            session_id,
+            exc_info=True,
+            extra={"session_id": session_id},
+        )
+        raise
     # A fork bound to cursor carries history as a text preamble: cursor's
     # conversation is server-backed, so there's no local store to seed for
     # ``--resume`` (a fresh fork has no prior chat anyway → ``not preseeded``).

@@ -875,6 +875,50 @@ class TestCompletionReceiptHookGate:
         assert not (bridge / status.RECEIPT_EPOCH_FILE).exists()
         assert path.read_bytes() == before
 
+    @pytest.mark.parametrize("opted_in", [True, False])
+    def test_prepare_and_arm_raise_when_stale_epoch_survives(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opted_in: bool
+    ) -> None:
+        import errno
+
+        from omnigent.harnesses.cursor_native import status
+
+        bridge = tmp_path / "bridge"
+        ws = tmp_path / "ws"
+        status.write_receipt_epoch(bridge, 111)
+
+        def _fail(self: Path, missing_ok: bool = False) -> None:
+            raise OSError(errno.EBUSY, "busy", str(self))
+
+        monkeypatch.setattr(Path, "unlink", _fail)
+        kw = {"home": tmp_path / "home"}
+        with pytest.raises(status.ReceiptEpochClearError):
+            cursor_native_bridge.prepare_completion_receipts(bridge, ws, opted_in=opted_in, **kw)
+        with pytest.raises(status.ReceiptEpochClearError):
+            cursor_native_bridge.arm_completion_receipts(
+                bridge, ws, 222, opted_in=opted_in, system_paths=(), **kw
+            )
+        monkeypatch.undo()
+        assert status.read_receipt_epoch(bridge) == 111  # never replaced by 222
+
+    def test_prepare_and_arm_without_prior_epoch_do_not_raise(self, tmp_path: Path) -> None:
+        from omnigent.harnesses.cursor_native import status
+
+        bridge = tmp_path / "bridge"
+        ws = tmp_path / "ws"
+        kw = {"home": tmp_path / "home"}
+        assert (
+            cursor_native_bridge.prepare_completion_receipts(bridge, ws, opted_in=False, **kw)
+            == "not_opted_in"
+        )
+        assert (
+            cursor_native_bridge.arm_completion_receipts(
+                bridge, ws, 222, opted_in=False, system_paths=(), **kw
+            )
+            == "not_opted_in"
+        )
+        assert status.read_receipt_epoch(bridge) is None
+
     def _launch(self, tmp_path: Path, bridge: Path, epoch: int) -> str | None:
         """The runner's order: prepare → write_hooks_config → arm."""
         ws = tmp_path / "ws"

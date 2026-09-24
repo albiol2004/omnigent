@@ -105,10 +105,42 @@ def write_receipt_epoch(bridge_dir: Path, epoch: int) -> None:
         _write_json_atomic(bridge_dir / RECEIPT_EPOCH_FILE, {"v": 1, "epoch": epoch})
 
 
+class ReceiptEpochClearError(RuntimeError):
+    """A prior launch's receipt epoch could not be removed; the launch must not start."""
+
+
 def clear_receipt_epoch(bridge_dir: Path) -> None:
-    """Turn completion receipts off for this launch (fence state is kept)."""
-    with contextlib.suppress(OSError):
-        (bridge_dir / RECEIPT_EPOCH_FILE).unlink()
+    """Turn completion receipts off for this launch (fence state is kept).
+
+    Idempotent when the epoch file (or the bridge dir) is already absent. Any
+    other outcome leaves a prior launch's capability readable, so absence is
+    verified with ``lstat`` and a failure raises instead of being ignored.
+
+    :raises ReceiptEpochClearError: the epoch file still exists or its
+        absence cannot be established.
+    """
+    path = bridge_dir / RECEIPT_EPOCH_FILE
+    try:
+        path.unlink()
+    except (FileNotFoundError, NotADirectoryError):
+        return
+    except OSError as exc:
+        unlink_error: OSError | None = exc
+    else:
+        unlink_error = None
+    try:
+        path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return
+    except OSError as exc:
+        unlink_error = unlink_error or exc
+    detail = f": {unlink_error}" if unlink_error is not None else ""
+    raise ReceiptEpochClearError(
+        f"could not remove stale completion-receipt epoch {path}{detail}. "
+        f"Refusing to start the terminal with a prior launch's receipt "
+        f"capability; make {bridge_dir} writable by this user (or delete "
+        f"{path}) and relaunch."
+    ) from unlink_error
 
 
 def read_receipt_epoch(bridge_dir: Path) -> int | None:

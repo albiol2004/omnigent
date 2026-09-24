@@ -35,6 +35,7 @@ COMPLETION_RECEIPTS_LABEL = "omnigent.cursor_native.completion_receipts"
 COMPLETION_RECEIPTS_VERSION = "v1"
 TURN_RECEIPT_LABEL = "omnigent.cursor_native.turn_receipt"
 TURN_RECEIPT_DETAIL_LABEL = "omnigent.cursor_native.turn_receipt.detail"
+TURN_RECEIPT_BINDING_LABEL = "omnigent.cursor_native.turn_receipt.binding"
 INPUT_FENCE_LABEL = "omnigent.input_fence"
 INPUT_FENCE_EXPECT_LABEL = "omnigent.input_fence.expect"
 INPUT_FENCE_TYPE = "input_fence"
@@ -53,7 +54,26 @@ SINGLE_SERVER_ENV = "OMNIGENT_INPUT_FENCE_SINGLE_SERVER"
 #: Labels only the server writes; a client write would forge a receipt or
 #: lift a fence.
 SERVER_RESERVED_LABELS = frozenset(
-    {TURN_RECEIPT_LABEL, TURN_RECEIPT_DETAIL_LABEL, INPUT_FENCE_LABEL, INPUT_FENCE_EXPECT_LABEL}
+    {
+        TURN_RECEIPT_LABEL,
+        TURN_RECEIPT_DETAIL_LABEL,
+        TURN_RECEIPT_BINDING_LABEL,
+        INPUT_FENCE_LABEL,
+        INPUT_FENCE_EXPECT_LABEL,
+    }
+)
+
+#: Why a receipt's turn ends are not bound to the injected prompts (runner-side
+#: ``forwarder.compute_turn_binding``/``turn_binding``).
+BIND_REASONS = frozenset(
+    {
+        "inject_unhashed",
+        "user_rows_mismatch",
+        "turn_end_unbound",
+        "duplicate_turn_end",
+        "turn_open",
+        "store_unbound",
+    }
 )
 
 #: Event types that stay allowed on a fenced session: control and observation
@@ -163,6 +183,17 @@ async def admit_input(
         if session_id in _fenced_sessions or INPUT_FENCE_LABEL in (labels or {}):
             raise _input_fenced_error()
         stack.enter_context(_mark_admitted(session_id))
+
+
+def refuse_if_fenced(session_id: str, event_type: str, labels: dict[str, str] | None) -> None:
+    """Refuse an input dispatch to a fenced session, whatever path it came from.
+
+    :raises OmnigentError: 409 ``input_fenced``.
+    """
+    if is_fence_exempt(event_type):
+        return
+    if session_id in _fenced_sessions or INPUT_FENCE_LABEL in (labels or {}):
+        raise _input_fenced_error()
 
 
 def _pending_or_in_flight(session_id: str) -> bool:
@@ -348,6 +379,11 @@ def _verify(
             return f"mismatch_{key}"
     if ack.get("inject_count") != ack.get("turn_end_count"):
         return "unbalanced_turns"
+    if ack.get("bound") is not True:
+        # Counts balance, but the runner could not bind every injected prompt's
+        # row to its own turn end (a foreign or duplicate stop, or a copy still
+        # queued). A runner without binding never sends ``bound`` and fails here.
+        return "turns_unbound"
     if expect["turn_seq"] != expect["turn_end_count"]:
         return "expect_turn_seq_not_latest"
     return None
@@ -444,15 +480,36 @@ def _valid_receipt(receipt: object) -> dict[str, Any] | None:
     for entry in injections:
         if entry.get("kind") not in ("message", "model_command"):
             return None
+    binding = receipt.get("binding")
+    if binding is not None and _valid_binding(binding) is None:
+        return None
     return receipt
+
+
+def _valid_binding(binding: object) -> dict[str, Any] | None:
+    """Return *binding* when it has the v1 shape, else ``None``."""
+    if not isinstance(binding, dict) or binding.get("v") != 1:
+        return None
+    if not isinstance(binding.get("bound"), bool):
+        return None
+    reason = binding.get("reason")
+    if (reason is None) != (binding["bound"] is True):
+        return None
+    if reason is not None and reason not in BIND_REASONS:
+        return None
+    for key in ("user_rows", "closed_turns"):
+        value = binding.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+    return binding
 
 
 def _receipt_order(receipt: dict[str, Any]) -> tuple[int, int, int]:
     return (int(receipt["epoch"]), int(receipt["turn_seq"]), int(receipt["rev"]))
 
 
-def _compact_receipt(receipt: dict[str, Any], received_seq: int) -> tuple[str, str]:
-    """Split a wire receipt into the core and detail label values."""
+def _compact_receipt(receipt: dict[str, Any], received_seq: int) -> tuple[str, str, str]:
+    """Split a wire receipt into the core, detail and binding label values."""
     injections = receipt["injections"]
     message_shas = [e["sha256"] for e in injections if e.get("kind") == "message"]
     raw_status = receipt.get("stop_status_raw")
@@ -480,7 +537,15 @@ def _compact_receipt(receipt: dict[str, Any], received_seq: int) -> tuple[str, s
         "acked_through": transcript["acked_through_rowid"],
         "unacked": len(transcript["unacked_rowids"]),
     }
-    return _label_json(core), _label_json(detail)
+    wire_binding = receipt.get("binding")
+    # A receipt from a runner without binding stores ``bound: null`` (hold).
+    binding = {
+        "bound": wire_binding["bound"] if wire_binding is not None else None,
+        "reason": wire_binding["reason"] if wire_binding is not None else "no_binding",
+        "user_rows": wire_binding["user_rows"] if wire_binding is not None else None,
+        "closed_turns": wire_binding["closed_turns"] if wire_binding is not None else None,
+    }
+    return _label_json(core), _label_json(detail), _label_json(binding)
 
 
 async def persist_turn_receipt(
@@ -517,15 +582,19 @@ async def persist_turn_receipt(
                 pass
         received_seq = int((stored or {}).get("received_seq") or 0) + 1
         try:
-            core, detail = _compact_receipt(receipt, received_seq)
+            core, detail, binding = _compact_receipt(receipt, received_seq)
         except OmnigentError:
             _logger.warning("turn receipt dropped: too large to store; session=%s", session_id)
             return False
-        # One atomic upsert, so core and detail always describe the same receipt.
+        # One atomic upsert, so all three labels always describe the same receipt.
         await asyncio.to_thread(
             conversation_store.set_labels,
             session_id,
-            {TURN_RECEIPT_LABEL: core, TURN_RECEIPT_DETAIL_LABEL: detail},
+            {
+                TURN_RECEIPT_LABEL: core,
+                TURN_RECEIPT_DETAIL_LABEL: detail,
+                TURN_RECEIPT_BINDING_LABEL: binding,
+            },
         )
     return True
 

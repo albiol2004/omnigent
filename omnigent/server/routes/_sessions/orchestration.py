@@ -155,6 +155,7 @@ from omnigent.server.routes._session_create_validation import (
     validate_session_agent,
     validate_session_model_metadata,
 )
+from omnigent.server.routes._sessions import input_fence as _input_fence
 
 # Shared constants, state, and small dataclasses live in the _sessions.common
 # leaf module; import them here so this module and its re-exporters see the same
@@ -7088,6 +7089,9 @@ async def _dispatch_session_event_to_runner_impl(
         persisted item id (non-native) or the pending-input id
         (claude-native message bypass).
     """
+    # Server-internal dispatches (e.g. a parent wake) bypass the events-route
+    # admission gate, so the input fence is re-checked for every dispatch here.
+    _input_fence.refuse_if_fenced(session_id, body.type, getattr(conv, "labels", None))
     if body.type == "message" and conv.kind == "sub_agent" and _is_codex_native_subagent(conv):
         # Codex /side follow-up: drive the child on its own Codex thread via the
         # parent's runner/bridge; do not persist AP-side (the forwarder mirrors

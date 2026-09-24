@@ -43,7 +43,7 @@ import os
 import re
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
@@ -924,9 +924,12 @@ class _ReceiptState:
     :param posted_key: ``[epoch, turn_seq]`` of the last posted receipt.
     :param posted_rev: ``rev`` of the last posted receipt.
     :param posted_digest: Content digest of the last posted receipt (sans rev).
+    :param base_rowid: Forward cursor when this epoch bound the store; rows at
+        or below it belong to a prior terminal and are outside the epoch.
     """
 
     store_path: str | None = None
+    base_rowid: int = 0
     acked_through_rowid: int = 0
     unacked_rowids: list[int] | None = None
     posted_key: list[int] | None = None
@@ -945,6 +948,7 @@ def _read_receipt_state(bridge_dir: Path) -> _ReceiptState | None:
     posted_key = data.get("posted_key")
     return _ReceiptState(
         store_path=data.get("store_path") if isinstance(data.get("store_path"), str) else None,
+        base_rowid=int(data.get("base_rowid") or 0),
         acked_through_rowid=int(data.get("acked_through_rowid") or 0),
         unacked_rowids=[int(r) for r in unacked] if isinstance(unacked, list) else [],
         posted_key=list(posted_key) if isinstance(posted_key, list) else None,
@@ -961,6 +965,7 @@ def _write_receipt_state(bridge_dir: Path, state: _ReceiptState) -> None:
         json.dumps(
             {
                 "store_path": state.store_path,
+                "base_rowid": state.base_rowid,
                 "acked_through_rowid": state.acked_through_rowid,
                 "unacked_rowids": state.unacked_rowids or [],
                 "posted_key": state.posted_key,
@@ -971,6 +976,20 @@ def _write_receipt_state(bridge_dir: Path, state: _ReceiptState) -> None:
         encoding="utf-8",
     )
     os.replace(tmp, bridge_dir / RECEIPT_STATE_FILE)
+
+
+def _note_unacked_row(bridge_dir: Path, state: _ReceiptState | None, rowid: int) -> None:
+    """Record a row the mirror skipped without a server ACK, durably.
+
+    Persisted BEFORE the caller advances the forward cursor past *rowid*: the
+    cursor is written per item, so a skip held only in memory until the end of
+    the pass is forgotten by a forwarder that restarts mid-pass, and the next
+    pass's watermark would then report the row as ACKed.
+    """
+    if state is None:
+        return
+    state.unacked_rowids = [*(state.unacked_rowids or []), rowid]
+    _write_receipt_state(bridge_dir, state)
 
 
 def read_bound_chat_id(bridge_dir: Path) -> str | None:
@@ -998,7 +1017,9 @@ def _bind_receipt_state(
     persisted = _read_receipt_state(bridge_dir)
     if persisted is not None and persisted.store_path == str(store_path):
         return persisted
-    state = _ReceiptState(store_path=str(store_path), acked_through_rowid=last_rowid)
+    state = _ReceiptState(
+        store_path=str(store_path), base_rowid=last_rowid, acked_through_rowid=last_rowid
+    )
     if persisted is not None:
         state.posted_key = persisted.posted_key
         state.posted_rev = persisted.posted_rev
@@ -1027,6 +1048,151 @@ def _complete_receipt(
         "observed_max_acked": store_path is not None and acked >= store_max_rowid and not unacked,
     }
     return receipt
+
+
+def _scan_user_rows(store_path: Path, after_rowid: int) -> tuple[list[tuple[int, str]], int]:
+    """Return ``[(rowid, binding sha)]`` for ``<user_query>`` rows after *after_rowid*.
+
+    Every user blob with a ``<user_query>`` wrapper is a submitted prompt,
+    whatever the mirror later strips from it; its hash covers the raw wrapped
+    text under :func:`cursor_native_status.normalize_prompt_text`.
+
+    :returns: The rows and the highest rowid read (``after_rowid`` if none).
+    """
+    rows: list[tuple[int, str]] = []
+    scanned = after_rowid
+    for rowid, _blob_id, data in _read_blob_rows(store_path, after_rowid):
+        scanned = max(scanned, rowid)
+        if isinstance(data, (bytes, bytearray)):
+            try:
+                data = data.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+        if not isinstance(data, str):
+            continue
+        try:
+            obj = json.loads(data)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict) or obj.get("role") != "user":
+            continue
+        content = obj.get("content")
+        if not isinstance(content, list):
+            continue  # lifecycle notices and compaction rollups are strings
+        match = _USER_QUERY_RE.search(_content_text(content))
+        if match is not None:
+            rows.append((rowid, cursor_native_status.prompt_binding_sha(match.group(1))))
+    return rows, scanned
+
+
+@dataclass
+class _UserRowScan:
+    """Incremental cache of one epoch's user rows (the store is append-only)."""
+
+    key: tuple[str, int] | None = None
+    scanned_through: int = 0
+    rows: list[tuple[int, str]] = field(default_factory=list)
+
+    def rows_for(self, store_path: Path, base_rowid: int) -> list[tuple[int, str]]:
+        key = (str(store_path), base_rowid)
+        if self.key != key:
+            self.key, self.scanned_through, self.rows = key, base_rowid, []
+        new_rows, self.scanned_through = _scan_user_rows(store_path, self.scanned_through)
+        self.rows.extend(new_rows)
+        return list(self.rows)
+
+
+def compute_turn_binding(
+    *,
+    turn_ends: list[dict[str, object]],
+    injects: list[dict[str, object]],
+    user_rows: list[tuple[int, str]],
+    store_chat: str | None,
+) -> dict[str, object]:
+    """Bind this epoch's turn ends to the prompts that started them.
+
+    Counts alone cannot tell which turn a ``stop`` closed: a follow-up or typed
+    turn, or a duplicate ``stop``, can balance them while an injected copy is
+    still queued. So each turn end is bound to the number ``k`` of epoch user
+    rows at or below the store position the stop hook recorded. It is bound
+    only if:
+
+    * the ordered user-row hashes equal the ordered message-injection hashes
+      (no foreign, missing or reordered prompt);
+    * every row ``1..n`` is closed by exactly one turn end, and no turn end is
+      unpositioned, precedes all rows, or duplicates another.
+
+    Every failure is ``bound: False`` (hold); nothing here can turn a bad
+    count into a pass.
+    """
+    message_shas = [r.get("norm_sha256") for r in injects if r.get("kind") == "message"]
+    row_shas = [sha for _rowid, sha in user_rows]
+    closed: list[int] = []
+    unpositioned = 0
+    for record in turn_ends:
+        position = record.get("store_rowid_at_end")
+        if (
+            isinstance(position, bool)
+            or not isinstance(position, int)
+            or store_chat is None
+            or record.get("store_chat_at_end") != store_chat
+        ):
+            unpositioned += 1
+            continue
+        k = sum(1 for rowid, _sha in user_rows if rowid <= position)
+        if k == 0:
+            unpositioned += 1
+            continue
+        closed.append(k)
+    reason: str | None = None
+    if any(not isinstance(sha, str) for sha in message_shas):
+        reason = "inject_unhashed"
+    elif row_shas != message_shas:
+        reason = "user_rows_mismatch"
+    elif unpositioned:
+        reason = "turn_end_unbound"
+    elif len(set(closed)) != len(closed):
+        reason = "duplicate_turn_end"
+    elif sorted(closed) != list(range(1, len(row_shas) + 1)):
+        reason = "turn_open"
+    return {
+        "v": 1,
+        "bound": reason is None,
+        "reason": reason,
+        "user_rows": len(row_shas),
+        "closed_turns": len(set(closed)),
+    }
+
+
+def turn_binding(
+    bridge_dir: Path,
+    turn_ends: list[dict[str, object]],
+    injects: list[dict[str, object]],
+    scan: _UserRowScan | None = None,
+) -> dict[str, object]:
+    """:func:`compute_turn_binding` against the store this epoch's receipts track.
+
+    Called under ``receipt.lock`` (a ``TurnBinder``), after the logs are read,
+    so the rows are at least as new as the turn ends they are matched with.
+    """
+    state = _read_receipt_state(bridge_dir)
+    if state is None or not state.store_path or not Path(state.store_path).is_file():
+        return {
+            "v": 1,
+            "bound": False,
+            "reason": "store_unbound",
+            "user_rows": 0,
+            "closed_turns": 0,
+        }
+    store_path = Path(state.store_path)
+    rows = (
+        scan.rows_for(store_path, state.base_rowid)
+        if scan is not None
+        else _scan_user_rows(store_path, state.base_rowid)[0]
+    )
+    return compute_turn_binding(
+        turn_ends=turn_ends, injects=injects, user_rows=rows, store_chat=store_path.parent.name
+    )
 
 
 def _receipt_digest(receipt: dict[str, object]) -> str:
@@ -1094,6 +1260,13 @@ async def forward_cursor_store_to_session(
     pending_turn_end: int | None = None
     outcome_parse_failures = 0
     receipt_state: _ReceiptState | None = None
+    user_row_scan = _UserRowScan()
+
+    def _binder(
+        turn_ends: list[dict[str, object]], injects: list[dict[str, object]]
+    ) -> dict[str, object]:
+        return turn_binding(bridge_dir, turn_ends, injects, user_row_scan)
+
     timeout = httpx.Timeout(_POST_TIMEOUT_S)
     async with httpx.AsyncClient(
         base_url=base_url, headers=headers, auth=auth, timeout=timeout
@@ -1112,7 +1285,7 @@ async def forward_cursor_store_to_session(
                     if total_turn_ends > posted_turn_ends:
                         pending_turn_end = posted_turn_ends + 1
                 receipt_base = await asyncio.to_thread(
-                    cursor_native_status.build_turn_end_receipt, bridge_dir
+                    cursor_native_status.build_turn_end_receipt, bridge_dir, _binder
                 )
                 receipts_on = receipt_base is not None or (
                     await asyncio.to_thread(cursor_native_status.read_receipt_epoch, bridge_dir)
@@ -1228,11 +1401,9 @@ async def forward_cursor_store_to_session(
                                         client, session_id=session_id, status="completed"
                                     )
                                 except httpx.HTTPError:
-                                    if receipt_state is not None:
-                                        receipt_state.unacked_rowids = [
-                                            *(receipt_state.unacked_rowids or []),
-                                            item.rowid,
-                                        ]
+                                    await asyncio.to_thread(
+                                        _note_unacked_row, bridge_dir, receipt_state, item.rowid
+                                    )
                                     _logger.warning(
                                         "cursor forwarder could not post "
                                         "compaction-completed; the web UI spinner "
@@ -1272,11 +1443,12 @@ async def forward_cursor_store_to_session(
                                     )
                                 except httpx.HTTPError as exc:
                                     if post_may_have_been_delivered(exc):
-                                        if receipt_state is not None:
-                                            receipt_state.unacked_rowids = [
-                                                *(receipt_state.unacked_rowids or []),
-                                                item.rowid,
-                                            ]
+                                        await asyncio.to_thread(
+                                            _note_unacked_row,
+                                            bridge_dir,
+                                            receipt_state,
+                                            item.rowid,
+                                        )
                                         # Ambiguous: the request was sent but its
                                         # response was lost, so the server may have
                                         # already committed this item. External
@@ -1312,11 +1484,12 @@ async def forward_cursor_store_to_session(
                                             )
                                             retrying_items = True
                                             break  # retry this item before any after it
-                                        if receipt_state is not None:
-                                            receipt_state.unacked_rowids = [
-                                                *(receipt_state.unacked_rowids or []),
-                                                item.rowid,
-                                            ]
+                                        await asyncio.to_thread(
+                                            _note_unacked_row,
+                                            bridge_dir,
+                                            receipt_state,
+                                            item.rowid,
+                                        )
                                         _logger.error(
                                             "cursor forwarder dropping item after %s "
                                             "rejected POSTs (HTTP %s); mirror would "

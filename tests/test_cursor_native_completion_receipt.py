@@ -521,3 +521,254 @@ async def test_default_session_idle_post_carries_no_receipt(
     recorder = await _run_forwarder(monkeypatch, bridge_dir, store, until=lambda r: bool(r.posts))
     assert recorder.posts == [None]
     assert not (bridge_dir / fwd.RECEIPT_STATE_FILE).exists()
+
+
+# --------------------------------------------------------------------------- #
+# Turn binding: each turn end is tied to the user row whose turn it closed.
+# --------------------------------------------------------------------------- #
+
+
+def _bound_store(tmp_path: Path, rows: list[tuple[str, object]]) -> tuple[Path, Path, object]:
+    """An opted-in bridge whose forwarder has already bound *rows*' store."""
+    bridge_dir = tmp_path / "bridge"
+    store_dir = tmp_path / "chats" / "chat-abc"
+    store_dir.mkdir(parents=True)
+    store = store_dir / "store.db"
+    writer = _make_store(store, rows)
+    status.write_receipt_epoch(bridge_dir, _EPOCH)
+    (bridge_dir / "cursor_forwarder.json").write_text(
+        json.dumps({"store_path": str(store), "last_rowid": 0})
+    )
+    fwd._write_receipt_state(bridge_dir, fwd._ReceiptState(store_path=str(store)))
+    return bridge_dir, store, writer
+
+
+def _row(writer, blob_id: str, text: str) -> None:
+    writer.execute(
+        "INSERT INTO blobs(id, data) VALUES(?, ?)",
+        (blob_id, json.dumps(_user(f"<user_query>\n{text}\n</user_query>")).encode()),
+    )
+    writer.commit()
+
+
+def test_turn_end_is_stamped_with_the_store_position(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge_dir, _store, writer = _bound_store(
+        tmp_path,
+        [("u1", _user("<user_query>\nprompt\n</user_query>")), ("a1", _assistant([]))],
+    )
+    writer.close()
+    status.record_injection(bridge_dir, " prompt\r\n", kind="message")
+    _hook(bridge_dir, monkeypatch, {"status": "completed"})
+    (inject,) = status._epoch_records(bridge_dir / status.INJECT_FILE, _EPOCH)
+    assert inject["norm_sha256"] == _sha("prompt")
+    (marker,) = status._epoch_records(bridge_dir / status.TURN_END_FILE, _EPOCH)
+    assert (marker["store_chat_at_end"], marker["store_rowid_at_end"]) == ("chat-abc", 2)
+
+    # No bound store yet: the turn end carries no position and binds nothing.
+    (bridge_dir / "cursor_forwarder.json").unlink()
+    _hook(bridge_dir, monkeypatch, {})
+    marker = status._epoch_records(bridge_dir / status.TURN_END_FILE, _EPOCH)[-1]
+    assert (marker["store_chat_at_end"], marker["store_rowid_at_end"]) == (None, None)
+
+
+def _binding(prompts: list[str], rows: list[tuple[int, str]], stops: list[object]) -> dict:
+    return fwd.compute_turn_binding(
+        turn_ends=[
+            {"store_rowid_at_end": pos, "store_chat_at_end": "chat-abc"}
+            if not isinstance(pos, tuple)
+            else {"store_rowid_at_end": pos[0], "store_chat_at_end": pos[1]}
+            for pos in stops
+        ],
+        injects=[
+            {"kind": "message", "norm_sha256": status.prompt_binding_sha(p)} for p in prompts
+        ],
+        user_rows=[(rowid, status.prompt_binding_sha(text)) for rowid, text in rows],
+        store_chat="chat-abc",
+    )
+
+
+@pytest.mark.parametrize(
+    ("prompts", "rows", "stops", "reason"),
+    [
+        # Two copies of P, each turn closed by its own stop.
+        (["P", "P"], [(1, "P"), (3, "P")], [2, 4], None),
+        # A stop-hook follow-up turn balanced the counts while the repost is queued.
+        (["P", "P"], [(1, "P"), (3, "F")], [2, 4], "user_rows_mismatch"),
+        # A typed turn in the pane plus a queued API repost.
+        (["P", "P"], [(1, "P"), (3, "T")], [2, 4], "user_rows_mismatch"),
+        # Two stops for turn 1 before the queued copy's turn starts ...
+        (["P", "P"], [(1, "P")], [2, 2], "user_rows_mismatch"),
+        # ... and while it runs, and after it ended.
+        (["P", "P"], [(1, "P"), (3, "P")], [2, 2], "duplicate_turn_end"),
+        (["P", "P"], [(1, "P"), (3, "P")], [2, 2, 4], "duplicate_turn_end"),
+        # The queued copy is running; its turn has no stop yet.
+        (["P", "P"], [(1, "P"), (3, "P")], [2], "turn_open"),
+        # A queued row written before turn 1's stop can't close turn 1.
+        (["P", "P"], [(1, "P"), (2, "P")], [3, 4], "duplicate_turn_end"),
+        # Stops with no position, another chat's position, or before any row.
+        (["P"], [(1, "P")], [None], "turn_end_unbound"),
+        (["P"], [(1, "P")], [(2, "chat-other")], "turn_end_unbound"),
+        (["P"], [(5, "P")], [3], "turn_end_unbound"),
+    ],
+)
+def test_turn_binding_holds_on_every_unproven_turn(
+    prompts: list[str], rows: list[tuple[int, str]], stops: list[object], reason: str | None
+) -> None:
+    binding = _binding(prompts, rows, stops)
+    assert (binding["bound"], binding["reason"]) == (reason is None, reason)
+
+
+def test_injection_without_a_binding_hash_never_binds() -> None:
+    binding = fwd.compute_turn_binding(
+        turn_ends=[{"store_rowid_at_end": 2, "store_chat_at_end": "chat-abc"}],
+        injects=[{"kind": "message", "sha256": _sha("P")}],
+        user_rows=[(1, status.prompt_binding_sha("P"))],
+        store_chat="chat-abc",
+    )
+    assert binding["reason"] == "inject_unhashed"
+
+
+def test_fence_close_reports_the_binding_read_under_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge_dir, _store, writer = _bound_store(tmp_path, [])
+    status.record_injection(bridge_dir, "P", kind="message")
+    _row(writer, "u1", "P")
+    _hook(bridge_dir, monkeypatch, {})
+    status.record_injection(bridge_dir, "P", kind="message")
+    _row(writer, "u2", "Continue: double-check the tests pass.")  # a follow-up, not P
+    _hook(bridge_dir, monkeypatch, {})
+    writer.close()
+    code, ack = handle_runner_fence_request(bridge_dir, {"action": "close", "fence_id": "f"})
+    assert code == 200
+    assert (ack["inject_count"], ack["turn_end_count"]) == (2, 2)
+    assert (ack["bound"], ack["bind_reason"]) == (False, "user_rows_mismatch")
+
+
+@pytest.mark.asyncio
+async def test_forwarder_receipt_carries_the_turn_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge_dir, store, writer = _bound_store(
+        tmp_path,
+        [("u1", _user("<user_query>\nprompt\n</user_query>")), ("a1", _assistant([]))],
+    )
+    writer.close()
+    status.record_injection(bridge_dir, "prompt", kind="message")
+    _hook(bridge_dir, monkeypatch, {"status": "completed"})
+    recorder = await _run_forwarder(monkeypatch, bridge_dir, store, until=lambda r: bool(r.posts))
+    assert recorder.posts[0]["binding"] == {
+        "v": 1,
+        "bound": True,
+        "reason": None,
+        "user_rows": 1,
+        "closed_turns": 1,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# A skipped row is durable before the forward cursor moves past it.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_skip_is_persisted_before_the_cursor_passes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    bridge_dir, store, writer = _opted_in_store(tmp_path)
+    writer.close()
+    req = httpx.Request("POST", "http://test/v1/sessions/conv_1/events")
+    real_write_state = fwd._write_state
+    at_advance: list[list[int]] = []
+
+    def _spy(bridge: Path, state: fwd._ForwardState) -> bool:
+        if state.last_rowid >= 2:
+            persisted = fwd._read_receipt_state(bridge)
+            at_advance.append(list(persisted.unacked_rowids or []) if persisted else [])
+        return real_write_state(bridge, state)
+
+    monkeypatch.setattr(fwd, "_write_state", _spy)
+
+    def _fail(item: fwd._MirrorItem) -> Exception | None:
+        return httpx.ReadTimeout("lost", request=req) if item.rowid == 2 else None
+
+    await _run_forwarder(
+        monkeypatch, bridge_dir, store, fail_item=_fail, until=lambda r: bool(r.posts)
+    )
+    assert at_advance, "the forward cursor never passed the skipped row"
+    assert all(2 in unacked for unacked in at_advance), at_advance
+
+
+@pytest.mark.asyncio
+async def test_restart_mid_pass_keeps_a_skipped_row_unacked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A forwarder cancelled after skipping row 2 must not report it ACKed on restart."""
+    import httpx
+
+    bridge_dir, store, writer = _opted_in_store(tmp_path)
+    writer.execute(
+        "INSERT INTO blobs(id, data) VALUES(?, ?)",
+        ("a2", json.dumps(_assistant([{"type": "text", "text": "final"}])).encode()),
+    )
+    writer.commit()
+    writer.close()
+    req = httpx.Request("POST", "http://test/v1/sessions/conv_1/events")
+    hang_entered = asyncio.Event()
+    released = False
+
+    async def _post_item(client: object, *, session_id: str, item: fwd._MirrorItem) -> None:
+        if item.rowid == 2:
+            raise httpx.ReadTimeout("lost", request=req)
+        if item.rowid == 3 and not released:
+            hang_entered.set()
+            await asyncio.Event().wait()
+
+    recorder = _StatusRecorder()
+
+    async def _noop(*a: object, **k: object) -> None:
+        return None
+
+    monkeypatch.setattr(fwd, "_discover_store", lambda workspace, launch_ms: store)
+    monkeypatch.setattr(fwd, "_chat_claimed_by_other", lambda *a, **k: False)
+    monkeypatch.setattr(fwd, "_post_conversation_item", _post_item)
+    monkeypatch.setattr(fwd, "_post_external_session_status", recorder)
+    monkeypatch.setattr(fwd, "_patch_external_session_id", _noop)
+    monkeypatch.setattr(fwd, "_post_model_change_if_new", _noop)
+
+    def _start() -> asyncio.Task:
+        return asyncio.create_task(
+            fwd.forward_cursor_store_to_session(
+                base_url="http://test",
+                headers={},
+                session_id="conv_1",
+                bridge_dir=bridge_dir,
+                agent_name="cursor-native-ui",
+                workspace="/ws",
+                launch_epoch_ms=1_000,
+                poll_interval_s=0.001,
+            )
+        )
+
+    task = _start()
+    await asyncio.wait_for(hang_entered.wait(), 5)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert fwd._read_state(bridge_dir).last_rowid == 2  # the cursor already passed row 2
+    released = True
+    task = _start()
+    try:
+        for _ in range(3000):
+            if recorder.posts:
+                break
+            await asyncio.sleep(0.001)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    transcript = recorder.posts[-1]["transcript"]
+    assert transcript["unacked_rowids"] == [2]
+    assert transcript["observed_max_acked"] is False

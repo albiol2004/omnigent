@@ -64,7 +64,8 @@ def _dump(name: str, record: dict[str, Any]) -> None:
     out = os.environ.get("OMNIGENT_RECEIPT_E2E_EVIDENCE")
     if out:
         Path(out).mkdir(parents=True, exist_ok=True)
-        (Path(out) / f"{name}.json").write_text(json.dumps(record, indent=2, default=sorted))
+        text = json.dumps(record, indent=2, default=lambda o: sorted(o, key=str))
+        (Path(out) / f"{name}.json").write_text(text)
 
 
 def _sha(text: str) -> str:

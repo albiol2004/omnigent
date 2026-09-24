@@ -28,8 +28,9 @@ import fcntl
 import hashlib
 import json
 import os
+import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 #: Append-only log of per-turn outcomes written by the cursor ``stop`` hook.
@@ -53,6 +54,14 @@ INJECT_FILE = "cursor_inject.jsonl"
 INPUT_FENCE_FILE = "input_fence.json"
 
 _RECEIPT_LOCK_FILE = "receipt.lock"
+
+#: The forwarder's durable cursor (``forwarder._STATE_FILE``); the stop hook
+#: reads only its ``store_path`` so each turn end is stamped with a store position.
+_FORWARDER_STATE_FILE = "cursor_forwarder.json"
+
+#: Called under ``receipt.lock`` with this epoch's ``(turn_ends, injects)`` to
+#: bind turn ends to transcript user rows (see ``forwarder.turn_binding``).
+TurnBinder = Callable[[list[dict[str, object]], list[dict[str, object]]], dict[str, object]]
 
 #: Session label that opts a cursor-native session in to receipts + fencing.
 COMPLETION_RECEIPTS_LABEL = "omnigent.cursor_native.completion_receipts"
@@ -147,6 +156,21 @@ def read_input_fence(bridge_dir: Path) -> dict[str, object] | None:
     return data if isinstance(data, dict) else {"fence_id": None, "corrupt": True}
 
 
+def normalize_prompt_text(text: str) -> str:
+    """Normalize prompt text before hashing it against a stored ``<user_query>``.
+
+    Drops C0 control bytes except newline and tab (cursor embeds some in stored
+    prompts) and surrounding whitespace, identically for the injected content and
+    the stored row; any other rewrite by cursor leaves the receipt unbound (hold).
+    """
+    return "".join(ch for ch in text if ch >= " " or ch in "\n\t").strip()
+
+
+def prompt_binding_sha(text: str) -> str:
+    """Hex SHA-256 of :func:`normalize_prompt_text` applied to *text*."""
+    return hashlib.sha256(normalize_prompt_text(text).encode("utf-8")).hexdigest()
+
+
 def record_injection(bridge_dir: Path, content: str, *, kind: str) -> None:
     """Admit one pane injection: refuse if fenced, else log it for receipts.
 
@@ -173,6 +197,8 @@ def record_injection(bridge_dir: Path, content: str, *, kind: str) -> None:
             # Ordinal among turn-starting injections only; ``None`` for others.
             "message_seq": _message_inject_count(records) + 1 if kind == "message" else None,
             "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            # Hash compared with the transcript's ``<user_query>`` row (messages only).
+            "norm_sha256": prompt_binding_sha(content) if kind == "message" else None,
             "kind": kind,
         }
         with open(bridge_dir / INJECT_FILE, "a", encoding="utf-8") as handle:
@@ -197,17 +223,24 @@ def normalize_stop_reason(raw: object) -> str:
     return raw if isinstance(raw, str) and raw in _STOP_REASONS else "unknown"
 
 
-def build_turn_end_receipt(bridge_dir: Path) -> dict[str, object] | None:
+def build_turn_end_receipt(
+    bridge_dir: Path, binder: TurnBinder | None = None
+) -> dict[str, object] | None:
     """Build the per-epoch receipt fields owned by the hook/inject logs.
 
+    :param binder: Computes ``binding`` from the same locked snapshot of the
+        logs, so the binding and the counts always describe one state.
     :returns: ``None`` when not opted in or no turn has ended this epoch. The
         forwarder adds ``chat_id``, ``transcript``, and ``rev``.
     """
     epoch = read_receipt_epoch(bridge_dir)
     if epoch is None:
         return None
+    binding: dict[str, object] | None = None
     with receipt_lock(bridge_dir):
         turn_ends, injects = _counts_locked(bridge_dir, epoch)
+        if turn_ends and binder is not None:
+            binding = binder(turn_ends, injects)
     if not turn_ends:
         return None
     last = turn_ends[-1]
@@ -234,22 +267,29 @@ def build_turn_end_receipt(bridge_dir: Path) -> dict[str, object] | None:
         "stop_reason": normalize_stop_reason(last.get("stop_status_raw")),
         "generation_id": generation_id if isinstance(generation_id, str) else None,
         "hook_conversation_id": last.get("hook_conversation_id"),
+        "binding": binding,
     }
 
 
-def close_input_fence(bridge_dir: Path, fence_id: str) -> dict[str, object]:
+def close_input_fence(
+    bridge_dir: Path, fence_id: str, binder: TurnBinder | None = None
+) -> dict[str, object]:
     """Close the pane input fence and report the state it was closed at.
 
-    The fence write and the counter read share one critical section with every
-    injection and turn end, so no injection can land between them.
+    The fence write, the counter read and the turn binding share one critical
+    section with every injection and turn end, so no injection can land between
+    them.
 
-    :returns: ``{fence_id, epoch, inject_count, turn_end_count, already_closed}``.
+    :returns: ``{fence_id, same_fence, epoch, inject_count, turn_end_count,
+        already_closed, bound, bind_reason}``. ``bound`` is ``True`` only when
+        *binder* proved every injected prompt's turn ended.
     """
     with receipt_lock(bridge_dir):
         existing = read_input_fence(bridge_dir)
         epoch = read_receipt_epoch(bridge_dir)
         turn_ends, injects = _counts_locked(bridge_dir, epoch) if epoch is not None else ([], [])
         inject_count = _message_inject_count(injects)
+        binding = binder(turn_ends, injects) if binder is not None and epoch is not None else None
         if existing is None:
             _write_json_atomic(
                 bridge_dir / INPUT_FENCE_FILE,
@@ -267,6 +307,8 @@ def close_input_fence(bridge_dir: Path, fence_id: str) -> dict[str, object]:
             "inject_count": inject_count,
             "turn_end_count": len(turn_ends),
             "already_closed": existing is not None,
+            "bound": binding is not None and binding.get("bound") is True,
+            "bind_reason": binding.get("reason") if binding is not None else "no_binder",
         }
 
 
@@ -316,6 +358,9 @@ def record_turn_end(bridge_dir: Path, payload: object | None = None) -> None:
     raw = payload if isinstance(payload, dict) else {}
     status = raw.get("status")
     conversation_id = raw.get("conversation_id")
+    # The store position at hook time binds this turn end to the user rows that
+    # exist when it fires (cursor blocks the next turn on this hook).
+    store_chat, store_rowid = _hook_store_position(bridge_dir)
     with receipt_lock(bridge_dir):
         turn_ends = _epoch_records(bridge_dir / TURN_END_FILE, epoch)
         injects = _epoch_records(bridge_dir / INJECT_FILE, epoch)
@@ -329,10 +374,45 @@ def record_turn_end(bridge_dir: Path, payload: object | None = None) -> None:
                 "hook_conversation_id": (
                     conversation_id if isinstance(conversation_id, str) else None
                 ),
+                "store_chat_at_end": store_chat,
+                "store_rowid_at_end": store_rowid,
             }
         )
         with open(bridge_dir / TURN_END_FILE, "a", encoding="utf-8") as handle:
             handle.write("\n" + json.dumps(line, sort_keys=True) + "\n")
+
+
+def _hook_store_position(bridge_dir: Path) -> tuple[str | None, int | None]:
+    """Return ``(chat_id, MAX(rowid))`` of the store the forwarder tails, now.
+
+    ``(None, None)`` when no store is bound yet or it cannot be read; such a
+    turn end binds to no user row, so the receipt stays unbound (hold).
+    """
+    try:
+        data = json.loads((bridge_dir / _FORWARDER_STATE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, None
+    store_path = data.get("store_path") if isinstance(data, dict) else None
+    if not isinstance(store_path, str) or not store_path or not Path(store_path).is_file():
+        return None, None
+    # Same open order as ``forwarder._get_current_rowid``: ``mode=ro`` reads the
+    # live WAL; a plain connection covers a momentarily absent ``-shm``.
+    for uri, use_uri in ((f"file:{store_path}?mode=ro", True), (store_path, False)):
+        try:
+            con = sqlite3.connect(uri, timeout=2.0, uri=use_uri)
+        except sqlite3.Error:
+            continue
+        try:
+            row = con.execute("SELECT MAX(rowid) FROM blobs").fetchone()
+        except sqlite3.Error:
+            continue
+        finally:
+            con.close()
+        rowid = row[0] if row else None
+        if isinstance(rowid, int):
+            return Path(store_path).parent.name, rowid
+        return None, None
+    return None, None
 
 
 def count_turn_ends(bridge_dir: Path) -> int:

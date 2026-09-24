@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 
-from omnigent.harnesses.cursor_native import status
+from omnigent.harnesses.cursor_native import forwarder, status
 from omnigent.harnesses.cursor_native.fence import handle_runner_fence_request
 from omnigent.runtime import pending_inputs
 from omnigent.server.auth import LEVEL_EDIT
@@ -44,8 +45,9 @@ _OPT_IN = {input_fence.COMPLETION_RECEIPTS_LABEL: input_fence.COMPLETION_RECEIPT
 class _Runner:
     """Server→runner transport backed by the real runner fence handler."""
 
-    def __init__(self, bridge_dir: Path) -> None:
+    def __init__(self, bridge_dir: Path, store_path: Path) -> None:
         self.bridge_dir = bridge_dir
+        self.store_path = store_path
         self.calls: list[dict[str, Any]] = []
         self.fail_open = False
         self.gate: asyncio.Event | None = None
@@ -75,7 +77,11 @@ def _single_server(monkeypatch: pytest.MonkeyPatch) -> None:
 def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Runner:
     bridge_dir = tmp_path / "bridge"
     status.write_receipt_epoch(bridge_dir, _EPOCH)
-    fake = _Runner(bridge_dir)
+    store_path = tmp_path / "chats" / "h" / "chat-1" / "store.db"
+    store_path.parent.mkdir(parents=True)
+    with sqlite3.connect(store_path) as con:
+        con.execute("CREATE TABLE blobs(id TEXT PRIMARY KEY, data BLOB)")
+    fake = _Runner(bridge_dir, store_path)
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(fake.handle), base_url="http://runner"
     )
@@ -84,10 +90,12 @@ def runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Runner:
         return client
 
     monkeypatch.setattr(sessions_module, "_get_runner_client", _get_runner_client)
-    # The chat id the runner reports comes from the forwarder's bound store.
+    # The chat id the runner reports, and the rows turn ends bind to, come from
+    # the forwarder's bound store.
     (bridge_dir / "cursor_forwarder.json").write_text(
-        json.dumps({"store_path": "/chats/h/chat-1/store.db", "last_rowid": 0})
+        json.dumps({"store_path": str(store_path), "last_rowid": 0})
     )
+    forwarder._write_receipt_state(bridge_dir, forwarder._ReceiptState(store_path=str(store_path)))
     return fake
 
 
@@ -143,8 +151,20 @@ def _expect() -> dict[str, Any]:
     }
 
 
+def _submitted_row(runner: _Runner, prompt: str) -> None:
+    """Append the ``<user_query>`` row cursor writes when *prompt*'s turn starts."""
+    blob = {
+        "role": "user",
+        "content": [{"type": "text", "text": f"<user_query>\n{prompt}\n</user_query>"}],
+    }
+    with sqlite3.connect(runner.store_path) as con:
+        rowid = con.execute("SELECT COALESCE(MAX(rowid), 0) + 1 FROM blobs").fetchone()[0]
+        con.execute("INSERT INTO blobs VALUES(?, ?)", (f"b{rowid}", json.dumps(blob).encode()))
+
+
 def _one_finished_turn(runner: _Runner) -> None:
     status.record_injection(runner.bridge_dir, "prompt", kind="message")
+    _submitted_row(runner, "prompt")
     status.record_turn_end(runner.bridge_dir, {})
 
 
@@ -414,3 +434,72 @@ async def test_different_fence_id_cannot_replace_a_closed_fence(
     resp = await _event(auth_client, sid, _close("f2"))
     assert resp.status_code == 409
     assert "fence_exists" in resp.text
+
+
+async def test_balanced_counts_with_a_foreign_turn_leave_the_fence_unverified(
+    auth_client: httpx.AsyncClient, runner: _Runner
+) -> None:
+    """A stop that closed some other turn (a hook follow-up) must not close the prompt's."""
+    sid = await _session(auth_client, _OPT_IN)
+    status.record_injection(runner.bridge_dir, "prompt", kind="message")
+    _submitted_row(runner, "Continue: double-check the tests pass.")
+    status.record_turn_end(runner.bridge_dir, {})
+    resp = await _event(auth_client, sid, _close())
+    assert resp.status_code == 202, resp.text
+    fence = resp.json()["fence"]
+    assert (fence["verified"], fence["reason"]) == (False, "turns_unbound")
+    assert fence["runner_ack"]["inject_count"] == fence["runner_ack"]["turn_end_count"] == 1
+    assert fence["runner_ack"]["bind_reason"] == "user_rows_mismatch"
+
+
+async def test_receipt_binding_is_stored_in_its_own_label(auth_client: httpx.AsyncClient) -> None:
+    sid = await _session(auth_client, _OPT_IN)
+
+    async def _post(receipt: dict[str, Any]) -> dict[str, str]:
+        body = {"type": "external_session_status", "data": {"status": "idle", "turn_end": receipt}}
+        assert (await _event(auth_client, sid, body)).status_code == 202
+        return await _labels(auth_client, sid)
+
+    bound = {"v": 1, "bound": True, "reason": None, "user_rows": 1, "closed_turns": 1}
+    labels = await _post(_receipt(rev=1, binding=bound))
+    assert json.loads(labels[input_fence.TURN_RECEIPT_BINDING_LABEL]) == {
+        "bound": True,
+        "reason": None,
+        "user_rows": 1,
+        "closed_turns": 1,
+    }
+    # Inconsistent or unknown binding shapes are dropped with the whole receipt.
+    for bad in (
+        {**bound, "reason": "turn_open"},
+        {**bound, "bound": False, "reason": "made_up"},
+        {**bound, "user_rows": -1},
+    ):
+        labels = await _post(_receipt(rev=2, binding=bad))
+        assert json.loads(labels[input_fence.TURN_RECEIPT_LABEL])["rev"] == 1
+    # A runner that sends no binding stores ``bound: null``, which a consumer holds on.
+    labels = await _post(_receipt(rev=3))
+    assert json.loads(labels[input_fence.TURN_RECEIPT_BINDING_LABEL])["bound"] is None
+
+
+async def test_internal_parent_wake_is_refused_while_fenced(
+    auth_client: httpx.AsyncClient, runner: _Runner, db_uri: str
+) -> None:
+    """A server-internal dispatch goes through the same fence as the events route."""
+    from omnigent.server.routes._sessions import orchestration
+    from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
+
+    sid = await _session(auth_client, _OPT_IN)
+    _one_finished_turn(runner)
+    resp = await _event(auth_client, sid, _close())
+    assert resp.json()["fence"]["verified"] is True
+    store = SqlAlchemyConversationStore(db_uri)
+    conv = await asyncio.to_thread(store.get_conversation, sid)
+    delivered = await orchestration._wake_parent_for_blocked_child(
+        sid,
+        conv,
+        "[System: child blocked on approval]",
+        conversation_store=store,
+        runner_router=None,
+    )
+    assert delivered is False
+    assert len(status._epoch_records(runner.bridge_dir / status.INJECT_FILE, _EPOCH)) == 1

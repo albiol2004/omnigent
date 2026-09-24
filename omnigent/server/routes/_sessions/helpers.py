@@ -10768,7 +10768,14 @@ def _reject_server_reserved_label_seed(labels: dict[str, str] | None) -> None:
             " and cannot be set by clients",
             code=ErrorCode.INVALID_INPUT,
         )
+    from omnigent.server.routes._sessions.input_fence import SERVER_RESERVED_LABELS
 
+    reserved_fence_key = next((k for k in labels if k in SERVER_RESERVED_LABELS), None)
+    if reserved_fence_key is not None:
+        raise OmnigentError(
+            f"label {reserved_fence_key!r} is server-internal and cannot be set by clients",
+            code=ErrorCode.INVALID_INPUT,
+        )
     if WORKTREE_ROOT_LABEL_KEY in labels:
         raise OmnigentError(
             f"label {WORKTREE_ROOT_LABEL_KEY!r} is server-internal and cannot be set by clients",

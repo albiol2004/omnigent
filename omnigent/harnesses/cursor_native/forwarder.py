@@ -760,7 +760,12 @@ async def _patch_external_session_id(
 
 
 async def _post_external_session_status(
-    client: httpx.AsyncClient, *, session_id: str, status: str, turn_outcome: str
+    client: httpx.AsyncClient,
+    *,
+    session_id: str,
+    status: str,
+    turn_outcome: str | None = None,
+    turn_end: dict[str, object] | None = None,
 ) -> None:
     """POST one ``external_session_status`` event to the Sessions API.
 
@@ -776,12 +781,14 @@ async def _post_external_session_status(
 
     :raises httpx.HTTPError: If the Omnigent request fails or is rejected.
     """
+    data: dict[str, object] = {"status": status}
+    if turn_outcome is not None:
+        data["turn_outcome"] = turn_outcome
+    if turn_end is not None:
+        data["turn_end"] = turn_end
     resp = await client.post(
         f"/v1/sessions/{session_id}/events",
-        json={
-            "type": "external_session_status",
-            "data": {"status": status, "turn_outcome": turn_outcome},
-        },
+        json={"type": "external_session_status", "data": data},
     )
     resp.raise_for_status()
 
@@ -899,6 +906,133 @@ async def _persist_native_compaction_item(
     resp.raise_for_status()
 
 
+#: Durable transcript-ACK + posted-receipt state for opted-in sessions.
+RECEIPT_STATE_FILE = "cursor_receipt_forwarder.json"
+
+#: Maximum skipped (unacknowledged) rowids carried in a receipt.
+_MAX_UNACKED_ROWIDS = 32
+
+
+@dataclass
+class _ReceiptState:
+    """Transcript ACK watermark and last posted receipt for one chat store.
+
+    :param store_path: Store the watermark belongs to.
+    :param acked_through_rowid: Every row up to here was either mirrored with a
+        2xx or is not a mirrored row; skipped rows are listed in ``unacked``.
+    :param unacked_rowids: Rows the mirror skipped without a server ACK.
+    :param posted_key: ``[epoch, turn_seq]`` of the last posted receipt.
+    :param posted_rev: ``rev`` of the last posted receipt.
+    :param posted_digest: Content digest of the last posted receipt (sans rev).
+    """
+
+    store_path: str | None = None
+    acked_through_rowid: int = 0
+    unacked_rowids: list[int] | None = None
+    posted_key: list[int] | None = None
+    posted_rev: int = 0
+    posted_digest: str | None = None
+
+
+def _read_receipt_state(bridge_dir: Path) -> _ReceiptState | None:
+    try:
+        data = json.loads((bridge_dir / RECEIPT_STATE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    unacked = data.get("unacked_rowids")
+    posted_key = data.get("posted_key")
+    return _ReceiptState(
+        store_path=data.get("store_path") if isinstance(data.get("store_path"), str) else None,
+        acked_through_rowid=int(data.get("acked_through_rowid") or 0),
+        unacked_rowids=[int(r) for r in unacked] if isinstance(unacked, list) else [],
+        posted_key=list(posted_key) if isinstance(posted_key, list) else None,
+        posted_rev=int(data.get("posted_rev") or 0),
+        posted_digest=data.get("posted_digest")
+        if isinstance(data.get("posted_digest"), str)
+        else None,
+    )
+
+
+def _write_receipt_state(bridge_dir: Path, state: _ReceiptState) -> None:
+    tmp = bridge_dir / (RECEIPT_STATE_FILE + ".tmp")
+    tmp.write_text(
+        json.dumps(
+            {
+                "store_path": state.store_path,
+                "acked_through_rowid": state.acked_through_rowid,
+                "unacked_rowids": state.unacked_rowids or [],
+                "posted_key": state.posted_key,
+                "posted_rev": state.posted_rev,
+                "posted_digest": state.posted_digest,
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.replace(tmp, bridge_dir / RECEIPT_STATE_FILE)
+
+
+def read_bound_chat_id(bridge_dir: Path) -> str | None:
+    """Return the cursor chat id of the store this session's forwarder tails."""
+    store_path = _read_state(bridge_dir).store_path
+    return Path(store_path).parent.name if store_path else None
+
+
+def clear_receipt_forwarder_state(bridge_dir: Path) -> None:
+    """Drop the transcript-ACK state so a new terminal epoch starts clean."""
+    with contextlib.suppress(OSError):
+        (bridge_dir / RECEIPT_STATE_FILE).unlink()
+
+
+def _bind_receipt_state(
+    bridge_dir: Path, current: _ReceiptState | None, store_path: Path, last_rowid: int
+) -> _ReceiptState:
+    """Return the ACK state for *store_path*, starting a new store at *last_rowid*.
+
+    Rows at or below the forward cursor of a freshly bound store belong to a
+    prior terminal (pre-seeded resume) and are outside this epoch's transcript.
+    """
+    if current is not None and current.store_path == str(store_path):
+        return current
+    persisted = _read_receipt_state(bridge_dir)
+    if persisted is not None and persisted.store_path == str(store_path):
+        return persisted
+    state = _ReceiptState(store_path=str(store_path), acked_through_rowid=last_rowid)
+    if persisted is not None:
+        state.posted_key = persisted.posted_key
+        state.posted_rev = persisted.posted_rev
+        state.posted_digest = persisted.posted_digest
+    return state
+
+
+def _complete_receipt(
+    base: dict[str, object],
+    *,
+    store_path: Path | None,
+    receipt_state: _ReceiptState | None,
+    store_max_rowid: int,
+) -> dict[str, object]:
+    """Add the forwarder-owned ``chat_id`` and ``transcript`` fields to a receipt."""
+    acked = receipt_state.acked_through_rowid if receipt_state is not None else 0
+    unacked = list((receipt_state.unacked_rowids or []) if receipt_state is not None else [])
+    receipt = dict(base)
+    receipt["chat_id"] = store_path.parent.name if store_path is not None else None
+    receipt["transcript"] = {
+        "store_max_rowid": store_max_rowid,
+        "acked_through_rowid": acked,
+        "unacked_rowids": unacked[-_MAX_UNACKED_ROWIDS:],
+        # Every row committed as of this read was ACKed. Cursor may still append
+        # after its stop hook, so this never proves the transcript is complete.
+        "observed_max_acked": store_path is not None and acked >= store_max_rowid and not unacked,
+    }
+    return receipt
+
+
+def _receipt_digest(receipt: dict[str, object]) -> str:
+    return hashlib.sha256(json.dumps(receipt, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 async def forward_cursor_store_to_session(
     *,
     base_url: str,
@@ -959,6 +1093,7 @@ async def forward_cursor_store_to_session(
     fd_exhaustion_last_warn = 0.0
     pending_turn_end: int | None = None
     outcome_parse_failures = 0
+    receipt_state: _ReceiptState | None = None
     timeout = httpx.Timeout(_POST_TIMEOUT_S)
     async with httpx.AsyncClient(
         base_url=base_url, headers=headers, auth=auth, timeout=timeout
@@ -976,6 +1111,13 @@ async def forward_cursor_store_to_session(
                     )
                     if total_turn_ends > posted_turn_ends:
                         pending_turn_end = posted_turn_ends + 1
+                receipt_base = await asyncio.to_thread(
+                    cursor_native_status.build_turn_end_receipt, bridge_dir
+                )
+                receipts_on = receipt_base is not None or (
+                    await asyncio.to_thread(cursor_native_status.read_receipt_epoch, bridge_dir)
+                    is not None
+                )
                 retrying_items = False
                 if store_path is None or not store_path.exists():
                     # On cold resume the runner pre-seeds the bridge state with
@@ -1054,6 +1196,14 @@ async def forward_cursor_store_to_session(
                         )
                         store_path = None
                     else:
+                        scan_max_rowid = 0
+                        if receipts_on:
+                            receipt_state = _bind_receipt_state(
+                                bridge_dir, receipt_state, store_path, last_rowid
+                            )
+                            scan_max_rowid = await asyncio.to_thread(
+                                _get_current_rowid, store_path
+                            )
                         items = await asyncio.to_thread(
                             _read_new_items, store_path, last_rowid, agent_name
                         )
@@ -1078,6 +1228,11 @@ async def forward_cursor_store_to_session(
                                         client, session_id=session_id, status="completed"
                                     )
                                 except httpx.HTTPError:
+                                    if receipt_state is not None:
+                                        receipt_state.unacked_rowids = [
+                                            *(receipt_state.unacked_rowids or []),
+                                            item.rowid,
+                                        ]
                                     _logger.warning(
                                         "cursor forwarder could not post "
                                         "compaction-completed; the web UI spinner "
@@ -1117,6 +1272,11 @@ async def forward_cursor_store_to_session(
                                     )
                                 except httpx.HTTPError as exc:
                                     if post_may_have_been_delivered(exc):
+                                        if receipt_state is not None:
+                                            receipt_state.unacked_rowids = [
+                                                *(receipt_state.unacked_rowids or []),
+                                                item.rowid,
+                                            ]
                                         # Ambiguous: the request was sent but its
                                         # response was lost, so the server may have
                                         # already committed this item. External
@@ -1152,6 +1312,11 @@ async def forward_cursor_store_to_session(
                                             )
                                             retrying_items = True
                                             break  # retry this item before any after it
+                                        if receipt_state is not None:
+                                            receipt_state.unacked_rowids = [
+                                                *(receipt_state.unacked_rowids or []),
+                                                item.rowid,
+                                            ]
                                         _logger.error(
                                             "cursor forwarder dropping item after %s "
                                             "rejected POSTs (HTTP %s); mirror would "
@@ -1189,6 +1354,19 @@ async def forward_cursor_store_to_session(
                                     launch_epoch_ms=launch_epoch_ms,
                                 ),
                             )
+                        if receipt_state is not None and receipts_on:
+                            # Rows up to the forward cursor were ACKed or listed as
+                            # unacked; a clean pass also covers non-item rows up to
+                            # the pre-read snapshot.
+                            watermark = (
+                                last_rowid if retrying_items else max(last_rowid, scan_max_rowid)
+                            )
+                            receipt_state.acked_through_rowid = max(
+                                receipt_state.acked_through_rowid, watermark
+                            )
+                            await asyncio.to_thread(
+                                _write_receipt_state, bridge_dir, receipt_state
+                            )
                         # Refresh the claim heartbeat every poll (even with no new
                         # items) so an idle owner keeps its claim and a peer can
                         # detect a dead session.
@@ -1212,38 +1390,87 @@ async def forward_cursor_store_to_session(
                         )
                 # Deliver the hook outcome after its transcript, even without a
                 # bound store. Failed posts retain this snapshot for the next poll.
-                if not retrying_items and pending_turn_end is not None:
-                    try:
-                        outcome = await asyncio.to_thread(
-                            cursor_native_status.read_turn_outcome, bridge_dir, pending_turn_end
-                        )
-                    except (ValueError, IndexError):
-                        outcome_parse_failures += 1
-                        if outcome_parse_failures < _TURN_OUTCOME_PARSE_ATTEMPTS:
-                            await asyncio.sleep(poll_interval_s)
-                            continue
-                        if outcome_parse_failures == _TURN_OUTCOME_PARSE_ATTEMPTS:
-                            _logger.error(
-                                "cursor stop marker %s is damaged; reporting failure; "
-                                "session=%s bridge_dir=%s",
-                                pending_turn_end,
-                                session_id,
+                # A finished turn's completion receipt (opt-in) rides on the same
+                # post; a receipt-only refresh (delayed transcript flush) re-posts
+                # ``idle`` with no outcome once every injection has ended.
+                receipt: dict[str, object] | None = None
+                if receipt_base is not None:
+                    store_max_rowid = (
+                        await asyncio.to_thread(_get_current_rowid, store_path)
+                        if store_path is not None
+                        else 0
+                    )
+                    receipt = _complete_receipt(
+                        receipt_base,
+                        store_path=store_path,
+                        receipt_state=receipt_state,
+                        store_max_rowid=store_max_rowid,
+                    )
+                idle_due = not retrying_items and pending_turn_end is not None
+                receipt_update_due = False
+                if receipt is not None and not retrying_items and not idle_due:
+                    key = [receipt["epoch"], receipt["turn_seq"]]
+                    posted = receipt_state or _read_receipt_state(bridge_dir) or _ReceiptState()
+                    # Re-post a finished turn's receipt only while every injection
+                    # has ended (the pane is idle) and something about it changed,
+                    # e.g. a delayed transcript flush.
+                    receipt_update_due = (
+                        posted.posted_key == key
+                        and posted.posted_digest != _receipt_digest(receipt)
+                        and receipt["turn_end_count"] >= receipt["inject_count"]
+                    )
+                if idle_due or receipt_update_due:
+                    outcome: str | None = None
+                    if idle_due:
+                        try:
+                            outcome = await asyncio.to_thread(
+                                cursor_native_status.read_turn_outcome,
                                 bridge_dir,
+                                pending_turn_end,
                             )
-                        outcome = "failed"
-                    else:
-                        outcome_parse_failures = 0
+                        except (ValueError, IndexError):
+                            outcome_parse_failures += 1
+                            if outcome_parse_failures < _TURN_OUTCOME_PARSE_ATTEMPTS:
+                                await asyncio.sleep(poll_interval_s)
+                                continue
+                            if outcome_parse_failures == _TURN_OUTCOME_PARSE_ATTEMPTS:
+                                _logger.error(
+                                    "cursor stop marker %s is damaged; reporting failure; "
+                                    "session=%s bridge_dir=%s",
+                                    pending_turn_end,
+                                    session_id,
+                                    bridge_dir,
+                                )
+                            outcome = "failed"
+                        else:
+                            outcome_parse_failures = 0
+                    posted = receipt_state or _read_receipt_state(bridge_dir) or _ReceiptState()
+                    if receipt is not None:
+                        key = [receipt["epoch"], receipt["turn_seq"]]
+                        digest = _receipt_digest(receipt)
+                        rev = posted.posted_rev + 1 if posted.posted_key == key else 1
+                        receipt = {**receipt, "rev": rev}
                     await _post_external_session_status(
                         client,
                         session_id=session_id,
                         status="failed" if outcome == "failed" else "idle",
                         turn_outcome=outcome,
+                        turn_end=receipt,
                     )
-                    await asyncio.to_thread(
-                        cursor_native_status.write_posted_count, bridge_dir, pending_turn_end
-                    )
-                    pending_turn_end = None
-                    outcome_parse_failures = 0
+                    if idle_due:
+                        await asyncio.to_thread(
+                            cursor_native_status.write_posted_count,
+                            bridge_dir,
+                            pending_turn_end,
+                        )
+                        pending_turn_end = None
+                        outcome_parse_failures = 0
+                    if receipt is not None:
+                        posted.posted_key = key
+                        posted.posted_rev = rev
+                        posted.posted_digest = digest
+                        receipt_state = posted
+                        await asyncio.to_thread(_write_receipt_state, bridge_dir, posted)
                 if fd_exhausted_since is not None:
                     _logger.info(
                         "cursor forwarder polling recovered after fd exhaustion (%.1fs); "

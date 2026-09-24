@@ -576,6 +576,8 @@ CLIENT_SESSION_EVENT_TYPES: frozenset[str] = frozenset(ITEM_TYPE_TO_DATA_CLS.key
     _RETRY_SESSION_TYPE,
     # The web posts this when the user closes its /btw side chat.
     _EXTERNAL_BTW_DISMISS_TYPE,
+    # Owner-only cursor-native completion-receipt input fence (fork).
+    "input_fence",
 }
 
 

@@ -162,10 +162,14 @@ def _submitted_row(runner: _Runner, prompt: str) -> None:
         con.execute("INSERT INTO blobs VALUES(?, ?)", (f"b{rowid}", json.dumps(blob).encode()))
 
 
+#: A real stop payload for the runner's chat (cursor always sends ``conversation_id``).
+_STOP = {"status": "completed", "conversation_id": "chat-1"}
+
+
 def _one_finished_turn(runner: _Runner) -> None:
     status.record_injection(runner.bridge_dir, "prompt", kind="message")
     _submitted_row(runner, "prompt")
-    status.record_turn_end(runner.bridge_dir, {})
+    status.record_turn_end(runner.bridge_dir, _STOP)
 
 
 async def _labels(client: httpx.AsyncClient, sid: str) -> dict[str, str]:
@@ -443,13 +447,37 @@ async def test_balanced_counts_with_a_foreign_turn_leave_the_fence_unverified(
     sid = await _session(auth_client, _OPT_IN)
     status.record_injection(runner.bridge_dir, "prompt", kind="message")
     _submitted_row(runner, "Continue: double-check the tests pass.")
-    status.record_turn_end(runner.bridge_dir, {})
+    status.record_turn_end(runner.bridge_dir, _STOP)
     resp = await _event(auth_client, sid, _close())
     assert resp.status_code == 202, resp.text
     fence = resp.json()["fence"]
     assert (fence["verified"], fence["reason"]) == (False, "turns_unbound")
     assert fence["runner_ack"]["inject_count"] == fence["runner_ack"]["turn_end_count"] == 1
     assert fence["runner_ack"]["bind_reason"] == "user_rows_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("payload", "bind_reason"),
+    [
+        ({"status": "completed", "conversation_id": "chat-other"}, "turn_end_foreign"),
+        ({"status": "completed"}, "turn_end_unattributed"),
+    ],
+    ids=["foreign", "missing"],
+)
+async def test_stop_from_another_or_unknown_chat_leaves_the_fence_unverified(
+    auth_client: httpx.AsyncClient, runner: _Runner, payload: dict, bind_reason: str
+) -> None:
+    """Balanced counts and the prompt's own row, but the stop is not this chat's."""
+    sid = await _session(auth_client, _OPT_IN)
+    status.record_injection(runner.bridge_dir, "prompt", kind="message")
+    _submitted_row(runner, "prompt")
+    status.record_turn_end(runner.bridge_dir, payload)
+    resp = await _event(auth_client, sid, _close())
+    assert resp.status_code == 202, resp.text
+    fence = resp.json()["fence"]
+    assert (fence["verified"], fence["reason"]) == (False, "turns_unbound")
+    assert fence["runner_ack"]["inject_count"] == fence["runner_ack"]["turn_end_count"] == 1
+    assert fence["runner_ack"]["bind_reason"] == bind_reason
 
 
 async def test_receipt_binding_is_stored_in_its_own_label(auth_client: httpx.AsyncClient) -> None:

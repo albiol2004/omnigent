@@ -1119,6 +1119,8 @@ def compute_turn_binding(
 
     * the ordered user-row hashes equal the ordered message-injection hashes
       (no foreign, missing or reordered prompt);
+    * every turn end's stop ``conversation_id`` is this chat (a shared hooks
+      file delivers other sessions' stops too);
     * every row ``1..n`` is closed by exactly one turn end, and no turn end is
       unpositioned, precedes all rows, or duplicates another.
 
@@ -1128,8 +1130,15 @@ def compute_turn_binding(
     message_shas = [r.get("norm_sha256") for r in injects if r.get("kind") == "message"]
     row_shas = [sha for _rowid, sha in user_rows]
     closed: list[int] = []
-    unpositioned = 0
+    unpositioned = foreign = unattributed = 0
     for record in turn_ends:
+        conversation_id = record.get("hook_conversation_id")
+        if not isinstance(conversation_id, str) or not conversation_id:
+            unattributed += 1
+            continue
+        if store_chat is None or conversation_id != store_chat:
+            foreign += 1
+            continue
         position = record.get("store_rowid_at_end")
         if (
             isinstance(position, bool)
@@ -1149,6 +1158,10 @@ def compute_turn_binding(
         reason = "inject_unhashed"
     elif row_shas != message_shas:
         reason = "user_rows_mismatch"
+    elif foreign:
+        reason = "turn_end_foreign"
+    elif unattributed:
+        reason = "turn_end_unattributed"
     elif unpositioned:
         reason = "turn_end_unbound"
     elif len(set(closed)) != len(closed):

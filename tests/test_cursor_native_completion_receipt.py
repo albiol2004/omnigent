@@ -560,27 +560,120 @@ def test_turn_end_is_stamped_with_the_store_position(
     )
     writer.close()
     status.record_injection(bridge_dir, " prompt\r\n", kind="message")
-    _hook(bridge_dir, monkeypatch, {"status": "completed"})
+    _hook(bridge_dir, monkeypatch, {"status": "completed", "conversation_id": "chat-abc"})
     (inject,) = status._epoch_records(bridge_dir / status.INJECT_FILE, _EPOCH)
     assert inject["norm_sha256"] == _sha("prompt")
     (marker,) = status._epoch_records(bridge_dir / status.TURN_END_FILE, _EPOCH)
     assert (marker["store_chat_at_end"], marker["store_rowid_at_end"]) == ("chat-abc", 2)
+    assert marker["conversation_check"] == "match"
+    assert "observed_store_chat" not in marker
 
     # No bound store yet: the turn end carries no position and binds nothing.
     (bridge_dir / "cursor_forwarder.json").unlink()
-    _hook(bridge_dir, monkeypatch, {})
+    _hook(bridge_dir, monkeypatch, {"conversation_id": "chat-abc"})
     marker = status._epoch_records(bridge_dir / status.TURN_END_FILE, _EPOCH)[-1]
     assert (marker["store_chat_at_end"], marker["store_rowid_at_end"]) == (None, None)
+    assert marker["conversation_check"] == "store_unbound"
+
+
+@pytest.mark.parametrize(
+    ("payload", "check"),
+    [
+        ({"status": "completed"}, "missing"),
+        ({"status": "completed", "conversation_id": ""}, "missing"),
+        ({"status": "completed", "conversation_id": 7}, "missing"),
+        ({"status": "completed", "conversation_id": "chat-other"}, "mismatch"),
+    ],
+)
+def test_unattributed_or_foreign_stop_gets_no_local_position(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: dict, check: str
+) -> None:
+    """A stop not provably from this chat is recorded, but never at a local store position."""
+    bridge_dir, _store, writer = _bound_store(
+        tmp_path,
+        [("u1", _user("<user_query>\nprompt\n</user_query>")), ("a1", _assistant([]))],
+    )
+    writer.close()
+    status.record_injection(bridge_dir, "prompt", kind="message")
+    _hook(bridge_dir, monkeypatch, {**payload, "generation_id": "g-foreign"})
+    (marker,) = status._epoch_records(bridge_dir / status.TURN_END_FILE, _EPOCH)
+    assert marker["conversation_check"] == check
+    assert (marker["store_chat_at_end"], marker["store_rowid_at_end"]) == (None, None)
+    # Honest evidence: what the stop claimed and which chat was local at the time.
+    assert marker["observed_store_chat"] == "chat-abc"
+    assert marker["generation_id"] == "g-foreign"
+    assert marker["stop_status_raw"] == "completed"
+    want = payload["conversation_id"] if check == "mismatch" else None
+    assert marker["hook_conversation_id"] == want
+    code, ack = handle_runner_fence_request(bridge_dir, {"action": "close", "fence_id": "f"})
+    assert code == 200
+    reason = "turn_end_foreign" if check == "mismatch" else "turn_end_unattributed"
+    assert (ack["bound"], ack["bind_reason"]) == (False, reason)
+
+
+def test_shared_hook_stop_cannot_close_a_still_running_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another session's stop lands while this chat's prompt row exists and its turn runs.
+
+    It must not close row 1; the chat's own later stop still leaves the epoch
+    held, because the foreign stop is evidence of a shared hook.
+    """
+    bridge_dir, _store, writer = _bound_store(tmp_path, [])
+    status.record_injection(bridge_dir, "P", kind="message")
+    _row(writer, "u1", "P")  # this chat's turn 1 is running
+    _hook(bridge_dir, monkeypatch, {"status": "completed", "conversation_id": "chat-foreign"})
+    _code, ack = handle_runner_fence_request(bridge_dir, {"action": "close", "fence_id": "f1"})
+    assert (ack["bound"], ack["bind_reason"]) == (False, "turn_end_foreign")
+    assert status.open_input_fence(bridge_dir, "f1")
+    writer.execute(
+        "INSERT INTO blobs(id, data) VALUES(?, ?)",
+        ("a1", json.dumps(_assistant([{"type": "text", "text": "done"}])).encode()),
+    )
+    writer.commit()
+    writer.close()
+    _hook(bridge_dir, monkeypatch, {"status": "completed", "conversation_id": "chat-abc"})
+    _code, ack = handle_runner_fence_request(bridge_dir, {"action": "close", "fence_id": "f2"})
+    assert (ack["turn_end_count"], ack["bound"], ack["bind_reason"]) == (
+        2,
+        False,
+        "turn_end_foreign",
+    )
+
+
+def test_matching_stops_bind_a_clean_turn_and_queued_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge_dir, _store, writer = _bound_store(tmp_path, [])
+    status.record_injection(bridge_dir, "P", kind="message")
+    _row(writer, "u1", "P")
+    status.record_injection(bridge_dir, "P", kind="message")  # queued repost
+    _hook(bridge_dir, monkeypatch, {"status": "completed", "conversation_id": "chat-abc"})
+    _code, ack = handle_runner_fence_request(bridge_dir, {"action": "close", "fence_id": "f1"})
+    assert (ack["bound"], ack["bind_reason"]) == (False, "user_rows_mismatch")
+    assert status.open_input_fence(bridge_dir, "f1")
+    _row(writer, "u2", "P")
+    writer.close()
+    _hook(bridge_dir, monkeypatch, {"status": "completed", "conversation_id": "chat-abc"})
+    _code, ack = handle_runner_fence_request(bridge_dir, {"action": "close", "fence_id": "f2"})
+    assert (ack["inject_count"], ack["turn_end_count"], ack["bound"]) == (2, 2, True)
+
+
+def _stop(pos: object) -> dict:
+    """A turn end at store rowid *pos*, or ``(rowid, chat[, conversation_id])``."""
+    if not isinstance(pos, tuple):
+        pos = (pos, "chat-abc")
+    rowid, chat, *conv = pos
+    return {
+        "store_rowid_at_end": rowid,
+        "store_chat_at_end": chat,
+        "hook_conversation_id": conv[0] if conv else chat,
+    }
 
 
 def _binding(prompts: list[str], rows: list[tuple[int, str]], stops: list[object]) -> dict:
     return fwd.compute_turn_binding(
-        turn_ends=[
-            {"store_rowid_at_end": pos, "store_chat_at_end": "chat-abc"}
-            if not isinstance(pos, tuple)
-            else {"store_rowid_at_end": pos[0], "store_chat_at_end": pos[1]}
-            for pos in stops
-        ],
+        turn_ends=[_stop(pos) for pos in stops],
         injects=[
             {"kind": "message", "norm_sha256": status.prompt_binding_sha(p)} for p in prompts
         ],
@@ -609,8 +702,16 @@ def _binding(prompts: list[str], rows: list[tuple[int, str]], stops: list[object
         (["P", "P"], [(1, "P"), (2, "P")], [3, 4], "duplicate_turn_end"),
         # Stops with no position, another chat's position, or before any row.
         (["P"], [(1, "P")], [None], "turn_end_unbound"),
-        (["P"], [(1, "P")], [(2, "chat-other")], "turn_end_unbound"),
+        (["P"], [(1, "P")], [(2, "chat-other", "chat-abc")], "turn_end_unbound"),
         (["P"], [(5, "P")], [3], "turn_end_unbound"),
+        # A stop whose conversation is another chat, or unknown, closes nothing,
+        # even when a (legacy or forged) record carries a local position.
+        (["P"], [(1, "P")], [(2, "chat-other")], "turn_end_foreign"),
+        (["P"], [(1, "P")], [(2, "chat-abc", "chat-other")], "turn_end_foreign"),
+        (["P"], [(1, "P")], [(2, "chat-abc", None)], "turn_end_unattributed"),
+        (["P"], [(1, "P")], [(2, "chat-abc", "")], "turn_end_unattributed"),
+        (["P", "P"], [(1, "P"), (3, "P")], [2, (4, "chat-abc", "chat-x")], "turn_end_foreign"),
+        (["P"], [(1, "P")], [2, (2, "chat-abc", "chat-x")], "turn_end_foreign"),
     ],
 )
 def test_turn_binding_holds_on_every_unproven_turn(
@@ -622,7 +723,7 @@ def test_turn_binding_holds_on_every_unproven_turn(
 
 def test_injection_without_a_binding_hash_never_binds() -> None:
     binding = fwd.compute_turn_binding(
-        turn_ends=[{"store_rowid_at_end": 2, "store_chat_at_end": "chat-abc"}],
+        turn_ends=[_stop(2)],
         injects=[{"kind": "message", "sha256": _sha("P")}],
         user_rows=[(1, status.prompt_binding_sha("P"))],
         store_chat="chat-abc",
@@ -657,7 +758,7 @@ async def test_forwarder_receipt_carries_the_turn_binding(
     )
     writer.close()
     status.record_injection(bridge_dir, "prompt", kind="message")
-    _hook(bridge_dir, monkeypatch, {"status": "completed"})
+    _hook(bridge_dir, monkeypatch, {"status": "completed", "conversation_id": "chat-abc"})
     recorder = await _run_forwarder(monkeypatch, bridge_dir, store, until=lambda r: bool(r.posts))
     assert recorder.posts[0]["binding"] == {
         "v": 1,

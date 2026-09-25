@@ -55,6 +55,8 @@ class _FakeAppServer:
             self.received.append(message)
             method = message.get("method")
             if method == "initialize":
+                if self.compact_mode == "init_hang":
+                    continue
                 await ws.send(json.dumps({"id": message["id"], "result": {}}))
             elif method == CODEX_COMPACT_START_METHOD:
                 if self.compact_mode == "ok":
@@ -190,7 +192,8 @@ async def test_missing_completion_times_out_uncertain_without_resend() -> None:
     assert final.state is CodexCompactState.UNCERTAIN
     assert final.state is not CodexCompactState.COMPLETED
     assert len(fake.compact_requests) == 1
-    assert tracker.get(THREAD) is None
+    # The wait ended, not the compaction: the guard is retained.
+    assert tracker.get(THREAD) is entry and entry.outcome_unknown
 
 
 async def test_accept_timeout_is_uncertain_keeps_thread_busy_no_resend() -> None:
@@ -297,7 +300,7 @@ async def test_error_notification_fails_only_when_not_retrying() -> None:
         _, entry = await _start(fake.url, tracker)
     assert entry is not None
 
-    tracker.observe(_event("turn/started", threadId=THREAD, turn={"id": "turn_c"}))
+    tracker.observe(_compaction_item("item/started"))
     tracker.observe(
         _event(
             "error", threadId=THREAD, turnId="turn_c", willRetry=True, error={"message": "retry"}
@@ -321,12 +324,14 @@ async def test_turn_completed_without_compaction_item_is_uncertain() -> None:
         _, entry = await _start(fake.url, tracker)
     assert entry is not None
 
-    tracker.observe(_event("turn/started", threadId=THREAD, turn={"id": "turn_c"}))
+    tracker.observe(_compaction_item("item/started"))
     tracker.observe(
         _event("turn/completed", threadId=THREAD, turn={"id": "turn_c", "status": "completed"})
     )
+    assert entry.done.done(), "the proven compaction turn ended"
     final = await await_codex_manual_compact(entry, tracker=tracker, completion_timeout_s=1.0)
     assert final.state is CodexCompactState.UNCERTAIN
+    assert tracker.get(THREAD) is None
 
 
 async def test_unreachable_app_server_is_disconnected() -> None:
@@ -476,3 +481,223 @@ async def test_turn_boundary_safety_net_does_not_fake_completion(
         p["data"]["status"] for p in posts if p.get("type") == "external_compaction_status"
     ]
     assert statuses == [expected]
+
+
+# ---- iteration 2: cancellation, bounded close, attribution, retained guard ----
+
+
+async def _wait_for_compact_request(fake: _FakeAppServer) -> None:
+    for _ in range(200):
+        if fake.compact_requests:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("compact request never reached the fake app-server")
+
+
+async def test_cancel_after_send_keeps_guard_and_late_event_releases_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Cancellation after the RPC may have gone out: the guard is retained (no
+    second RPC, 409-style BUSY with an unknown-outcome reason) past the
+    observation budget; a late completion releases it and the next request
+    is sent exactly once.
+    """
+    from omnigent.harnesses.codex_native import manual_compact as mc
+
+    monkeypatch.setattr(mc, "CODEX_COMPACT_COMPLETION_TIMEOUT_S", 0.1)
+    tracker = CodexManualCompactTracker()
+    async with _app_server("silent") as fake:
+        task = asyncio.create_task(_start(fake.url, tracker, accept_timeout_s=5.0))
+        await _wait_for_compact_request(fake)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        entry = tracker.get(THREAD)
+        assert entry is not None, "cancelled send must keep the in-flight guard"
+
+        await asyncio.sleep(0.3)  # the background observation budget expires
+        assert tracker.get(THREAD) is entry, "budget expiry must not release the guard"
+        again, again_entry = await _start(fake.url, tracker)
+        assert again.state is CodexCompactState.BUSY and again_entry is None
+        assert again.detail is not None and "unknown" in again.detail
+        assert len(fake.compact_requests) == 1
+
+        tracker.observe(_compaction_item("item/completed"))
+        await asyncio.sleep(0)
+        assert tracker.get(THREAD) is None, "late completion must release the guard"
+
+        fake.compact_mode = "ok"
+        third, third_entry = await _start(fake.url, tracker)
+    assert third.state is CodexCompactState.ACCEPTED and third_entry is not None
+    assert len(fake.compact_requests) == 2
+
+
+async def test_cancel_before_send_releases_guard() -> None:
+    """Cancelled during connect/initialize: nothing was sent, the thread is free."""
+    tracker = CodexManualCompactTracker()
+    async with _app_server("init_hang") as fake:
+        task = asyncio.create_task(_start(fake.url, tracker))
+        for _ in range(200):
+            if fake.received:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert tracker.get(THREAD) is None
+    assert fake.compact_requests == []
+
+
+async def test_completion_timeout_keeps_guard_until_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The post-accept budget ending is not evidence: no second RPC until it is."""
+    tracker = CodexManualCompactTracker()
+    async with _app_server("ok") as fake:
+        _, entry = await _start(fake.url, tracker)
+        assert entry is not None
+        final = await await_codex_manual_compact(entry, tracker=tracker, completion_timeout_s=0.05)
+        assert final.state is CodexCompactState.UNCERTAIN
+        blocked, _ = await _start(fake.url, tracker)
+        assert blocked.state is CodexCompactState.BUSY
+        assert blocked.detail is not None and "unknown" in blocked.detail
+        assert len(fake.compact_requests) == 1
+        tracker.observe(_event("thread/compacted", threadId=THREAD, turnId="turn_c"))
+        assert tracker.get(THREAD) is None
+        allowed, _ = await _start(fake.url, tracker)
+    assert allowed.state is CodexCompactState.ACCEPTED
+    assert len(fake.compact_requests) == 2
+
+
+async def test_error_for_other_turn_before_turn_known_does_not_fail() -> None:
+    """An error for some turn, before the compaction turn is known, is not ours."""
+    tracker = CodexManualCompactTracker()
+    async with _app_server("ok") as fake:
+        _, entry = await _start(fake.url, tracker)
+    assert entry is not None
+    tracker.observe(
+        _event("error", threadId=THREAD, turnId="other", willRetry=False, error={"message": "x"})
+    )
+    assert not entry.done.done()
+
+
+async def test_unproven_turn_failure_does_not_fail_or_release() -> None:
+    """A turn not proven to be the compaction cannot fail it or release the guard."""
+    tracker = CodexManualCompactTracker()
+    async with _app_server("ok") as fake:
+        _, entry = await _start(fake.url, tracker)
+    assert entry is not None
+    tracker.observe(_event("turn/started", threadId=THREAD, turn={"id": "user_turn"}))
+    tracker.observe(
+        _event("error", threadId=THREAD, turnId="user_turn", willRetry=False, error={})
+    )
+    tracker.observe(
+        _event("turn/completed", threadId=THREAD, turn={"id": "user_turn", "status": "failed"})
+    )
+    assert not entry.done.done()
+    assert tracker.get(THREAD) is entry
+    # The real compaction turn then proves itself and completes.
+    tracker.observe(_compaction_item("item/started", turn_id="turn_c"))
+    tracker.observe(_compaction_item("item/completed", turn_id="turn_c"))
+    assert entry.done.result().state is CodexCompactState.COMPLETED
+    assert tracker.get(THREAD) is None
+
+
+async def _hung_peer_server() -> tuple[asyncio.Server, asyncio.Event]:
+    """A peer that answers ``initialize`` then ignores everything, even close."""
+    import base64
+    import hashlib
+    import struct
+
+    compact_seen = asyncio.Event()
+    guid = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+    async def read_frame(reader: asyncio.StreamReader) -> tuple[int, bytes]:
+        b1, b2 = await reader.readexactly(2)
+        length = b2 & 0x7F
+        if length == 126:
+            length = struct.unpack(">H", await reader.readexactly(2))[0]
+        elif length == 127:
+            length = struct.unpack(">Q", await reader.readexactly(8))[0]
+        mask = await reader.readexactly(4) if b2 & 0x80 else b""
+        data = bytearray(await reader.readexactly(length))
+        for i in range(len(data)):
+            data[i] ^= mask[i % 4] if mask else 0
+        return b1 & 0x0F, bytes(data)
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        head = await reader.readuntil(b"\r\n\r\n")
+        key = next(
+            line.split(b":", 1)[1].strip()
+            for line in head.split(b"\r\n")
+            if line.lower().startswith(b"sec-websocket-key")
+        )
+        accept = base64.b64encode(hashlib.sha1(key + guid).digest()).decode()
+        writer.write(
+            (
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                f"Connection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+            ).encode()
+        )
+        await writer.drain()
+        while True:
+            opcode, data = await read_frame(reader)
+            if opcode != 1:
+                continue
+            message = json.loads(data)
+            if message.get("method") == "initialize":
+                payload = json.dumps({"id": message["id"], "result": {}}).encode()
+                writer.write(bytes([0x81, len(payload)]) + payload)
+                await writer.drain()
+            elif message.get("method") == CODEX_COMPACT_START_METHOD:
+                compact_seen.set()
+                await asyncio.sleep(3600)
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    return server, compact_seen
+
+
+async def test_hung_peer_accept_phase_fits_server_forward_budget() -> None:
+    """
+    With the production budgets, a peer that hangs after ``initialize`` (and
+    never answers the close handshake) is reported ``uncertain`` well inside
+    the server's 20s forward budget, including the runner's 1s label lookup.
+    """
+    import time
+
+    from omnigent.server.routes._sessions.helpers import _TUI_INJECT_FORWARD_TIMEOUT_S
+
+    label_lookup_budget_s = 1.0
+    server, compact_seen = await _hung_peer_server()
+    port = server.sockets[0].getsockname()[1]
+    tracker = CodexManualCompactTracker()
+    started = time.monotonic()
+    try:
+        outcome, _ = await start_codex_manual_compact(
+            session_id="conv_1",
+            thread_id=THREAD,
+            transport=f"ws://127.0.0.1:{port}",
+            active_turn_id=None,
+            tracker=tracker,
+        )
+    finally:
+        server.close()
+    elapsed = time.monotonic() - started
+    assert compact_seen.is_set()
+    assert outcome.state is CodexCompactState.UNCERTAIN
+    assert elapsed + label_lookup_budget_s < _TUI_INJECT_FORWARD_TIMEOUT_S - 2.0, elapsed
+
+
+async def test_worst_case_accept_budget_fits_server_forward_budget() -> None:
+    """lookup + connect + accept + close stays under the server budget with margin."""
+    from omnigent.harnesses.codex_native import manual_compact as mc
+    from omnigent.server.routes._sessions.helpers import _TUI_INJECT_FORWARD_TIMEOUT_S
+
+    worst = (
+        1.0
+        + mc.CODEX_COMPACT_CONNECT_TIMEOUT_S
+        + mc.CODEX_COMPACT_ACCEPT_TIMEOUT_S
+        + mc.CODEX_COMPACT_CLOSE_TIMEOUT_S
+    )
+    assert worst <= _TUI_INJECT_FORWARD_TIMEOUT_S - 5.0, worst

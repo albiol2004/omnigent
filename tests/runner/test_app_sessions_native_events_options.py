@@ -813,8 +813,12 @@ async def test_codex_native_compact_failure_clears_spinner_without_completion(
         )
         observe_codex_manual_compact_event(
             {
-                "method": "turn/started",
-                "params": {"threadId": "thread_codex", "turn": {"id": "turn_c"}},
+                "method": "item/started",
+                "params": {
+                    "threadId": "thread_codex",
+                    "turnId": "turn_c",
+                    "item": {"type": "contextCompaction", "id": "item_c"},
+                },
             }
         )
         observe_codex_manual_compact_event(
@@ -3426,3 +3430,30 @@ async def test_events_compact_on_claude_sdk_buffered_compact_failed_fallback() -
         f"swallowed); got {len(in_progress)} from types {[e.get('type') for e in events]}"
     )
     assert completed == [], "no completed should appear when nothing compacted"
+
+
+@pytest.mark.asyncio
+async def test_events_compact_on_codex_native_409_while_outcome_unknown(
+    _codex_compact_env: Any,
+) -> None:
+    """
+    A thread whose previous compaction outcome is unknown (cancelled or timed
+    out after the RPC may have gone out) answers 409 with that reason and sends
+    no second ``thread/compact/start``.
+    """
+    from omnigent.harnesses.codex_native.manual_compact import codex_manual_compact_tracker
+
+    conv_id = "2b3c4d5e6f708192a3b4c5d6e7f80912"
+    tracker = codex_manual_compact_tracker()
+    retained = tracker.begin(conv_id, "thread_codex")
+    assert retained is not None
+    retained.outcome_unknown = True
+
+    resp, _ = await _post_codex_compact(conv_id, seed=_codex_compact_env["seed"])
+
+    assert resp.status_code == 409, resp.text
+    body = resp.json()
+    assert body["error"] == "codex_native_compact_busy"
+    assert "unknown" in body["detail"]
+    assert _codex_compact_env["client"].requests == []
+    assert tracker.get("thread_codex") is retained

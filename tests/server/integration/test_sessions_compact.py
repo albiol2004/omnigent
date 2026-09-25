@@ -50,7 +50,10 @@ async def _create_session(client: httpx.AsyncClient, agent_id: str) -> str:
     return resp.json()["id"]
 
 
-def _fake_runner_returning(compact_status: int) -> tuple[httpx.AsyncClient, list[dict[str, Any]]]:
+def _fake_runner_returning(
+    compact_status: int,
+    compact_body: dict[str, Any] | None = None,
+) -> tuple[httpx.AsyncClient, list[dict[str, Any]]]:
     """
     Build a mock runner client that returns *compact_status* for compact.
 
@@ -62,6 +65,7 @@ def _fake_runner_returning(compact_status: int) -> tuple[httpx.AsyncClient, list
     :param compact_status: HTTP status the fake runner returns for a
         ``compact`` ``/events`` POST, e.g. ``200`` (native handled),
         ``204`` (SDK no-op), or ``503`` (pane not attached).
+    :param compact_body: Optional JSON body for the compact response.
     :returns: The mock ``httpx.AsyncClient`` and the list that captures
         forwarded compact bodies.
     """
@@ -79,6 +83,8 @@ def _fake_runner_returning(compact_status: int) -> tuple[httpx.AsyncClient, list
                 body = None
         if isinstance(body, dict) and body.get("type") == "compact":
             captured.append(body)
+            if compact_body is not None:
+                return httpx.Response(compact_status, json=compact_body)
             return httpx.Response(compact_status)
         return httpx.Response(204)
 
@@ -542,3 +548,88 @@ async def test_compaction_snapshot_persists_without_base64_payloads(
     assert source["media_type"] == "image/png"
     assert source["data"] == "[image/png content omitted from the compaction snapshot]"
     assert messages[1]["content"][0]["text"] == "I can see the screenshot."
+
+
+async def _post_compact_with_runner(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    body: dict[str, Any],
+) -> httpx.Response:
+    """POST one compact against a fake runner answering *status*/*body*."""
+    from omnigent.runtime import set_runner_client
+
+    async def _must_not_run(**_: Any) -> CompactionResult:
+        raise AssertionError("compact_conversation_now must not run for a runner-handled compact")
+
+    monkeypatch.setattr("omnigent.runtime.workflow.compact_conversation_now", _must_not_run)
+    runner, captured = _fake_runner_returning(status, body)
+    set_runner_client(runner)
+    try:
+        agent = await create_test_agent(client)
+        sid = await _create_session(client, agent["id"])
+        resp = await client.post(
+            f"/v1/sessions/{sid}/events", json={"type": "compact", "data": {}}
+        )
+    finally:
+        await runner.aclose()
+        set_runner_client(None)
+    assert captured == [{"type": "compact"}]
+    return resp
+
+
+async def test_compact_passes_through_accepted_state_not_completion(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A codex-native 200 says *accepted*; the ack carries that, not completion."""
+    resp = await _post_compact_with_runner(
+        client,
+        monkeypatch,
+        200,
+        {"compaction": {"state": "accepted", "thread_id": "thread_codex", "request_id": 7}},
+    )
+
+    assert resp.status_code == 202, resp.text
+    assert resp.json() == {"queued": False, "compaction_state": "accepted"}
+
+
+async def test_compact_busy_runner_surfaces_conflict_with_detail(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A runner 409 (turn active / compaction in flight) is a 409 with its reason."""
+    resp = await _post_compact_with_runner(
+        client,
+        monkeypatch,
+        409,
+        {
+            "error": "codex_native_compact_busy",
+            "state": "busy",
+            "detail": "A Codex turn is in progress; compact after it finishes.",
+        },
+    )
+
+    assert resp.status_code == 409, resp.text
+    assert "A Codex turn is in progress" in resp.text
+
+
+async def test_compact_uncertain_runner_error_carries_detail(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A runner 504 (no RPC response) is an error that says it was not resent."""
+    resp = await _post_compact_with_runner(
+        client,
+        monkeypatch,
+        504,
+        {
+            "error": "codex_native_compact_uncertain",
+            "state": "uncertain",
+            "detail": "No thread/compact/start response (TimeoutError); not resent.",
+        },
+    )
+
+    assert resp.status_code == 500, resp.text
+    assert "runner returned 504" in resp.text
+    assert "not resent" in resp.text

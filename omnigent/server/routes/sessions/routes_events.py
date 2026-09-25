@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import itertools
+import json
 import secrets
 import time
 import weakref
@@ -383,6 +384,40 @@ class _SessionEventBodyLimitRoute(APIRoute):
             return message
 
         await super().handle(scope, receive_bounded, send)
+
+
+def _compact_runner_ack(runner_result: Any) -> dict[str, bool | str]:
+    """
+    Map a runner's non-204 ``compact`` answer to the event acknowledgement.
+
+    200 means the runner handled the control. A ``compaction.state`` in the
+    body (codex-native: ``"accepted"``, not completion) is passed through as
+    ``compaction_state``. A 409 is a busy conflict; other statuses are errors
+    carrying the runner's detail.
+
+    :param runner_result: Runner forward result with ``status_code``/``body``.
+    :returns: Acknowledgement dict, e.g. ``{"queued": False}``.
+    :raises OmnigentError: When the runner did not handle the compaction.
+    """
+    payload: object = None
+    with contextlib.suppress(ValueError):
+        payload = json.loads(runner_result.body or "null")
+    body = payload if isinstance(payload, dict) else {}
+    if runner_result.status_code == 200:
+        ack: dict[str, bool | str] = {"queued": False}
+        compaction = body.get("compaction")
+        state = compaction.get("state") if isinstance(compaction, dict) else None
+        if isinstance(state, str):
+            ack["compaction_state"] = state
+        return ack
+    detail = body.get("detail")
+    suffix = f": {detail}" if isinstance(detail, str) and detail else ""
+    if runner_result.status_code == 409:
+        raise OmnigentError(f"Compaction not started{suffix}", code=ErrorCode.CONFLICT)
+    raise OmnigentError(
+        f"Compaction failed: runner returned {runner_result.status_code}{suffix}",
+        code=ErrorCode.INTERNAL_ERROR,
+    )
 
 
 def _retry_recovery_lock(session_id: str) -> asyncio.Lock:
@@ -1598,13 +1633,8 @@ def register_events_routes(
                 {"type": _COMPACT_TYPE},
                 timeout_s=_TUI_INJECT_FORWARD_TIMEOUT_S,
             )
-            if runner_result is not None and runner_result.status_code == 200:
-                return {"queued": False}
             if runner_result is not None and runner_result.status_code != 204:
-                raise OmnigentError(
-                    f"Compaction failed: runner returned {runner_result.status_code}",
-                    code=ErrorCode.INTERNAL_ERROR,
-                )
+                return _compact_runner_ack(runner_result)
             # ``runner_result is None`` means no runner was reachable. For a
             # native-terminal session /compact MUST run in the vendor TUI —
             # falling through to server-side in-process compaction is wrong
@@ -1628,13 +1658,8 @@ def register_events_routes(
                         {"type": _COMPACT_TYPE},
                         timeout_s=_TUI_INJECT_FORWARD_TIMEOUT_S,
                     )
-                    if runner_result is not None and runner_result.status_code == 200:
-                        return {"queued": False}
                     if runner_result is not None and runner_result.status_code != 204:
-                        raise OmnigentError(
-                            f"Compaction failed: runner returned {runner_result.status_code}",
-                            code=ErrorCode.INTERNAL_ERROR,
-                        )
+                        return _compact_runner_ack(runner_result)
                 # Native session that couldn't be woken (host offline) — the
                 # runner is the only thing that can compact it, so surface a
                 # clear "reconnect first" error rather than falling through to

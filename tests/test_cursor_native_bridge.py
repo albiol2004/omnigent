@@ -1322,3 +1322,122 @@ class TestCompletionReceiptHookGate:
             == "not_opted_in"
         )
         assert status.read_receipt_epoch(bridge) is None
+
+
+class TestCursorLaunchAdmission:
+    """Launch admission mirrors Cursor's project root and refuses the user scope."""
+
+    @staticmethod
+    def _home(tmp_path: Path) -> Path:
+        home = tmp_path / "home"
+        (home / ".cursor").mkdir(parents=True)
+        (home / ".cursor" / "mcp.json").write_text('{"mcpServers": {}}')
+        (home / ".cursor" / "hooks.json").write_text('{"version": 1}')
+        return home
+
+    def test_project_root_is_workspace_without_git(self, tmp_path: Path) -> None:
+        ws = tmp_path / "a" / "b"
+        ws.mkdir(parents=True)
+        assert cursor_native_bridge.cursor_project_root(ws) == ws
+
+    @pytest.mark.parametrize("git_kind", ["dir", "file", "symlink"])
+    def test_project_root_is_nearest_git_ancestor(self, tmp_path: Path, git_kind: str) -> None:
+        (tmp_path / ".git").mkdir()
+        repo = tmp_path / "repo"
+        ws = repo / "src" / "pkg"
+        ws.mkdir(parents=True)
+        if git_kind == "dir":
+            (repo / ".git").mkdir()
+        elif git_kind == "file":
+            (repo / ".git").write_text("gitdir: /elsewhere\n")
+        else:
+            (tmp_path / "store.git").mkdir()
+            (repo / ".git").symlink_to(tmp_path / "store.git", target_is_directory=True)
+        assert cursor_native_bridge.cursor_project_root(ws) == repo
+
+    def test_dangling_git_link_is_not_a_root(self, tmp_path: Path) -> None:
+        # cursor-agent tests ``existsSync(<dir>/.git)``, which follows the link.
+        (tmp_path / ".git").mkdir()
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / ".git").symlink_to(tmp_path / "missing")
+        assert cursor_native_bridge.cursor_project_root(ws) == tmp_path
+
+    def test_distinct_project_is_admitted(self, tmp_path: Path) -> None:
+        home = self._home(tmp_path)
+        ws = tmp_path / "project"
+        (ws / ".git").mkdir(parents=True)
+        cursor_native_bridge.check_cursor_launch_admission(ws, home=home)
+
+    def test_own_repo_inside_home_repo_is_admitted(self, tmp_path: Path) -> None:
+        home = self._home(tmp_path)
+        (home / ".git").mkdir()
+        ws = home / "code" / "app"
+        (ws / ".git").mkdir(parents=True)
+        cursor_native_bridge.check_cursor_launch_admission(ws, home=home)
+
+    def test_home_workspace_is_refused(self, tmp_path: Path) -> None:
+        home = self._home(tmp_path)
+        with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+            cursor_native_bridge.check_cursor_launch_admission(home, home=home)
+        assert refused.value.shared_scope == home
+        assert refused.value.reason == f"workspace_is_home:{home}"
+        assert refused.value.stale_omnigent_server is False
+
+    def test_hooks_only_share_is_refused(self, tmp_path: Path) -> None:
+        home = self._home(tmp_path)
+        ws = tmp_path / "project"
+        (ws / ".cursor").mkdir(parents=True)
+        (ws / ".cursor" / "hooks.json").symlink_to(home / ".cursor" / "hooks.json")
+        assert cursor_native_bridge.shared_mcp_scope_reason(ws, home=home) is None
+        with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+            cursor_native_bridge.check_cursor_launch_admission(ws, home=home)
+        assert refused.value.reason.startswith("shared_hooks_config:")
+
+    @pytest.mark.parametrize("stale", [False, True])
+    def test_folder_inside_home_repo_is_refused(self, tmp_path: Path, stale: bool) -> None:
+        import json
+
+        home = self._home(tmp_path)
+        (home / ".git").mkdir()
+        if stale:
+            config = cursor_native_bridge.build_mcp_config(tmp_path / "other-bridge")
+            (home / ".cursor" / "mcp.json").write_text(json.dumps(config))
+        ws = home / "notes"
+        ws.mkdir()
+        listing = sorted(p for p in tmp_path.rglob("*"))
+        with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+            cursor_native_bridge.check_cursor_launch_admission(ws, home=home)
+        error = refused.value
+        assert (error.workspace, error.project_root, error.shared_scope) == (ws, home, home)
+        assert error.stale_omnigent_server is stale
+        assert ("remove that entry" in error.user_message()) is stale
+        assert "other-bridge" not in error.user_message()
+        # Admission only reads.
+        assert sorted(p for p in tmp_path.rglob("*")) == listing
+
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            (None, False),
+            ("not json", False),
+            ('{"mcpServers": {"omnigent": {"command": "omnigent", "args": ["mcp"]}}}', False),
+            ('{"mcpServers": {"omnigent": "serve-mcp --bridge-dir x"}}', False),
+            (
+                '{"mcpServers": {"omnigent": {"command": "python", "args": '
+                '["-I", "-m", "omnigent.harnesses.claude_native.bridge", "serve-mcp", '
+                '"--bridge-dir", "/tmp/b"]}}}',
+                True,
+            ),
+        ],
+    )
+    def test_session_bound_omnigent_server_probe(
+        self, tmp_path: Path, content: str | None, expected: bool
+    ) -> None:
+        home = tmp_path / "home"
+        (home / ".cursor").mkdir(parents=True)
+        if content is not None:
+            (home / ".cursor" / "mcp.json").write_text(content)
+        assert (
+            cursor_native_bridge.user_mcp_has_session_bound_omnigent_server(home=home) is expected
+        )

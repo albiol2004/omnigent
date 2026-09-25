@@ -2906,6 +2906,7 @@ async def _auto_create_cursor_terminal(
         approve_mcp_server_for_workspace,
         arm_completion_receipts,
         bridge_dir_for_session_id,
+        check_cursor_launch_admission,
         prepare_completion_receipts,
         user_mcp_has_omnigent_server,
         write_fork_preamble,
@@ -2936,6 +2937,10 @@ async def _auto_create_cursor_terminal(
     # cursor TUI's cwd and the forwarder hash the SAME path — cursor keys its
     # chat store dir on ``md5(cwd)``, and a mismatch would hide the store.
     workspace = os.path.realpath(str(launch_config.workspace))
+    # Refuse, before any write or TUI start, a workspace whose Cursor project
+    # config (from its git root) is the user ~/.cursor one: no own tools, and it
+    # would load a leftover ``omnigent`` server. Surfaced as a failed launch.
+    check_cursor_launch_admission(Path(workspace))
     # Validate the persisted chat id ONCE, up front. It feeds two untrusted
     # sinks below — the cursor store path in preseed_resume_state (filesystem)
     # and the ``--resume`` argv in _cursor_native_resume_args — so a malformed
@@ -7703,9 +7708,12 @@ def _native_terminal_start_error_payload(
         extra=extra,
     )
     from omnigent.harnesses.claude_native.bridge import ClaudeNativeHookInterpreterMismatchError
+    from omnigent.harnesses.cursor_native.bridge import CursorSharedWorkspaceError
     from omnigent.terminals.registry import TerminalExitedDuringLaunch
 
-    if runtime_name == "Codex" and isinstance(exc, TerminalExitedDuringLaunch):
+    if isinstance(exc, CursorSharedWorkspaceError):
+        message = exc.user_message()
+    elif runtime_name == "Codex" and isinstance(exc, TerminalExitedDuringLaunch):
         message = _codex_terminal_exit_summary(exc.instance, before_thread=False)
         # A failed diagnostic read must not hide the known terminal-exit cause.
         with contextlib.suppress(Exception):

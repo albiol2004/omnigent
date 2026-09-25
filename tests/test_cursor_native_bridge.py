@@ -1416,6 +1416,75 @@ class TestCursorLaunchAdmission:
         # Admission only reads.
         assert sorted(p for p in tmp_path.rglob("*")) == listing
 
+    @pytest.mark.parametrize("depth", [1, 3])
+    def test_repo_subfolder_is_refused(self, tmp_path: Path, depth: int) -> None:
+        home = self._home(tmp_path)
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        ws = repo.joinpath(*[f"d{i}" for i in range(depth)])
+        ws.mkdir(parents=True, exist_ok=True)
+        with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+            cursor_native_bridge.check_cursor_launch_admission(ws, home=home)
+        error = refused.value
+        assert error.reason == f"workspace_not_project_root:{repo}"
+        assert (error.project_root, error.shared_scope) == (repo, repo)
+        subfolder = "/".join(f"d{i}" for i in range(depth))
+        assert error.user_message() == (
+            "Cursor can't start here. Cursor reads its project tools and hooks from "
+            f"the git repository {repo}, not from the workspace {ws}, so this session "
+            "would get no Omnigent tools of its own and could load another session's. "
+            f"Start a new session with {repo} as the workspace, and name the subfolder "
+            f"{subfolder} in your task."
+        )
+
+    def test_alias_of_repo_root_is_admitted(self, tmp_path: Path) -> None:
+        home = self._home(tmp_path)
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        (tmp_path / "links").mkdir()
+        alias = tmp_path / "links" / "repo"
+        alias.symlink_to(repo, target_is_directory=True)
+        cursor_native_bridge.check_cursor_launch_admission(alias, home=home)
+
+    def test_alias_under_a_repo_to_a_plain_folder_is_admitted(self, tmp_path: Path) -> None:
+        # Cursor resolves from its physical cwd, which is the plain folder.
+        home = self._home(tmp_path)
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        alias = repo / "linked"
+        alias.symlink_to(plain, target_is_directory=True)
+        assert cursor_native_bridge.cursor_project_root(plain) == plain
+        cursor_native_bridge.check_cursor_launch_admission(alias, home=home)
+
+    def test_alias_to_a_repo_subfolder_is_refused(self, tmp_path: Path) -> None:
+        home = self._home(tmp_path)
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        (repo / "pkg").mkdir()
+        alias = tmp_path / "pkg-link"
+        alias.symlink_to(repo / "pkg", target_is_directory=True)
+        with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+            cursor_native_bridge.check_cursor_launch_admission(alias, home=home)
+        assert refused.value.reason == f"workspace_not_project_root:{repo}"
+        assert "name the subfolder pkg in your task" in refused.value.user_message()
+
+    def test_filesystem_root_git_is_never_a_project_root(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # cursor-agent's lookup stops before testing ``/.git`` for any deeper cwd;
+        # only a cwd of ``/`` itself is its own root either way.
+        real_exists = os.path.exists
+        monkeypatch.setattr(
+            cursor_native_bridge.os.path,
+            "exists",
+            lambda p: p == "/.git" or (not str(p).startswith("/nonexistent") and real_exists(p)),
+        )
+        ws = Path("/nonexistent-omnigent-probe/a/b")
+        assert cursor_native_bridge.cursor_project_root(ws) == ws
+        assert cursor_native_bridge.cursor_project_root(Path("/")) == Path("/")
+
     @pytest.mark.parametrize(
         ("content", "expected"),
         [

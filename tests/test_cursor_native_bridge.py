@@ -652,6 +652,168 @@ class TestMcpBridgeConfigSecureDir:
         assert not (bridge_dir / "bridge.json").exists()
 
 
+class TestSharedMcpScope:
+    """A session-bound MCP server never lands in the user ``~/.cursor/mcp.json``."""
+
+    #: Unrelated servers (one with a secret-shaped env) and odd formatting.
+    USER_BYTES = (
+        b'{ "mcpServers": {"github": {"command": "gh-mcp", "env": {"GH_TOKEN": "x"}},\n'
+        b'  "notion": {"url": "https://example.invalid/mcp"}}}  \n'
+    )
+
+    @pytest.fixture(autouse=True)
+    def _spy_cursor_state(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        # A production-shaped bridge root: the session token is still provisioned.
+        monkeypatch.setattr(
+            cursor_native_bridge, "_BRIDGE_ROOT", tmp_path / "omnigent-test" / "cursor-native"
+        )
+        calls: list[str] = []
+        monkeypatch.setattr(
+            cursor_native_bridge, "enable_mcp_for_workspace", lambda _: calls.append("enable")
+        )
+        monkeypatch.setattr(
+            cursor_native_bridge, "allow_mcp_tools_in_cli_config", lambda: calls.append("allow")
+        )
+        self.calls = calls
+        return calls
+
+    @staticmethod
+    def _home(tmp_path: Path, user_bytes: bytes | None) -> Path:
+        home = tmp_path / "home"
+        (home / ".cursor").mkdir(parents=True)
+        if user_bytes is not None:
+            (home / ".cursor" / "mcp.json").write_bytes(user_bytes)
+        return home
+
+    @pytest.mark.parametrize(
+        "alias", ["same", "symlink", "dotdot", "cursor_dir_link", "dangling_cursor_dir_link"]
+    )
+    def test_home_workspace_is_never_written(self, tmp_path: Path, alias: str) -> None:
+        home = self._home(tmp_path, self.USER_BYTES)
+        if alias == "same":
+            ws = home
+        elif alias == "symlink":
+            ws = tmp_path / "ws-link"
+            ws.symlink_to(home)
+        elif alias == "dotdot":
+            (home / "sub").mkdir()
+            ws = home / "sub" / ".."
+        else:
+            ws = tmp_path / "ws"
+            ws.mkdir()
+            if alias == "dangling_cursor_dir_link":
+                (home / ".cursor" / "mcp.json").unlink()
+                (home / ".cursor").rmdir()
+            (ws / ".cursor").symlink_to(home / ".cursor")
+        bridge = cursor_native_bridge.bridge_dir_for_session_id("s")
+        assert cursor_native_bridge.shared_mcp_scope_reason(ws, home=home) == (
+            f"workspace_is_home:{ws}"
+        )
+        assert cursor_native_bridge.write_mcp_config(ws, bridge, home=home) is None
+        if alias == "dangling_cursor_dir_link":
+            assert not (home / ".cursor").exists()
+        else:
+            assert (home / ".cursor" / "mcp.json").read_bytes() == self.USER_BYTES
+            assert sorted(p.name for p in (home / ".cursor").iterdir()) == ["mcp.json"]
+        assert self.calls == []
+        # The session-local bridge token is still provisioned.
+        assert (bridge / "bridge.json").exists()
+
+    def test_account_home_is_never_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import pwd
+
+        account_home = tmp_path / "account-home"
+        account_home.mkdir()
+        entry = types.SimpleNamespace(pw_dir=str(account_home))
+        monkeypatch.setattr(pwd, "getpwuid", lambda _uid: entry)
+        path = cursor_native_bridge.write_mcp_config(
+            account_home,
+            cursor_native_bridge.bridge_dir_for_session_id("s"),
+            home=tmp_path / "env-home",
+        )
+        assert path is None
+        assert not (account_home / ".cursor").exists()
+
+    @pytest.mark.parametrize("link", ["symlink", "dangling-symlink", "hardlink", "dotfiles"])
+    def test_project_file_aliasing_the_user_file_is_never_written(
+        self, tmp_path: Path, link: str
+    ) -> None:
+        home = self._home(tmp_path, None)
+        user_file = home / ".cursor" / "mcp.json"
+        dotfile = tmp_path / "dotfiles" / "mcp.json"
+        if link == "dotfiles":
+            dotfile.parent.mkdir()
+            dotfile.write_bytes(self.USER_BYTES)
+            user_file.symlink_to(dotfile)
+        elif link != "dangling-symlink":
+            user_file.write_bytes(self.USER_BYTES)
+        ws = tmp_path / "ws"
+        (ws / ".cursor").mkdir(parents=True)
+        project_file = ws / ".cursor" / "mcp.json"
+        if link == "hardlink":
+            os.link(user_file, project_file)
+        elif link == "dotfiles":
+            project_file.symlink_to(dotfile)
+        else:
+            project_file.symlink_to(user_file)
+        before = user_file.read_bytes() if user_file.exists() else None
+        user_kind = (os.path.lexists(user_file), os.path.islink(user_file))
+        assert cursor_native_bridge.shared_mcp_scope_reason(ws, home=home) == (
+            f"shared_mcp_config:{project_file}"
+        )
+        assert (
+            cursor_native_bridge.write_mcp_config(
+                ws, cursor_native_bridge.bridge_dir_for_session_id("s"), home=home
+            )
+            is None
+        )
+        assert (user_file.read_bytes() if user_file.exists() else None) == before
+        assert (os.path.lexists(user_file), os.path.islink(user_file)) == user_kind
+        assert os.path.islink(project_file) == (link != "hardlink")
+        assert not (ws / ".cursor" / "mcp.json.tmp").exists()
+        assert self.calls == []
+
+    def test_distinct_projects_get_their_own_bound_server(self, tmp_path: Path) -> None:
+        import json
+
+        home = self._home(tmp_path, self.USER_BYTES)
+        project_bytes = b'{"mcpServers": {"local": {"command": "./srv"}}}'
+        written = {}
+        for name in ("a", "b"):
+            ws = tmp_path / name
+            (ws / ".cursor").mkdir(parents=True)
+            (ws / ".cursor" / "mcp.json").write_bytes(project_bytes)
+            assert cursor_native_bridge.shared_mcp_scope_reason(ws, home=home) is None
+            bridge = cursor_native_bridge.bridge_dir_for_session_id(name)
+            path = cursor_native_bridge.write_mcp_config(ws, bridge, home=home)
+            assert path == ws / ".cursor" / "mcp.json"
+            written[name] = json.loads(path.read_text())["mcpServers"]
+        for name, servers in written.items():
+            assert servers["local"] == {"command": "./srv"}
+            bridge = cursor_native_bridge.bridge_dir_for_session_id(name)
+            assert servers["omnigent"]["args"][-1] == str(bridge)
+        assert (home / ".cursor" / "mcp.json").read_bytes() == self.USER_BYTES
+        assert self.calls == ["enable", "allow", "enable", "allow"]
+
+    @pytest.mark.parametrize(
+        ("payload", "want"),
+        [
+            (None, False),
+            (b"not json", False),
+            (b'{"mcpServers": []}', False),
+            (b'{"mcpServers": {"github": {}}}', False),
+            (b'{"mcpServers": {"omnigent": {"command": "py"}}}', True),
+        ],
+    )
+    def test_user_mcp_has_omnigent_server(
+        self, tmp_path: Path, payload: bytes | None, want: bool
+    ) -> None:
+        home = self._home(tmp_path, payload)
+        assert cursor_native_bridge.user_mcp_has_omnigent_server(home=home) is want
+
+
 def test_kill_session_issues_kill_session_on_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

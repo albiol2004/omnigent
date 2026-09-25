@@ -2907,6 +2907,7 @@ async def _auto_create_cursor_terminal(
         arm_completion_receipts,
         bridge_dir_for_session_id,
         prepare_completion_receipts,
+        user_mcp_has_omnigent_server,
         write_fork_preamble,
         write_hooks_config,
         write_mcp_config,
@@ -3028,7 +3029,27 @@ async def _auto_create_cursor_terminal(
                 exc_info=True,
                 extra={"session_id": session_id},
             )
-    write_mcp_config(Path(workspace), bridge_dir)
+    # Skipped when the project mcp.json is the user one (workspace == HOME): a
+    # server bound to this bridge there would attach every Cursor on the machine
+    # to this session. Cursor has no per-session MCP config, so no tools here.
+    mcp_config = write_mcp_config(Path(workspace), bridge_dir)
+    if mcp_config is None:
+        _logger.warning(
+            "cursor-native: workspace %s shares the user ~/.cursor/mcp.json; not "
+            "registering this session's Omnigent MCP server, so the Cursor TUI has no "
+            "Omnigent tools (launch from a project directory to get them) (session=%s).",
+            workspace,
+            session_id,
+            extra={"session_id": session_id},
+        )
+        if user_mcp_has_omnigent_server():
+            _logger.warning(
+                "cursor-native: the user ~/.cursor/mcp.json already declares an "
+                "'omnigent' MCP server that is not bound to this session; this Cursor "
+                "will load it. Remove it unless another tool owns it (session=%s).",
+                session_id,
+                extra={"session_id": session_id},
+            )
     # Register the cursor ``stop`` hook that captures per-turn token usage into
     # the bridge dir for the usage forwarder below (see cursor_native_usage).
     # Skipped when the project hooks.json is the user one (workspace == HOME):
@@ -3155,7 +3176,8 @@ async def _auto_create_cursor_terminal(
             explicit_bridge_dir=bridge_dir,
             await_notify=False,
         )
-    approve_mcp_server_for_workspace(Path(workspace))
+    if mcp_config is not None:
+        approve_mcp_server_for_workspace(Path(workspace))
 
     async def _supervise_cursor_native_bridges() -> None:
         """Run the transcript forwarder and the approval mirror together.

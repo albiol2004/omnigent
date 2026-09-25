@@ -5152,6 +5152,189 @@ async def test_auto_create_cursor_terminal_distinct_project_gets_own_bound_stop_
         assert epoch is None
 
 
+#: A user MCP file with unrelated servers (one with a secret-shaped env) and
+#: non-canonical formatting: a launch must leave every byte of it alone.
+_USER_MCP_BYTES = (
+    b'{ "mcpServers": {"github": {"command": "gh-mcp", "env": {"GH_TOKEN": "x"}},\n'
+    b'  "railway": {"url": "https://example.invalid/mcp"}}}  \n'
+)
+_USER_CLI_CONFIG_BYTES = b'{"permissions": {"allow": ["Shell(ls)"]}}\n'
+
+
+def _spy_mcp_approvals(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record ``cursor-agent mcp enable omnigent`` runs instead of spawning Cursor."""
+    approved: list[Path] = []
+    monkeypatch.setattr(cursor_native_bridge, "approve_mcp_server_for_workspace", approved.append)
+    return approved
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "home-is-workspace",
+        "home-symlink",
+        "cursor-dir-symlink",
+        "dangling-cursor-dir-symlink",
+        "mcp-file-symlink",
+        "mcp-file-hardlink",
+        "dotfiles-shared-target",
+        "stale-omnigent-entry",
+    ],
+)
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_home_scope_writes_no_session_mcp_server(
+    variant: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A launch whose project mcp.json is the user one never registers its server there.
+
+    Every Cursor on the machine loads the user file, so a server bound to this
+    session's bridge there hands this session's tools to unrelated Cursors. The
+    TUI still launches, without Omnigent tools, and says so.
+    """
+    ws = tmp_path / "ws"
+    home = tmp_path / "home"
+    user_bytes = _USER_MCP_BYTES
+    if variant in ("home-is-workspace", "stale-omnigent-entry"):
+        home = ws
+    elif variant == "home-symlink":
+        home = tmp_path / "home-alias"
+        home.symlink_to(ws, target_is_directory=True)
+    elif variant != "dangling-cursor-dir-symlink":
+        (home / ".cursor").mkdir(parents=True)
+    else:
+        home.mkdir()
+    if variant == "stale-omnigent-entry":
+        stale = cursor_native_bridge.build_mcp_config(tmp_path / "other-session-bridge")
+        stale["mcpServers"]["github"] = {"command": "gh-mcp"}  # type: ignore[index]
+        user_bytes = json.dumps(stale).encode()
+    user_file = home / ".cursor" / "mcp.json"
+    dotfile = tmp_path / "dotfiles" / "mcp.json"
+
+    def _prepare(workspace: Path) -> None:
+        if variant in ("home-is-workspace", "home-symlink", "stale-omnigent-entry"):
+            (workspace / ".cursor").mkdir()
+            user_file.write_bytes(user_bytes)
+        elif variant in ("cursor-dir-symlink", "dangling-cursor-dir-symlink"):
+            if variant == "cursor-dir-symlink":
+                user_file.write_bytes(user_bytes)
+            (workspace / ".cursor").symlink_to(home / ".cursor", target_is_directory=True)
+        else:
+            (workspace / ".cursor").mkdir()
+            project_file = workspace / ".cursor" / "mcp.json"
+            if variant == "dotfiles-shared-target":
+                dotfile.parent.mkdir()
+                dotfile.write_bytes(user_bytes)
+                user_file.symlink_to(dotfile)
+                project_file.symlink_to(dotfile)
+            else:
+                user_file.write_bytes(user_bytes)
+                if variant == "mcp-file-symlink":
+                    project_file.symlink_to(user_file)
+                else:
+                    os.link(user_file, project_file)
+        if (home / ".cursor").is_dir():
+            (home / ".cursor" / "cli-config.json").write_bytes(_USER_CLI_CONFIG_BYTES)
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    bridge_dir = tmp_path / "cursor-bridge" / "home"
+    monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
+    approved = _spy_mcp_approvals(monkeypatch)
+    with caplog.at_level("WARNING"):
+        captured = await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+            prepare_workspace=_prepare,
+        )
+
+    # The HOME launch still starts the TUI (a dangling ~/.cursor no longer aborts it).
+    assert captured["spec"].command == "cursor-agent"
+    if variant == "dangling-cursor-dir-symlink":
+        assert not os.path.lexists(home / ".cursor")
+    else:
+        # Every byte of the user file and of Cursor's CLI permissions survives,
+        # and a dotfiles symlink stays a symlink.
+        assert user_file.read_bytes() == user_bytes
+        assert os.path.islink(user_file) == (variant == "dotfiles-shared-target")
+        # A linked project file is left linked, not replaced by a regular copy.
+        project_file = ws / ".cursor" / "mcp.json"
+        assert os.path.samefile(project_file, user_file)
+        if variant in ("mcp-file-symlink", "dotfiles-shared-target"):
+            assert os.path.islink(project_file)
+        assert (home / ".cursor" / "cli-config.json").read_bytes() == _USER_CLI_CONFIG_BYTES
+        assert not (home / ".cursor" / "mcp.json.tmp").exists()
+    # Cursor is not asked to approve whatever ``omnigent`` server the user file holds.
+    assert approved == []
+    assert "not registering this session's Omnigent MCP server" in caplog.text
+    stale_warning = "already declares an 'omnigent' MCP server" in caplog.text
+    assert stale_warning == (variant == "stale-omnigent-entry")
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_home_then_projects_keep_sessions_apart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """HOME session A, then project sessions B and C: each bridge stays in its own project.
+
+    A leaves the user file byte-identical; B and C each get exactly their own
+    bridge in their own project file, with the project's other servers kept.
+    """
+    home = tmp_path / "a" / "ws"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    approved = _spy_mcp_approvals(monkeypatch)
+    project_bytes = b'{"mcpServers": {"local": {"command": "./srv"}}}'
+
+    def _home_prepare(workspace: Path) -> None:
+        (workspace / ".cursor").mkdir()
+        (workspace / ".cursor" / "mcp.json").write_bytes(_USER_MCP_BYTES)
+
+    def _project_prepare(workspace: Path) -> None:
+        (workspace / ".cursor").mkdir()
+        (workspace / ".cursor" / "mcp.json").write_bytes(project_bytes)
+
+    bridges: dict[str, Path] = {}
+    for name, prepare in (("a", _home_prepare), ("b", _project_prepare), ("c", _project_prepare)):
+        root = tmp_path / name
+        root.mkdir(exist_ok=True)
+        bridges[name] = root / "cursor-bridge" / name
+        monkeypatch.setattr(
+            cursor_native_bridge,
+            "bridge_dir_for_session_id",
+            lambda _sid, bridge=bridges[name]: bridge,
+        )
+        with caplog.at_level("WARNING"):
+            captured = await _run_auto_create_cursor_terminal(
+                tmp_path=root,
+                monkeypatch=monkeypatch,
+                agent_spec=None,
+                terminal_launch_args=None,
+                prepare_workspace=prepare,
+            )
+        assert captured["spec"].command == "cursor-agent"
+
+    assert (home / ".cursor" / "mcp.json").read_bytes() == _USER_MCP_BYTES
+    assert "omnigent" not in json.loads(_USER_MCP_BYTES)["mcpServers"]
+    for name in ("b", "c"):
+        servers = json.loads((tmp_path / name / "ws" / ".cursor" / "mcp.json").read_text())[
+            "mcpServers"
+        ]
+        assert servers["local"] == {"command": "./srv"}
+        assert servers["omnigent"]["args"][-2:] == ["--bridge-dir", str(bridges[name])]
+    assert approved == [
+        Path(os.path.realpath(tmp_path / "b" / "ws")),
+        Path(os.path.realpath(tmp_path / "c" / "ws")),
+    ]
+    assert caplog.text.count("not registering this session's Omnigent MCP server") == 1
+
+
 @pytest.mark.asyncio
 async def test_auto_create_cursor_terminal_owned_stop_hook_keeps_receipts(
     tmp_path: Path,

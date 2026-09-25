@@ -693,13 +693,14 @@ def cursor_project_root(workspace: Path) -> Path:
 
 
 class CursorSharedWorkspaceError(RuntimeError):
-    """A Cursor launch whose project config is the user's own ``~/.cursor`` config.
+    """A Cursor launch whose project config is not the workspace's own.
 
     Cursor loads its project ``mcp.json`` / ``hooks.json`` from the workspace's
     git root. When that root is the home folder (or links to its ``.cursor``
     files), the project config is the user config shared by every Cursor
-    session on the machine: the session could not get its own Omnigent tools,
-    and would load whatever ``omnigent`` server another session left there.
+    session on the machine. When it is another folder above the workspace, the
+    session's own config is never read. Either way the session gets no Omnigent
+    tools of its own and would load whatever another session left there.
     """
 
     def __init__(
@@ -724,21 +725,33 @@ class CursorSharedWorkspaceError(RuntimeError):
 
     def user_message(self) -> str:
         """Actionable, non-secret text for the failed-launch status (paths only)."""
-        if self.shared_scope == self.workspace:
-            where = f"The workspace {self.workspace} is"
-        else:
-            where = (
-                f"The workspace {self.workspace} is inside the git repository "
-                f"{self.project_root}, which Cursor uses as its project folder. That "
-                "folder is"
+        if self.reason.startswith(_NOT_PROJECT_ROOT_REASON):
+            subfolder = os.path.relpath(os.path.realpath(self.workspace), self.project_root)
+            message = (
+                "Cursor can't start here. Cursor reads its project tools and hooks "
+                f"from the git repository {self.project_root}, not from the workspace "
+                f"{self.workspace}, so this session would get no Omnigent tools of its "
+                "own and could load another session's. Start a new session with "
+                f"{self.project_root} as the workspace, and name the subfolder "
+                f"{subfolder} in your task."
             )
-        message = (
-            f"Cursor can't start here. {where} your home folder or shares its "
-            "~/.cursor config, so Cursor would share its tool and hook config with "
-            "every other Cursor session on this machine. Start a new session with a "
-            "project folder as the workspace: its own git repository, or a folder "
-            "outside your home folder's repository."
-        )
+        else:
+            if self.shared_scope == self.workspace:
+                where = f"The workspace {self.workspace} is"
+            else:
+                where = (
+                    f"The workspace {self.workspace} is inside the git repository "
+                    f"{self.project_root}, which Cursor uses as its project folder. "
+                    "That folder is"
+                )
+            message = (
+                f"Cursor can't start here. {where} your home folder or shares its "
+                "~/.cursor config, so Cursor would share its tool and hook config "
+                "with every other Cursor session on this machine. Start a new session "
+                "whose workspace is the root folder of a git repository other than "
+                "your home folder, or a folder that is not inside any git repository, "
+                "and name any subfolder you want to work in in your task."
+            )
         if self.stale_omnigent_server:
             message += (
                 " Your ~/.cursor/mcp.json also has an 'omnigent' server left by an "
@@ -747,29 +760,41 @@ class CursorSharedWorkspaceError(RuntimeError):
         return message
 
 
+_NOT_PROJECT_ROOT_REASON = "workspace_not_project_root:"
+
+
 def check_cursor_launch_admission(workspace: Path, *, home: Path | None = None) -> None:
-    """Refuse a Cursor launch whose project MCP or hooks config is the user one.
+    """Refuse a Cursor launch that would not load the workspace's own project config.
 
-    Checks *workspace* and the project root Cursor resolves for it
-    (:func:`cursor_project_root`) with the same shared-scope test the MCP and
-    hooks writers use. Reads only; run it before any launch write.
+    Cursor resolves its project root (:func:`cursor_project_root`) from its
+    physical cwd. The launch is refused when the workspace or that root shares
+    the user MCP or hooks config, or when the root is a folder above the
+    workspace (aliases of the workspace itself are fine): Cursor would then read
+    that folder's ``.cursor`` config, not the one this launch writes. Reads
+    only; run it before any launch write.
 
-    :raises CursorSharedWorkspaceError: When either shares the user config.
+    :raises CursorSharedWorkspaceError: When the launch is refused.
     """
-    project_root = cursor_project_root(workspace)
-    candidates = [workspace] if project_root == workspace else [workspace, project_root]
+    project_root = cursor_project_root(Path(os.path.realpath(workspace)))
+    is_root = _same_path(project_root, workspace)
+    candidates = [workspace] if is_root else [workspace, project_root]
     for candidate in candidates:
         reason = shared_mcp_scope_reason(candidate, home=home) or shared_hooks_scope_reason(
             candidate, home=home
         )
         if reason is not None:
-            raise CursorSharedWorkspaceError(
-                workspace=workspace,
-                project_root=project_root,
-                shared_scope=candidate,
-                reason=reason,
-                stale_omnigent_server=user_mcp_has_session_bound_omnigent_server(home=home),
-            )
+            break
+    else:
+        candidate = project_root
+        reason = None if is_root else f"{_NOT_PROJECT_ROOT_REASON}{project_root}"
+    if reason is not None:
+        raise CursorSharedWorkspaceError(
+            workspace=workspace,
+            project_root=project_root,
+            shared_scope=candidate,
+            reason=reason,
+            stale_omnigent_server=user_mcp_has_session_bound_omnigent_server(home=home),
+        )
 
 
 def completion_receipt_project_precheck(

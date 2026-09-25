@@ -5157,7 +5157,7 @@ async def test_auto_create_cursor_terminal_home_hooks_scope_is_refused_before_an
     assert writes == []
     assert _tree_state(tmp_path) == before
     assert refused.value.reason.startswith(("workspace_is_home:", "shared_hooks_config:"))
-    assert "Start a new session with a project folder" in refused.value.user_message()
+    assert _HOME_REMEDY in refused.value.user_message()
 
 
 @pytest.mark.parametrize("opted_in", [True, False], ids=["receipts-v1", "default"])
@@ -5230,6 +5230,10 @@ _USER_MCP_BYTES = (
 )
 _USER_CLI_CONFIG_BYTES = b'{"permissions": {"allow": ["Shell(ls)"]}}\n'
 _RESUME_CHAT_ID = "0b6f7c1e-4a53-4d0e-9a53-3f1d2c4b5a69"
+_HOME_REMEDY = (
+    "whose workspace is the root folder of a git repository other than your home "
+    "folder, or a folder that is not inside any git repository"
+)
 
 
 def _spy_mcp_approvals(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
@@ -5350,7 +5354,7 @@ async def test_auto_create_cursor_terminal_home_mcp_scope_is_refused_before_any_
     assert error.shared_scope == error.workspace == Path(os.path.realpath(ws))
     message = error.user_message()
     assert message.startswith(f"Cursor can't start here. The workspace {error.workspace} is ")
-    assert "Start a new session with a project folder as the workspace" in message
+    assert _HOME_REMEDY in message
     stale_sentence = "has an 'omnigent' server left by an earlier session; remove that entry."
     assert (stale_sentence in message) == (variant == "stale-omnigent-entry")
     _assert_no_config_contents(message)
@@ -5455,31 +5459,27 @@ async def test_auto_create_cursor_terminal_dangling_home_git_link_is_not_a_proje
     assert approved == [ws]
 
 
-@pytest.mark.parametrize(
-    "layout", ["own-repo-inside-home-repo", "plain-folder", "inside-other-repo"]
-)
+@pytest.mark.parametrize("layout", ["own-repo-inside-home-repo", "plain-folder", "repo-root"])
 @pytest.mark.asyncio
 async def test_auto_create_cursor_terminal_project_launch_keeps_own_tools(
     layout: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Project launches are admitted and wired exactly as before.
+    """Launches where the workspace is Cursor's project root are wired exactly as before.
 
-    Includes a repository nested in a HOME dotfiles repository (its own
-    ``.git`` is the nearer root) and, unchanged, a folder inside a non-HOME
-    repository (a known limit: Cursor reads that repository's config instead).
+    Covers a repository root, a folder in no repository, and a repository nested
+    in a HOME dotfiles repository (its own ``.git`` is the nearer root).
     """
     home = tmp_path / "home"
     ws = tmp_path / "ws"
     if layout == "own-repo-inside-home-repo":
         home = tmp_path
-    elif layout == "inside-other-repo":
-        (tmp_path / ".git").mkdir()
 
     def _prepare(workspace: Path) -> None:
         if layout == "own-repo-inside-home-repo":
             (home / ".git").mkdir()
+        if layout != "plain-folder":
             (workspace / ".git").mkdir()
         (home / ".cursor").mkdir(parents=True, exist_ok=True)
         (home / ".cursor" / "mcp.json").write_bytes(_USER_MCP_BYTES)
@@ -5509,6 +5509,105 @@ async def test_auto_create_cursor_terminal_project_launch_keeps_own_tools(
     assert approved == [real_ws]
     hooks = json.loads((real_ws / ".cursor" / "hooks.json").read_text())["hooks"]["stop"]
     assert cursor_native_bridge._owned_hook_bridge(hooks[0]["command"]) == str(bridge_dir)
+
+
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "resume"])
+@pytest.mark.parametrize("user_entry", ["absent", "stale"])
+@pytest.mark.parametrize(
+    "case", ["repo-subfolder", "own-repo-subfolder-in-home-repo", "subfolder-after-root-session"]
+)
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_refuses_repo_subfolder_before_any_write(
+    case: str,
+    user_entry: str,
+    resume: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A workspace below its git root is refused: Cursor reads the root's config.
+
+    The launch's own ``<ws>/.cursor`` files would never be read, so the session
+    would have no Omnigent tools, could load the user file's leftover server or
+    an earlier root session's server and stop hook, and would arm receipts its
+    own hook can never deliver. Nothing is written, approved or launched.
+    """
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+    if case == "own-repo-subfolder-in-home-repo":
+        home = tmp_path
+        repo = tmp_path / "code" / "app"
+    else:
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+    launch_dir = repo / "packages"
+    launch_dir.mkdir(parents=True)
+    (home / ".cursor").mkdir(parents=True, exist_ok=True)
+    if case == "own-repo-subfolder-in-home-repo":
+        (home / ".git").mkdir()
+    (repo / ".git").mkdir()
+    if user_entry == "stale":
+        (home / ".cursor" / "mcp.json").write_bytes(_stale_user_mcp_bytes(tmp_path))
+    if case == "subfolder-after-root-session":
+        # Session A launched at the repo root left its own server and stop hook there.
+        root_session = tmp_path / "ROOT-SESSION-BRIDGE"
+        (repo / ".cursor").mkdir()
+        (repo / ".cursor" / "mcp.json").write_text(
+            json.dumps(cursor_native_bridge.build_mcp_config(root_session))
+        )
+        (repo / ".cursor" / "hooks.json").write_text(
+            json.dumps(cursor_native_bridge.build_hooks_config(root_session))
+        )
+    before: dict[str, tuple[object, ...]] = {}
+
+    def _prepare(workspace: Path) -> None:
+        (workspace / ".cursor").mkdir()
+        (workspace / ".cursor" / "mcp.json").write_bytes(b'{"mcpServers": {"local": {}}}')
+        before.update(_tree_state(tmp_path))
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    bridge_dir = tmp_path / "bridges" / "b"
+    monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
+    writes = _spy_launch_writes(monkeypatch)
+    labels = {
+        cursor_native_status.COMPLETION_RECEIPTS_LABEL: (
+            cursor_native_status.COMPLETION_RECEIPTS_VERSION
+        )
+    }
+    captured: dict[str, Any] = {}
+    with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+        captured = await _run_auto_create_cursor_terminal(
+            tmp_path=launch_dir,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+            labels=labels,
+            prepare_workspace=_prepare,
+            external_session_id=_RESUME_CHAT_ID if resume else None,
+        )
+
+    # No terminal, no launch step, not one byte changed, and no receipt epoch.
+    assert "spec" not in captured
+    assert writes == []
+    assert _tree_state(tmp_path) == before
+    assert not bridge_dir.exists()
+    assert cursor_native_status.read_receipt_epoch(bridge_dir) is None
+    error = refused.value
+    real_repo = Path(os.path.realpath(repo))
+    ws = Path(os.path.realpath(launch_dir / "ws"))
+    assert error.reason == f"workspace_not_project_root:{real_repo}"
+    assert error.project_root == error.shared_scope == real_repo
+    message = error.user_message()
+    assert message.startswith(
+        f"Cursor can't start here. Cursor reads its project tools and hooks from the "
+        f"git repository {real_repo}, not from the workspace {ws}, so this session "
+        "would get no Omnigent tools of its own and could load another session's. "
+        f"Start a new session with {real_repo} as the workspace, and name the "
+        "subfolder packages/ws in your task."
+    )
+    assert ("left by an earlier session; remove that entry." in message) == (user_entry == "stale")
+    _assert_no_config_contents(message)
+    assert "ROOT-SESSION-BRIDGE" not in message
 
 
 @pytest.mark.asyncio
@@ -5560,10 +5659,11 @@ async def test_auto_create_cursor_terminal_home_refusal_reaches_failed_status(
     assert error["message"] == (
         f"Cursor can't start here. The workspace {ws} is your home folder or shares "
         "its ~/.cursor config, so Cursor would share its tool and hook config with "
-        "every other Cursor session on this machine. Start a new session with a "
-        "project folder as the workspace: its own git repository, or a folder "
-        "outside your home folder's repository. Your ~/.cursor/mcp.json also has an "
-        "'omnigent' server left by an earlier session; remove that entry. "
+        "every other Cursor session on this machine. Start a new session whose "
+        "workspace is the root folder of a git repository other than your home "
+        "folder, or a folder that is not inside any git repository, and name any "
+        "subfolder you want to work in in your task. Your ~/.cursor/mcp.json also "
+        "has an 'omnigent' server left by an earlier session; remove that entry. "
         f"Error ID: {error['error_id']}."
     )
     assert "see the runner log" not in error["message"]
@@ -5592,6 +5692,22 @@ def test_native_terminal_ensure_response_carries_cursor_refusal() -> None:
         "repository /home/u, which Cursor uses as its project folder."
     )
     assert "remove that entry" not in payload["message"]
+
+    subfolder_error = cursor_native_bridge.CursorSharedWorkspaceError(
+        workspace=Path("/src/repo/pkg"),
+        project_root=Path("/src/repo"),
+        shared_scope=Path("/src/repo"),
+        reason="workspace_not_project_root:/src/repo",
+        stale_omnigent_server=True,
+    )
+    response = _native_terminal_start_error_response(subfolder_error, "Cursor")
+    message = json.loads(bytes(response.body))["error"]["message"]
+    assert message.startswith(
+        "Cursor can't start here. Cursor reads its project tools and hooks from the git "
+        "repository /src/repo, not from the workspace /src/repo/pkg"
+    )
+    assert "Start a new session with /src/repo as the workspace" in message
+    assert "remove that entry" in message
 
 
 @pytest.mark.asyncio

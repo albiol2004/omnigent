@@ -5566,7 +5566,8 @@ async def test_auto_create_cursor_terminal_refuses_repo_subfolder_before_any_wri
 
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
-    bridge_dir = tmp_path / "bridges" / "b"
+    # Under the launch's bridge root, so a launch that is not refused runs to completion.
+    bridge_dir = launch_dir / "cursor-bridge" / "b"
     monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
     writes = _spy_launch_writes(monkeypatch)
     labels = {

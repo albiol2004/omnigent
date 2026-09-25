@@ -441,14 +441,22 @@ def write_hooks_config(
     bridge_dir: Path,
     *,
     python_executable: str | None = None,
-) -> Path:
+    home: Path | None = None,
+) -> Path | None:
     """Merge Omnigent's usage ``stop`` hook into the workspace's ``hooks.json``.
 
     Sibling of :func:`write_mcp_config`: project-scoped Cursor config the TUI
     loads on launch in a trusted workspace. Preserves the workspace's existing
     hooks (e.g. a project ``preToolUse`` policy hook) and replaces only stale
     Omnigent usage hooks from earlier sessions. Returns the written path.
+
+    Returns ``None`` and writes nothing when the project file is the user file
+    (see :func:`shared_hooks_scope_reason`): a session-specific stop hook there
+    fires for every Cursor session on the machine. Such a launch reports no
+    token usage and no turn-end idle.
     """
+    if shared_hooks_scope_reason(workspace, home=home) is not None:
+        return None
     cursor_dir = workspace / ".cursor"
     cursor_dir.mkdir(parents=True, exist_ok=True)
     path = cursor_dir / _HOOKS_CONFIG_FILE
@@ -593,13 +601,22 @@ def _home_candidates(home: Path | None) -> list[Path]:
     return candidates
 
 
-def _workspace_home_reason(workspace: Path, home: Path | None) -> str | None:
-    """Refuse a workspace whose project hooks file is the user hooks file."""
+def shared_hooks_scope_reason(workspace: Path, *, home: Path | None = None) -> str | None:
+    """Why *workspace*'s project ``hooks.json`` is the user hooks file, else ``None``.
+
+    True when the workspace is ``$HOME`` or the account home (directly or via an
+    alias), when its ``.cursor`` directory is the home one, or when its
+    ``hooks.json`` resolves to the home one. Cursor then loads one file as both
+    project and user scope, so it is shared by every session on the machine.
+    """
     for candidate in _home_candidates(home):
         if _same_path(workspace, candidate) or _same_path(
             workspace / ".cursor", candidate / ".cursor"
         ):
             return f"workspace_is_home:{workspace}"
+        project_file = workspace / ".cursor" / _HOOKS_CONFIG_FILE
+        if _same_path(project_file, candidate / ".cursor" / _HOOKS_CONFIG_FILE):
+            return f"shared_hooks_config:{project_file}"
     return None
 
 
@@ -613,7 +630,7 @@ def completion_receipt_project_precheck(
     Stale owned hooks for other bridges pass here; they are replaced by the
     rewrite and :func:`completion_receipt_hook_hold_reason` re-checks the result.
     """
-    reason = _workspace_home_reason(workspace, home)
+    reason = shared_hooks_scope_reason(workspace, home=home)
     if reason is not None:
         return reason
     return _stop_hooks_hold_reason(workspace / ".cursor" / _HOOKS_CONFIG_FILE, stale_ok=True)
@@ -638,7 +655,7 @@ def completion_receipt_hook_hold_reason(
 
     :returns: ``None`` when no such hook exists, else the first hold reason.
     """
-    reason = _workspace_home_reason(workspace, home)
+    reason = shared_hooks_scope_reason(workspace, home=home)
     if reason is not None:
         return reason
     reason = _stop_hooks_hold_reason(

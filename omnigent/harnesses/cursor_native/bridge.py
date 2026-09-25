@@ -346,13 +346,21 @@ def write_mcp_config(
     bridge_dir: Path,
     *,
     python_executable: str | None = None,
-) -> Path:
+    home: Path | None = None,
+) -> Path | None:
     """Write the workspace-scoped Cursor MCP config for Omnigent tools.
 
     Merges the Omnigent bridge server into an existing ``mcp.json`` so that
-    user-configured MCP servers are preserved.
+    user-configured MCP servers are preserved. Returns the written path.
+
+    Returns ``None`` and leaves Cursor's config alone when the project file is
+    the user file (see :func:`shared_mcp_scope_reason`): a server bound to this
+    session's bridge there is loaded by every Cursor session on the machine.
+    Such a launch has no Omnigent MCP tools.
     """
     write_mcp_bridge_config(bridge_dir)
+    if shared_mcp_scope_reason(workspace, home=home) is not None:
+        return None
     cursor_dir = workspace / ".cursor"
     cursor_dir.mkdir(parents=True, exist_ok=True)
     path = cursor_dir / _MCP_CONFIG_FILE
@@ -601,23 +609,49 @@ def _home_candidates(home: Path | None) -> list[Path]:
     return candidates
 
 
-def shared_hooks_scope_reason(workspace: Path, *, home: Path | None = None) -> str | None:
-    """Why *workspace*'s project ``hooks.json`` is the user hooks file, else ``None``.
+def _shared_config_scope_reason(
+    workspace: Path, file_name: str, reason: str, *, home: Path | None
+) -> str | None:
+    """Why *workspace*'s project ``.cursor/<file_name>`` is the user one, else ``None``.
 
     True when the workspace is ``$HOME`` or the account home (directly or via an
-    alias), when its ``.cursor`` directory is the home one, or when its
-    ``hooks.json`` resolves to the home one. Cursor then loads one file as both
-    project and user scope, so it is shared by every session on the machine.
+    alias), when its ``.cursor`` directory is the home one, or when the project
+    file resolves to the home one. Cursor then loads one file as both project
+    and user scope, so it is shared by every session on the machine.
     """
     for candidate in _home_candidates(home):
         if _same_path(workspace, candidate) or _same_path(
             workspace / ".cursor", candidate / ".cursor"
         ):
             return f"workspace_is_home:{workspace}"
-        project_file = workspace / ".cursor" / _HOOKS_CONFIG_FILE
-        if _same_path(project_file, candidate / ".cursor" / _HOOKS_CONFIG_FILE):
-            return f"shared_hooks_config:{project_file}"
+        project_file = workspace / ".cursor" / file_name
+        if _same_path(project_file, candidate / ".cursor" / file_name):
+            return f"{reason}:{project_file}"
     return None
+
+
+def shared_hooks_scope_reason(workspace: Path, *, home: Path | None = None) -> str | None:
+    """Why *workspace*'s project ``hooks.json`` is the user hooks file, else ``None``."""
+    return _shared_config_scope_reason(
+        workspace, _HOOKS_CONFIG_FILE, "shared_hooks_config", home=home
+    )
+
+
+def shared_mcp_scope_reason(workspace: Path, *, home: Path | None = None) -> str | None:
+    """Why *workspace*'s project ``mcp.json`` is the user MCP file, else ``None``."""
+    return _shared_config_scope_reason(workspace, _MCP_CONFIG_FILE, "shared_mcp_config", home=home)
+
+
+def user_mcp_has_omnigent_server(*, home: Path | None = None) -> bool:
+    """Whether the user ``~/.cursor/mcp.json`` declares an ``omnigent`` server.
+
+    Every Cursor session loads that entry, so a shared-scope launch that writes
+    none of its own still connects to whatever bridge it names.
+    """
+    path = (home if home is not None else Path.home()) / ".cursor" / _MCP_CONFIG_FILE
+    loaded = _load_json_config(path)
+    servers = loaded.get("mcpServers") if isinstance(loaded, dict) else None
+    return isinstance(servers, dict) and _MCP_SERVER_NAME in servers
 
 
 def completion_receipt_project_precheck(

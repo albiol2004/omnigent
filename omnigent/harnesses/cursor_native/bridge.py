@@ -648,10 +648,128 @@ def user_mcp_has_omnigent_server(*, home: Path | None = None) -> bool:
     Every Cursor session loads that entry, so a shared-scope launch that writes
     none of its own still connects to whatever bridge it names.
     """
+    return _user_mcp_omnigent_entry(home) is not None
+
+
+def _user_mcp_omnigent_entry(home: Path | None) -> object | None:
     path = (home if home is not None else Path.home()) / ".cursor" / _MCP_CONFIG_FILE
     loaded = _load_json_config(path)
     servers = loaded.get("mcpServers") if isinstance(loaded, dict) else None
-    return isinstance(servers, dict) and _MCP_SERVER_NAME in servers
+    if not isinstance(servers, dict) or _MCP_SERVER_NAME not in servers:
+        return None
+    return servers[_MCP_SERVER_NAME]
+
+
+def user_mcp_has_session_bound_omnigent_server(*, home: Path | None = None) -> bool:
+    """Whether the user ``mcp.json`` holds an ``omnigent`` entry an Omnigent launch wrote.
+
+    Matches the shape :func:`build_mcp_config` writes (``serve-mcp`` bound to
+    one session's ``--bridge-dir``), so only an entry Omnigent itself left
+    behind counts. Only the bool leaves this function, never the entry.
+    """
+    entry = _user_mcp_omnigent_entry(home)
+    args = entry.get("args") if isinstance(entry, dict) else None
+    return isinstance(args, list) and "serve-mcp" in args and "--bridge-dir" in args
+
+
+def cursor_project_root(workspace: Path) -> Path:
+    """The project root cursor-agent uses for a TUI started in *workspace*.
+
+    Mirrors cursor-agent's ``src/utils/git.ts`` lookup (read in the installed
+    2026.09.23 bundle), which picks the directory its project ``.cursor/mcp.json``
+    and ``.cursor/hooks.json`` come from: the nearest of *workspace* and its
+    ancestors holding a ``.git`` entry (a directory, a worktree file, or a link
+    that resolves), never the filesystem root itself; otherwise *workspace*.
+    """
+    current = str(workspace)
+    anchor = Path(current).anchor
+    while True:
+        if os.path.exists(os.path.join(current, ".git")):
+            return Path(current)
+        parent = os.path.dirname(current)
+        if parent in (current, anchor):
+            return workspace
+        current = parent
+
+
+class CursorSharedWorkspaceError(RuntimeError):
+    """A Cursor launch whose project config is the user's own ``~/.cursor`` config.
+
+    Cursor loads its project ``mcp.json`` / ``hooks.json`` from the workspace's
+    git root. When that root is the home folder (or links to its ``.cursor``
+    files), the project config is the user config shared by every Cursor
+    session on the machine: the session could not get its own Omnigent tools,
+    and would load whatever ``omnigent`` server another session left there.
+    """
+
+    def __init__(
+        self,
+        *,
+        workspace: Path,
+        project_root: Path,
+        shared_scope: Path,
+        reason: str,
+        stale_omnigent_server: bool,
+    ) -> None:
+        self.workspace = workspace
+        self.project_root = project_root
+        self.shared_scope = shared_scope
+        self.reason = reason
+        self.stale_omnigent_server = stale_omnigent_server
+        super().__init__(
+            f"cursor-native launch refused: workspace={workspace} "
+            f"project_root={project_root} reason={reason} "
+            f"stale_omnigent_server={stale_omnigent_server}"
+        )
+
+    def user_message(self) -> str:
+        """Actionable, non-secret text for the failed-launch status (paths only)."""
+        if self.shared_scope == self.workspace:
+            where = f"The workspace {self.workspace} is"
+        else:
+            where = (
+                f"The workspace {self.workspace} is inside the git repository "
+                f"{self.project_root}, which Cursor uses as its project folder. That "
+                "folder is"
+            )
+        message = (
+            f"Cursor can't start here. {where} your home folder or shares its "
+            "~/.cursor config, so Cursor would share its tool and hook config with "
+            "every other Cursor session on this machine. Start a new session with a "
+            "project folder as the workspace: its own git repository, or a folder "
+            "outside your home folder's repository."
+        )
+        if self.stale_omnigent_server:
+            message += (
+                " Your ~/.cursor/mcp.json also has an 'omnigent' server left by an "
+                "earlier session; remove that entry."
+            )
+        return message
+
+
+def check_cursor_launch_admission(workspace: Path, *, home: Path | None = None) -> None:
+    """Refuse a Cursor launch whose project MCP or hooks config is the user one.
+
+    Checks *workspace* and the project root Cursor resolves for it
+    (:func:`cursor_project_root`) with the same shared-scope test the MCP and
+    hooks writers use. Reads only; run it before any launch write.
+
+    :raises CursorSharedWorkspaceError: When either shares the user config.
+    """
+    project_root = cursor_project_root(workspace)
+    candidates = [workspace] if project_root == workspace else [workspace, project_root]
+    for candidate in candidates:
+        reason = shared_mcp_scope_reason(candidate, home=home) or shared_hooks_scope_reason(
+            candidate, home=home
+        )
+        if reason is not None:
+            raise CursorSharedWorkspaceError(
+                workspace=workspace,
+                project_root=project_root,
+                shared_scope=candidate,
+                reason=reason,
+                stale_omnigent_server=user_mcp_has_session_bound_omnigent_server(home=home),
+            )
 
 
 def completion_receipt_project_precheck(

@@ -6,7 +6,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1695,6 +1697,7 @@ async def _run_auto_create_cursor_terminal(
     terminal_launch_args: list[str] | None,
     labels: dict[str, str] | None = None,
     workspace_hooks: str | None = None,
+    prepare_workspace: Callable[[Path], None] | None = None,
 ) -> dict[str, Any]:
     """Drive ``_auto_create_cursor_terminal`` and return what it wired up.
 
@@ -1716,6 +1719,8 @@ async def _run_auto_create_cursor_terminal(
     if workspace_hooks is not None:
         (workspace / ".cursor").mkdir()
         (workspace / ".cursor" / "hooks.json").write_text(workspace_hooks)
+    if prepare_workspace is not None:
+        prepare_workspace(workspace)
     monkeypatch.setattr(cursor_native_bridge, "_BRIDGE_ROOT", tmp_path / "cursor-bridge")
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://127.0.0.1:8000")
     monkeypatch.setattr(
@@ -4979,6 +4984,172 @@ async def test_auto_create_cursor_terminal_workspace_home_alias_withholds_receip
         )
     assert cursor_native_status.read_receipt_epoch(bridge_dir) is None
     assert "completion receipts disabled for this launch (workspace_is_home:" in caplog.text
+
+
+#: A user hooks file with unrelated hooks, a foreign stop hook, an Omnigent
+#: hook for some other session and non-canonical formatting: the launch must
+#: leave every byte of it alone.
+_USER_HOOKS_BYTES = (
+    b'{ "version": 1,\n  "hooks": {"preToolUse": [{"command": "./policy.sh"}],\n'
+    b'  "stop": [{"command": "./user-stop.sh"}, {"command": '
+    b'"/usr/bin/python3 -I -m omnigent.harnesses.cursor_native.usage record-usage '
+    b'--bridge-dir /tmp/omnigent-1000/cursor-native/other"}]}}  \n'
+)
+
+
+def _link_home_into_workspace(variant: str, home: Path) -> Callable[[Path], None]:
+    """Make the launch workspace's hooks.json reach *home*'s through *variant*."""
+
+    def _prepare(ws: Path) -> None:
+        if variant == "cursor-dir-symlink":
+            (ws / ".cursor").symlink_to(home / ".cursor", target_is_directory=True)
+            return
+        (ws / ".cursor").mkdir()
+        if variant == "hooks-file-symlink":
+            (ws / ".cursor" / "hooks.json").symlink_to(home / ".cursor" / "hooks.json")
+        elif variant == "hooks-file-hardlink":
+            os.link(home / ".cursor" / "hooks.json", ws / ".cursor" / "hooks.json")
+
+    return _prepare
+
+
+@pytest.mark.parametrize("opted_in", [True, False], ids=["receipts-v1", "default"])
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "home-is-workspace",
+        "home-symlink",
+        "cursor-dir-symlink",
+        "cursor-dir-symlink-no-user-file",
+        "hooks-file-symlink",
+        "hooks-file-hardlink",
+    ],
+)
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_home_scope_writes_no_session_stop_hook(
+    variant: str,
+    opted_in: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A launch whose project hooks.json is the user one never writes a stop hook there.
+
+    The user file is shared by every Cursor session on the machine: a
+    session-specific stop hook in it records other sessions' turns into this
+    session's bridge and disables receipts for every other launch. The TUI
+    still launches, without usage/idle and without receipts.
+    """
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+    ws = tmp_path / "ws"
+    if variant == "home-is-workspace":
+        home = ws
+    elif variant == "home-symlink":
+        home = tmp_path / "home-alias"
+        home.symlink_to(ws, target_is_directory=True)
+    else:
+        home = tmp_path / "home"
+        (home / ".cursor").mkdir(parents=True)
+    # Through an alias HOME's file is the workspace's own path.
+    user_file = home / ".cursor" / "hooks.json"
+    write_user_file = variant != "cursor-dir-symlink-no-user-file"
+
+    def _prepare(workspace: Path) -> None:
+        if variant in ("home-is-workspace", "home-symlink"):
+            (workspace / ".cursor").mkdir()
+            user_file.write_bytes(_USER_HOOKS_BYTES)
+            return
+        if write_user_file:
+            user_file.write_bytes(_USER_HOOKS_BYTES)
+        _link_home_into_workspace(variant.removesuffix("-no-user-file"), home)(workspace)
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    bridge_dir = tmp_path / "cursor-bridge" / "home"
+    monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
+    cursor_native_status.write_receipt_epoch(bridge_dir, 1)
+    labels = (
+        {
+            cursor_native_status.COMPLETION_RECEIPTS_LABEL: (
+                cursor_native_status.COMPLETION_RECEIPTS_VERSION
+            )
+        }
+        if opted_in
+        else {}
+    )
+    with caplog.at_level("WARNING"):
+        captured = await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+            labels=labels,
+            prepare_workspace=_prepare,
+        )
+
+    # The HOME launch still starts the TUI.
+    assert captured["spec"].command == "cursor-agent"
+    # The user file is byte-for-byte untouched (or still absent), whichever path reaches it.
+    if write_user_file:
+        assert user_file.read_bytes() == _USER_HOOKS_BYTES
+        assert (ws / ".cursor" / "hooks.json").read_bytes() == _USER_HOOKS_BYTES
+    else:
+        assert not os.path.lexists(user_file)
+    assert not (home / ".cursor" / "hooks.json.tmp").exists()
+    assert "not registering the usage stop hook" in caplog.text
+    # No receipts are advertised, and nothing records turn ends for this bridge.
+    assert cursor_native_status.read_receipt_epoch(bridge_dir) is None
+    assert cursor_native_status.count_turn_ends(bridge_dir) == 0
+    if opted_in:
+        assert "completion receipts disabled for this launch (" in caplog.text
+        assert "(workspace_is_home:" in caplog.text or "(shared_hooks_config:" in caplog.text
+
+
+@pytest.mark.parametrize("opted_in", [True, False], ids=["receipts-v1", "default"])
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_distinct_project_gets_own_bound_stop_hook(
+    opted_in: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A project apart from HOME gets this launch's hook; the user file is untouched."""
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+    home = tmp_path / "home"
+    (home / ".cursor").mkdir(parents=True)
+    user_bytes = b'{"version": 1, "hooks": {"preToolUse": [{"command": "./policy.sh"}]}}\n'
+    (home / ".cursor" / "hooks.json").write_bytes(user_bytes)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    bridge_dir = tmp_path / "cursor-bridge" / "project"
+    monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
+    labels = (
+        {
+            cursor_native_status.COMPLETION_RECEIPTS_LABEL: (
+                cursor_native_status.COMPLETION_RECEIPTS_VERSION
+            )
+        }
+        if opted_in
+        else {}
+    )
+    await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=None,
+        labels=labels,
+    )
+    assert (home / ".cursor" / "hooks.json").read_bytes() == user_bytes
+    written = json.loads((tmp_path / "ws" / ".cursor" / "hooks.json").read_text())
+    commands = [entry["command"] for entry in written["hooks"]["stop"]]
+    assert len(commands) == 1
+    assert cursor_native_bridge._owned_hook_bridge(commands[0]) == str(bridge_dir)
+    epoch = cursor_native_status.read_receipt_epoch(bridge_dir)
+    if opted_in:
+        assert epoch is not None
+    else:
+        assert epoch is None
 
 
 @pytest.mark.asyncio

@@ -3031,7 +3031,17 @@ async def _auto_create_cursor_terminal(
     write_mcp_config(Path(workspace), bridge_dir)
     # Register the cursor ``stop`` hook that captures per-turn token usage into
     # the bridge dir for the usage forwarder below (see cursor_native_usage).
-    write_hooks_config(Path(workspace), bridge_dir)
+    # Skipped when the project hooks.json is the user one (workspace == HOME):
+    # there it would fire for every Cursor session on the machine.
+    if write_hooks_config(Path(workspace), bridge_dir) is None:
+        _logger.warning(
+            "cursor-native: workspace %s shares the user ~/.cursor/hooks.json; not "
+            "registering the usage stop hook, so this session reports no token usage "
+            "and no turn-end idle (session=%s).",
+            workspace,
+            session_id,
+            extra={"session_id": session_id},
+        )
     # Armed on the hooks files the TUI will load: only this launch's own project
     # stop hook may remain. Anything else (a foreign or shared-scope stop hook,
     # an unreadable/malformed config, workspace == HOME) leaves this launch

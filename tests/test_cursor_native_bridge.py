@@ -10,6 +10,7 @@ The clear now floods ``Backspace`` until the pane stops changing.
 
 from __future__ import annotations
 
+import os
 import types
 from pathlib import Path
 
@@ -898,6 +899,68 @@ class TestCompletionReceiptHookGate:
             ws, Path("/tmp/bridge-x"), home=home, system_paths=()
         )
         assert reason == want
+
+    @pytest.mark.parametrize("link", ["symlink", "dangling-symlink", "hardlink"])
+    def test_hooks_file_aliasing_the_user_file_is_shared_scope(
+        self, tmp_path: Path, link: str
+    ) -> None:
+        """A project hooks.json that is the user one is refused and never written."""
+        home = tmp_path / "home"
+        (home / ".cursor").mkdir(parents=True)
+        user_file = home / ".cursor" / "hooks.json"
+        if link != "dangling-symlink":
+            user_file.write_bytes(b'{"hooks": {"stop": [{"command": "./mine.sh"}]}}')
+        ws = tmp_path / "ws"
+        (ws / ".cursor").mkdir(parents=True)
+        project_file = ws / ".cursor" / "hooks.json"
+        if link == "hardlink":
+            os.link(user_file, project_file)
+        else:
+            project_file.symlink_to(user_file)
+        before = user_file.read_bytes() if user_file.exists() else None
+        want = f"shared_hooks_config:{project_file}"
+        assert cursor_native_bridge.shared_hooks_scope_reason(ws, home=home) == want
+        assert cursor_native_bridge.completion_receipt_project_precheck(ws, home=home) == want
+        assert cursor_native_bridge.write_hooks_config(ws, tmp_path / "bridge", home=home) is None
+        after = user_file.read_bytes() if user_file.exists() else None
+        assert after == before
+
+    @pytest.mark.parametrize("alias", ["same", "symlink", "dotdot", "cursor_dir_link"])
+    def test_write_hooks_config_skips_home_workspace(self, tmp_path: Path, alias: str) -> None:
+        home = tmp_path / "home"
+        (home / ".cursor").mkdir(parents=True)
+        user_bytes = b'{"version": 1, "hooks": {"stop": [{"command": "./mine.sh"}]}}'
+        (home / ".cursor" / "hooks.json").write_bytes(user_bytes)
+        if alias == "same":
+            ws = home
+        elif alias == "symlink":
+            ws = tmp_path / "ws-link"
+            ws.symlink_to(home)
+        elif alias == "dotdot":
+            (home / "sub").mkdir()
+            ws = home / "sub" / ".."
+        else:
+            ws = tmp_path / "ws"
+            ws.mkdir()
+            (ws / ".cursor").symlink_to(home / ".cursor")
+        assert cursor_native_bridge.write_hooks_config(ws, tmp_path / "b", home=home) is None
+        assert (home / ".cursor" / "hooks.json").read_bytes() == user_bytes
+        assert sorted(p.name for p in (home / ".cursor").iterdir()) == ["hooks.json"]
+
+    def test_write_hooks_config_skips_account_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import pwd
+
+        account_home = tmp_path / "account-home"
+        account_home.mkdir()
+        entry = types.SimpleNamespace(pw_dir=str(account_home))
+        monkeypatch.setattr(pwd, "getpwuid", lambda _uid: entry)
+        path = cursor_native_bridge.write_hooks_config(
+            account_home, tmp_path / "b", home=tmp_path / "env-home"
+        )
+        assert path is None
+        assert not (account_home / ".cursor").exists()
 
     def test_account_home_is_refused_even_when_home_env_differs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

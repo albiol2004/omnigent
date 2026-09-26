@@ -291,11 +291,29 @@ class TestReadNewItems:
 
 
 class TestDiscoverStore:
-    def _seed_chat(self, root: Path, workspace: str, chat_id: str, created_ms: int) -> Path:
+    _NO_CWD = object()
+
+    def _seed_chat(
+        self,
+        root: Path,
+        workspace: str,
+        chat_id: str,
+        created_ms: int,
+        cwd: object = _NO_CWD,
+    ) -> Path:
+        """Seed ``root/md5(workspace)/chat_id`` with a store and ``meta.json``.
+
+        ``cwd`` is written into ``meta.json`` when given (cursor records the
+        chat's working directory there); omitted by default to model older
+        builds / unreadable ownership.
+        """
         chat = root / hashlib.md5(workspace.encode()).hexdigest() / chat_id
         chat.mkdir(parents=True)
         (chat / "store.db").write_bytes(b"")
-        (chat / "meta.json").write_text(json.dumps({"createdAtMs": created_ms}))
+        meta: dict[str, object] = {"createdAtMs": created_ms}
+        if cwd is not self._NO_CWD:
+            meta["cwd"] = cwd
+        (chat / "meta.json").write_text(json.dumps(meta))
         return chat / "store.db"
 
     def test_picks_newest_chat_at_or_after_launch(
@@ -316,25 +334,112 @@ class TestDiscoverStore:
         # launch is well after the only chat (beyond the skew) → no match
         assert fwd._discover_store(ws, launch_epoch_ms=1_000_000) is None
 
-    def test_falls_back_across_workspace_dirs(
+    def test_exact_dir_wins_over_same_cwd_chat_elsewhere(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
-        # The chat lives under a DIFFERENT hash than md5(queried workspace)
-        # (cursor normalized the path); with a SINGLE qualifying chat the
-        # fallback unambiguously binds it.
-        other = self._seed_chat(tmp_path, "/some/other/path", "c", 5_000)
-        assert fwd._discover_store("/queried/workspace", launch_epoch_ms=4_000) == other
+        ws = str(tmp_path / "ws")
+        exact = self._seed_chat(tmp_path, ws, "mine", 5_000, cwd=ws)
+        # A newer same-cwd chat under a different hash dir never beats the
+        # exact md5(workspace) dir.
+        self._seed_chat(tmp_path, ws + "/.", "alias", 6_000, cwd=ws)
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000) == exact
 
-    def test_ambiguous_fallback_returns_none(
+    def test_exact_dir_empty_foreign_cwd_chat_is_never_bound(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Live regression (2026-09-26): a headless builder in a sibling
+        worktree created its chat 3 s before this session launched (inside the
+        skew). It was the ONLY qualifying chat outside the (still empty) exact
+        dir, and the old uniqueness fallback bound it — mirroring a foreign
+        conversation. Uniqueness is not ownership."""
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = "/runs/S/worktrees/eval-bounds-c88e5c66"
+        foreign = "/runs/S/worktrees/dedupe-6bbf37c1"
+        launch = 1_790_440_123_630
+        self._seed_chat(tmp_path, foreign, "builder", 1_790_440_120_662, cwd=foreign)
+        assert fwd._discover_store(ws, launch_epoch_ms=launch) is None
+
+    def test_fallback_binds_same_cwd_chat_under_other_hash(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
-        # Two qualifying chats under different non-exact dirs → we can't tell
-        # which session owns which, so bind nothing (avoid silent cross-talk).
-        self._seed_chat(tmp_path, "/path/a", "c1", 5_000)
-        self._seed_chat(tmp_path, "/path/b", "c2", 6_000)
+        real = tmp_path / "real_ws"
+        real.mkdir()
+        link = tmp_path / "link_ws"
+        link.symlink_to(real)
+        # Session launched with the symlinked path; cursor keyed its chat by the
+        # resolved path (true path-hash mismatch). meta cwd realpath-matches.
+        other = self._seed_chat(tmp_path, str(real), "c", 5_000, cwd=str(real))
+        assert fwd._discover_store(str(link), launch_epoch_ms=4_000) == other
+
+    def test_fallback_two_same_cwd_candidates_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = str(tmp_path / "ws")
+        # Existing fallback rule kept: bind only a UNIQUE candidate; with two
+        # same-cwd chats outside the exact dir we cannot tell which is ours.
+        self._seed_chat(tmp_path, ws + "/.", "c1", 5_000, cwd=ws)
+        self._seed_chat(tmp_path, ws + "/./", "c2", 6_000, cwd=ws)
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000) is None
+
+    def test_fallback_ignores_foreign_chats_when_counting(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = str(tmp_path / "ws")
+        mine = self._seed_chat(tmp_path, ws + "/.", "mine", 5_000, cwd=ws)
+        # Concurrent foreign chats neither get bound nor make ours ambiguous.
+        self._seed_chat(tmp_path, "/path/a", "a", 5_500, cwd="/path/a")
+        self._seed_chat(tmp_path, "/path/b", "b", 6_000, cwd="/path/b")
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000) == mine
+
+    @pytest.mark.parametrize(
+        "meta_text",
+        [
+            None,  # meta.json missing entirely
+            "{not json",  # unreadable
+            json.dumps({"createdAtMs": 5_000}),  # no cwd key
+            json.dumps({"createdAtMs": 5_000, "cwd": ""}),  # empty cwd
+            json.dumps({"createdAtMs": 5_000, "cwd": 42}),  # non-string cwd
+        ],
+    )
+    def test_fallback_requires_readable_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, meta_text: str | None
+    ) -> None:
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        chat = tmp_path / "somehash" / "c"
+        chat.mkdir(parents=True)
+        (chat / "store.db").write_bytes(b"")
+        if meta_text is not None:
+            (chat / "meta.json").write_text(meta_text)
         assert fwd._discover_store("/queried/workspace", launch_epoch_ms=4_000) is None
+
+    def test_exact_dir_chat_before_floor_is_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = str(tmp_path / "ws")
+        launch = 1_000_000
+        # Just outside the skew floor (launch - _DISCOVERY_SKEW_MS - 1).
+        self._seed_chat(tmp_path, ws, "old", launch - fwd._DISCOVERY_SKEW_MS - 1, cwd=ws)
+        assert fwd._discover_store(ws, launch_epoch_ms=launch) is None
+        # ...while one exactly at the floor still qualifies.
+        at_floor = self._seed_chat(tmp_path, ws, "ok", launch - fwd._DISCOVERY_SKEW_MS, cwd=ws)
+        assert fwd._discover_store(ws, launch_epoch_ms=launch) == at_floor
+
+    def test_exact_dir_chat_with_foreign_cwd_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = str(tmp_path / "ws")
+        # Defensive: a chat under md5(workspace) whose meta names another cwd
+        # is not trusted; a same-cwd (or cwd-less) sibling there still binds.
+        self._seed_chat(tmp_path, ws, "odd", 6_000, cwd="/elsewhere")
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000) is None
+        legacy = self._seed_chat(tmp_path, ws, "legacy", 5_000)
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000) == legacy
 
 
 class TestStateRoundTrip:

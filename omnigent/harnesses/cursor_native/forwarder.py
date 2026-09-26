@@ -389,48 +389,60 @@ def _workspace_hash(workspace: str) -> str:
     return hashlib.md5(workspace.encode("utf-8")).hexdigest()
 
 
-def _chat_created_ms(chat_dir: Path) -> int:
-    """Return ``meta.json``'s ``createdAtMs`` for *chat_dir* (0 if unreadable)."""
+def _chat_meta(chat_dir: Path) -> dict[str, object]:
+    """Return *chat_dir*'s parsed ``meta.json`` (``{}`` if missing/unreadable)."""
     try:
         meta = json.loads((chat_dir / "meta.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return 0
-    created = meta.get("createdAtMs")
-    return created if isinstance(created, int) else 0
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _meta_cwd_real(meta: dict[str, object]) -> str | None:
+    """Return the realpath of ``meta.json``'s ``cwd``, or ``None`` if absent/invalid."""
+    cwd = meta.get("cwd")
+    if not isinstance(cwd, str) or not cwd:
+        return None
+    return os.path.realpath(cwd)
 
 
 def _discover_store(workspace: str, launch_epoch_ms: int) -> Path | None:
     """Locate this session's cursor chat store under ``~/.cursor/chats``.
 
     cursor names each workspace's chat dir ``md5(<cwd>)`` and each chat
-    ``<chat-id>`` with a ``meta.json`` carrying ``createdAtMs``. The TUI creates
-    the dir lazily on the first message, so we pick the newest chat created at or
-    after this session's launch under the exact ``md5(workspace)`` dir. If that
-    dir has nothing (a path-hash mismatch), we fall back to other workspace dirs
-    but bind ONLY when exactly one chat across them qualifies — never guessing
-    among multiple, so a concurrent session or unrelated workspace can't be
-    mirrored by mistake.
+    ``<chat-id>`` with a ``meta.json`` carrying ``createdAtMs`` and ``cwd``. The
+    TUI creates the dir lazily on the first message, so we pick the newest chat
+    created at or after this session's launch (minus a small skew) under the
+    exact ``md5(workspace)`` dir.
+
+    If that dir has nothing yet, we fall back to other hash dirs (a genuine
+    path-hash mismatch, e.g. a symlinked workspace path) but ONLY consider chats
+    whose ``meta.json`` ``cwd`` realpath-equals this workspace's realpath, and
+    bind only when exactly one such chat qualifies. A chat whose ``cwd`` is a
+    different directory — or is missing/unreadable — is never bound, however
+    unique it is: concurrent sessions and headless ``cursor-agent -p`` runs in
+    sibling worktrees create chats inside the skew window, so uniqueness does
+    not imply ownership. With no owned chat we return ``None`` and the caller
+    retries (the exact dir usually appears within a second of launch).
 
     :param workspace: The session's working directory, exactly as passed to the
         cursor TUI.
     :param launch_epoch_ms: Wall-clock ms when this terminal launched; only
         chats created at/after this (minus a small skew) are candidates.
-    :returns: The newest matching ``store.db`` path, or ``None`` if none yet.
+    :returns: The matching ``store.db`` path, or ``None`` if none yet.
     """
     root = _cursor_chats_root()
     floor_ms = launch_epoch_ms - _DISCOVERY_SKEW_MS
+    workspace_real = os.path.realpath(workspace)
     exact_dir = root / _workspace_hash(workspace)
-    # The reliable case: the workspace is realpath-normalized on both the launch
-    # and forwarder sides, so cursor's own ``md5(cwd)`` dir == ``exact_dir``.
-    best, _best_created = _scan_hash_dir(exact_dir, floor_ms, None, -1)
+    # Primary case: the workspace is realpath-normalized on both the launch and
+    # forwarder sides, so cursor's own ``md5(cwd)`` dir == ``exact_dir``.
+    best, _best_created = _scan_hash_dir(exact_dir, floor_ms, workspace_real)
     if best is not None:
         return best
-    # Fallback ONLY for a path-hash mismatch: scan the other workspace dirs, but
-    # bind only when EXACTLY ONE chat across them qualifies. With two candidates
-    # we can't tell which session owns which (concurrent sessions, or an
-    # unrelated workspace), so we return None and retry rather than risk
-    # mirroring the wrong conversation — silent cross-talk is worse than a brief
-    # delay.
+    # Fallback ONLY for a path-hash mismatch, and ONLY for chats that prove they
+    # belong to this workspace via ``meta.json`` ``cwd``. Two owned candidates
+    # are still ambiguous (two sessions in one workspace), so bind none.
     if not root.is_dir():
         return None
     matches: list[Path] = []
@@ -439,22 +451,47 @@ def _discover_store(workspace: str, launch_epoch_ms: int) -> Path | None:
             continue
         for chat_dir in hash_dir.iterdir():
             store = chat_dir / "store.db"
-            if store.is_file() and _chat_created_ms(chat_dir) >= floor_ms:
+            if not store.is_file():
+                continue
+            meta = _chat_meta(chat_dir)
+            if _meta_cwd_real(meta) != workspace_real:
+                continue
+            created = meta.get("createdAtMs")
+            if isinstance(created, int) and created >= floor_ms:
                 matches.append(store)
     return matches[0] if len(matches) == 1 else None
 
 
-def _scan_hash_dir(
-    hash_dir: Path, floor_ms: int, best: Path | None, best_created: int
-) -> tuple[Path | None, int]:
-    """Update ``(best, best_created)`` with the newest qualifying chat in *hash_dir*."""
+def _scan_hash_dir(hash_dir: Path, floor_ms: int, workspace_real: str) -> tuple[Path | None, int]:
+    """Return ``(store, createdAtMs)`` of the newest qualifying chat in *hash_dir*.
+
+    Chats under the exact ``md5(workspace)`` dir are trusted by their location,
+    so a ``meta.json`` without ``cwd`` still qualifies (older cursor builds). A
+    chat whose ``cwd`` names a *different* realpath contradicts that location
+    (should be impossible — cursor keys the dir by ``md5(cwd)``); it is skipped
+    rather than trusted, and logged at debug level.
+    """
+    best: Path | None = None
+    best_created = -1
     if not hash_dir.is_dir():
         return best, best_created
     for chat_dir in hash_dir.iterdir():
         store = chat_dir / "store.db"
         if not store.is_file():
             continue
-        created = _chat_created_ms(chat_dir)
+        meta = _chat_meta(chat_dir)
+        cwd_real = _meta_cwd_real(meta)
+        if cwd_real is not None and cwd_real != workspace_real:
+            _logger.debug(
+                "cursor-native discovery: skipping chat %s — meta cwd %r does not "
+                "match workspace %r",
+                chat_dir,
+                cwd_real,
+                workspace_real,
+            )
+            continue
+        created = meta.get("createdAtMs")
+        created = created if isinstance(created, int) else 0
         if created >= floor_ms and created > best_created:
             best, best_created = store, created
     return best, best_created

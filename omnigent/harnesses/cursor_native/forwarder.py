@@ -19,6 +19,17 @@ that store, extract new user/assistant messages, and POST them as
 ``external_conversation_item`` events — which also seeds the session title from
 the first user message (the same hook claude/codex rely on).
 
+Binding a session to ITS chat: several sessions can share one cwd, and each
+gets its own chat in the same ``md5(cwd)`` dir, so launch recency is not
+ownership (two sessions launched 83 ms apart once mirrored each other's chats).
+Fresh launches are therefore pinned — the runner mints the chat id with
+``cursor-agent create-chat`` and launches ``--resume <id>``
+(:func:`preseed_new_chat_state`); cold resumes are pre-seeded likewise
+(:func:`preseed_resume_state`). Only when no pin exists does
+:func:`_discover_store` run, and it binds a chat only when this session's own
+pane holds it open (``/proc/<pane_pid>/fd``) or, when that is unobservable,
+when exactly one candidate exists — never "the newest".
+
 The web-facing ``running``/``idle`` *spinner* edges are intentionally NOT posted
 here: the runner's PTY-activity watcher owns those ``session.status`` edges for
 cursor-native (see ``_publish_turn_status`` in :mod:`omnigent.runner.app`),
@@ -36,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import errno
+import functools
 import hashlib
 import json
 import logging
@@ -43,14 +55,20 @@ import os
 import re
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
 import httpx
 
+from omnigent import native_tmux_kill
 from omnigent.harnesses.cursor_native import status as cursor_native_status
-from omnigent.harnesses.cursor_native.bridge import FORK_HISTORY_CLOSE_TAG, FORK_HISTORY_OPEN_TAG
+from omnigent.harnesses.cursor_native.bridge import (
+    FORK_HISTORY_CLOSE_TAG,
+    FORK_HISTORY_OPEN_TAG,
+    read_tmux_info,
+)
 from omnigent.inner.native_attachments import ATTACHMENT_MARKER_STRIP_PATTERN
 from omnigent.native._native_post_delivery import post_may_have_been_delivered
 
@@ -483,46 +501,176 @@ def _meta_cwd_real(meta: dict[str, object]) -> str | None:
     return os.path.realpath(cwd)
 
 
-def _discover_store(workspace: str, launch_epoch_ms: int) -> Path | None:
-    """Locate this session's cursor chat store under ``~/.cursor/chats``.
+#: Reads the chat stores this session's own TUI holds open: ``bridge_dir`` →
+#: realpaths of ``.../<chat>/store.db`` open in the pane process tree, or
+#: ``None`` when ownership cannot be observed (no pane pid yet, no ``/proc``).
+PaneStoreReader = Callable[[Path], frozenset[str] | None]
+
+# (socket_path, tmux_target) → pane pid, so discovery polls don't spawn a
+# ``tmux list-panes`` every 0.7 s. A re-created terminal gets a new socket.
+_PANE_PID_CACHE: dict[tuple[str, str], int] = {}
+
+
+def _pane_pid(bridge_dir: Path) -> int | None:
+    """Return the pid of this session's cursor TUI pane, or ``None``."""
+    pid = native_tmux_kill.recorded_tmux_pid(bridge_dir)
+    if pid is not None:
+        return pid
+    info = read_tmux_info(bridge_dir)
+    if info is None:
+        return None
+    key = (info["socket_path"], info["tmux_target"])
+    cached = _PANE_PID_CACHE.get(key)
+    if cached is not None and Path(f"/proc/{cached}").exists():
+        return cached
+    pid = native_tmux_kill.tmux_pane_pid(*key)
+    if pid is not None:
+        _PANE_PID_CACHE[key] = pid
+    return pid
+
+
+def _process_tree(root_pid: int, proc: Path) -> set[int]:
+    """Return *root_pid* plus all its descendants, from ``/proc/*/stat``."""
+    children: dict[int, list[int]] = {}
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+            # ``pid (comm) state ppid ...`` — comm may contain spaces/parens.
+            ppid = int(stat[stat.rindex(")") + 1 :].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        children.setdefault(ppid, []).append(int(entry.name))
+    tree = {root_pid}
+    stack = [root_pid]
+    while stack:
+        for child in children.get(stack.pop(), ()):
+            if child not in tree:
+                tree.add(child)
+                stack.append(child)
+    return tree
+
+
+def _pane_held_stores(bridge_dir: Path, *, proc: Path = Path("/proc")) -> frozenset[str] | None:
+    """Return the cursor chat stores held open by this session's pane processes.
+
+    The cursor TUI opens its chat's ``store.db`` (plus ``-wal``/``-shm``) at
+    startup and keeps it open (verified live: ``/proc/<pane_pid>/fd`` →
+    ``~/.cursor/chats/<md5(cwd)>/<id>/store.db``), so the fd table is ground
+    truth for which chat THIS session's terminal is on — no timing involved.
+
+    :param bridge_dir: This session's bridge dir (``tmux.json`` → pane pid).
+    :param proc: ``/proc`` root (tests point this at a fake tree).
+    :returns: Realpaths of held ``store.db`` files (possibly empty while the TUI
+        is still starting), or ``None`` when ownership cannot be observed.
+    """
+    if not proc.is_dir():
+        return None
+    pid = _pane_pid(bridge_dir)
+    if pid is None or not (proc / str(pid)).is_dir():
+        return None
+    held: set[str] = set()
+    for member in _process_tree(pid, proc):
+        fd_dir = proc / str(member) / "fd"
+        try:
+            fds = list(fd_dir.iterdir())
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if target.endswith("/store.db"):
+                held.add(os.path.realpath(target))
+    return frozenset(held)
+
+
+def _discover_store(
+    workspace: str,
+    launch_epoch_ms: int,
+    *,
+    held_stores: frozenset[str] | None = None,
+) -> Path | None:
+    """Locate this session's cursor chat store under ``~/.cursor/chats`` (fallback).
+
+    Fresh launches are normally pinned to a pre-minted chat id and never get
+    here (see :func:`preseed_new_chat_state`); this is the safety net when that
+    pin was unavailable.
 
     cursor names each workspace's chat dir ``md5(<cwd>)`` and each chat
-    ``<chat-id>`` with a ``meta.json`` carrying ``createdAtMs`` and ``cwd``. The
-    TUI creates the dir lazily on the first message, so we pick the newest chat
-    created at or after this session's launch (minus a small skew) under the
-    exact ``md5(workspace)`` dir.
+    ``<chat-id>`` with a ``meta.json`` carrying ``createdAtMs`` and ``cwd``.
+    Several sessions can run in ONE cwd — each with its own chat in the same
+    ``md5(cwd)`` dir — so "the newest chat since launch" is NOT ownership: a
+    sibling launched milliseconds earlier creates a chat inside our window
+    before ours exists (the 2026-09-27 cross-wire). Candidates are chats created
+    at/after launch minus a small skew under the exact ``md5(workspace)`` dir;
+    if that dir has none, chats elsewhere whose ``meta.json`` ``cwd``
+    realpath-equals this workspace (a genuine path-hash mismatch, e.g. a
+    symlinked workspace path). A chat whose ``cwd`` is a different directory —
+    or, outside the exact dir, is missing/unreadable — is never a candidate.
 
-    If that dir has nothing yet, we fall back to other hash dirs (a genuine
-    path-hash mismatch, e.g. a symlinked workspace path) but ONLY consider chats
-    whose ``meta.json`` ``cwd`` realpath-equals this workspace's realpath, and
-    bind only when exactly one such chat qualifies. A chat whose ``cwd`` is a
-    different directory — or is missing/unreadable — is never bound, however
-    unique it is: concurrent sessions and headless ``cursor-agent -p`` runs in
-    sibling worktrees create chats inside the skew window, so uniqueness does
-    not imply ownership. With no owned chat we return ``None`` and the caller
-    retries (the exact dir usually appears within a second of launch).
+    Binding rule:
+
+    - With ``held_stores`` (this session's pane processes' open stores, see
+      :func:`_pane_held_stores`): bind the one candidate our own TUI holds
+      open; if none (ours not open yet) return ``None`` — never a sibling's.
+    - Without it (ownership unobservable): bind only a UNIQUE candidate; two or
+      more are ambiguous and return ``None``. The newest is never taken.
+
+    ``None`` means "not yet"; the caller keeps polling.
 
     :param workspace: The session's working directory, exactly as passed to the
         cursor TUI.
     :param launch_epoch_ms: Wall-clock ms when this terminal launched; only
         chats created at/after this (minus a small skew) are candidates.
-    :returns: The matching ``store.db`` path, or ``None`` if none yet.
+    :param held_stores: Realpaths of stores this session's pane holds open, or
+        ``None`` when unknown.
+    :returns: The matching ``store.db`` path, or ``None`` if none (yet).
     """
+    candidates = _discovery_candidates(workspace, launch_epoch_ms)
+    if held_stores is not None:
+        owned = [c for c in candidates if os.path.realpath(c) in held_stores]
+        if len(owned) == 1:
+            return owned[0]
+        if candidates:
+            _logger.debug(
+                "cursor-native discovery: %d candidate chat(s) for %r, %d held open by "
+                "this session's pane; not binding yet",
+                len(candidates),
+                workspace,
+                len(owned),
+            )
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    if candidates:
+        _logger.debug(
+            "cursor-native discovery: %d candidate chats for %r and no pane ownership "
+            "evidence; ambiguous, not binding",
+            len(candidates),
+            workspace,
+        )
+    return None
+
+
+def _discovery_candidates(workspace: str, launch_epoch_ms: int) -> list[Path]:
+    """Return qualifying chat stores for *workspace*, newest first (see ``_discover_store``)."""
     root = _cursor_chats_root()
     floor_ms = launch_epoch_ms - _DISCOVERY_SKEW_MS
     workspace_real = os.path.realpath(workspace)
     exact_dir = root / _workspace_hash(workspace)
     # Primary case: the workspace is realpath-normalized on both the launch and
     # forwarder sides, so cursor's own ``md5(cwd)`` dir == ``exact_dir``.
-    best, _best_created = _scan_hash_dir(exact_dir, floor_ms, workspace_real)
-    if best is not None:
-        return best
+    exact = _scan_hash_dir(exact_dir, floor_ms, workspace_real)
+    if exact:
+        return exact
     # Fallback ONLY for a path-hash mismatch, and ONLY for chats that prove they
-    # belong to this workspace via ``meta.json`` ``cwd``. Two owned candidates
-    # are still ambiguous (two sessions in one workspace), so bind none.
+    # belong to this workspace via ``meta.json`` ``cwd``.
     if not root.is_dir():
-        return None
-    matches: list[Path] = []
+        return []
+    matches: list[tuple[int, Path]] = []
     for hash_dir in sorted(root.iterdir()):
         if hash_dir == exact_dir or not hash_dir.is_dir():
             continue
@@ -535,23 +683,25 @@ def _discover_store(workspace: str, launch_epoch_ms: int) -> Path | None:
                 continue
             created = meta.get("createdAtMs")
             if isinstance(created, int) and created >= floor_ms:
-                matches.append(store)
-    return matches[0] if len(matches) == 1 else None
+                matches.append((created, store))
+    matches.sort(key=lambda m: m[0], reverse=True)
+    return [store for _created, store in matches]
 
 
-def _scan_hash_dir(hash_dir: Path, floor_ms: int, workspace_real: str) -> tuple[Path | None, int]:
-    """Return ``(store, createdAtMs)`` of the newest qualifying chat in *hash_dir*.
+def _scan_hash_dir(hash_dir: Path, floor_ms: int, workspace_real: str) -> list[Path]:
+    """Return qualifying chat stores in *hash_dir*, newest ``createdAtMs`` first.
 
     Chats under the exact ``md5(workspace)`` dir are trusted by their location,
     so a ``meta.json`` without ``cwd`` still qualifies (older cursor builds). A
     chat whose ``cwd`` names a *different* realpath contradicts that location
     (should be impossible — cursor keys the dir by ``md5(cwd)``); it is skipped
-    rather than trusted, and logged at debug level.
+    rather than trusted, and logged at debug level. Several qualifying chats are
+    normal when sessions share a cwd; :func:`_discover_store` decides which (if
+    any) is ours.
     """
-    best: Path | None = None
-    best_created = -1
+    found: list[tuple[int, Path]] = []
     if not hash_dir.is_dir():
-        return best, best_created
+        return []
     for chat_dir in hash_dir.iterdir():
         store = chat_dir / "store.db"
         if not store.is_file():
@@ -569,9 +719,10 @@ def _scan_hash_dir(hash_dir: Path, floor_ms: int, workspace_real: str) -> tuple[
             continue
         created = meta.get("createdAtMs")
         created = created if isinstance(created, int) else 0
-        if created >= floor_ms and created > best_created:
-            best, best_created = store, created
-    return best, best_created
+        if created >= floor_ms:
+            found.append((created, store))
+    found.sort(key=lambda f: f[0], reverse=True)
+    return [store for _created, store in found]
 
 
 def _content_text(content: object) -> str:
@@ -1337,6 +1488,7 @@ async def forward_cursor_store_to_session(
     launch_epoch_ms: int,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
     auth: httpx.Auth | None = None,
+    pane_store_reader: PaneStoreReader | None = None,
 ) -> None:
     """Tail the cursor chat store and mirror new messages into the AP session.
 
@@ -1367,8 +1519,12 @@ async def forward_cursor_store_to_session(
     :param launch_epoch_ms: Wall-clock ms when this terminal launched.
     :param poll_interval_s: Seconds between store polls.
     :param auth: Optional refresh-capable httpx Auth for remote deployments.
+    :param pane_store_reader: Reads the stores this session's pane holds open
+        (ownership evidence for the discovery fallback); defaults to
+        :func:`_pane_held_stores`. Injectable for tests.
     :returns: Never normally returns; cancel the task to stop it.
     """
+    read_pane_stores = pane_store_reader or _pane_held_stores
     persisted = _read_state(bridge_dir)
     store_path: Path | None = None
     last_rowid = 0
@@ -1469,9 +1625,20 @@ async def forward_cursor_store_to_session(
                             )
                             chat_id_patched = True
                     else:
-                        resolved = await asyncio.to_thread(
-                            _discover_store, workspace, launch_epoch_ms
-                        )
+                        held = await asyncio.to_thread(read_pane_stores, bridge_dir)
+                        if held is None:
+                            resolved = await asyncio.to_thread(
+                                _discover_store, workspace, launch_epoch_ms
+                            )
+                        else:
+                            resolved = await asyncio.to_thread(
+                                functools.partial(
+                                    _discover_store,
+                                    workspace,
+                                    launch_epoch_ms,
+                                    held_stores=held,
+                                )
+                            )
                         if resolved is not None and not await asyncio.to_thread(
                             _chat_claimed_by_other, bridge_dir, resolved, launch_epoch_ms
                         ):

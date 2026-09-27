@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import functools
 import hashlib
 import json
 import logging
@@ -55,6 +56,7 @@ from omnigent.harnesses.cursor_native.bridge import capture_cursor_pane, send_cu
 # the live ``-wal`` state correctly.
 from omnigent.harnesses.cursor_native.forwarder import (
     _discover_store,
+    _pane_held_stores,
     _read_blob_rows,
     _read_state,
     bound_store_path,
@@ -798,18 +800,23 @@ async def _yolo_auto_accept(
 
 
 def _resolve_elicitation_store(
-    bridge_dir: Path, workspace: str, launch_epoch_ms: int
+    bridge_dir: Path,
+    workspace: str,
+    launch_epoch_ms: int,
+    *,
+    held_stores: frozenset[str] | None = None,
 ) -> Path | None:
     """Return the chat store to watch, preferring the forwarder's bound store.
 
     On cold resume the chat predates this launch, so ``_discover_store``'s
     launch-recency filter never matches it; the bridge state's pre-seeded (or
-    forwarder-bound) store path does.
+    forwarder-bound) store path does. Discovery only binds a chat this
+    session's pane owns (``held_stores``, fork: pane-ownership binding).
     """
     persisted = _read_state(bridge_dir).store_path
     if persisted and Path(persisted).exists():
         return Path(persisted)
-    return _discover_store(workspace, launch_epoch_ms)
+    return _discover_store(workspace, launch_epoch_ms, held_stores=held_stores)
 
 
 async def supervise_cursor_transcript_elicitations(
@@ -888,8 +895,15 @@ async def supervise_cursor_transcript_elicitations(
                 if bound is not None:
                     store_path = bound if bound.exists() else None
                 elif store_path is None or not store_path.exists():
+                    held = await asyncio.to_thread(_pane_held_stores, bridge_dir)
                     store_path = await asyncio.to_thread(
-                        _resolve_elicitation_store, bridge_dir, workspace, launch_epoch_ms
+                        functools.partial(
+                            _resolve_elicitation_store,
+                            bridge_dir,
+                            workspace,
+                            launch_epoch_ms,
+                            held_stores=held,
+                        )
                     )
                 pending_calls = (
                     await asyncio.to_thread(read_cursor_pending_tool_calls, store_path)

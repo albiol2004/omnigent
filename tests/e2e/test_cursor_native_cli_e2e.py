@@ -712,13 +712,14 @@ def test_cursor_native_cli_same_cwd_launch_does_not_duplicate(
 ) -> None:
     """A second cursor-native launch in the same cwd does not duplicate the chat.
 
-    cursor keeps one chat per working directory, so two ``omnigent cursor``
-    launches from the same dir discover the SAME chat store. The forwarder's
-    per-chat claim must let only ONE session (the earlier-launched one) mirror
-    it; the later session yields. A marker injected into the FIRST session must
-    therefore surface in its transcript but NEVER in the second's — without the
-    claim, both forwarders mirror the one shared chat and the second session is
-    a duplicate of the first. The e2e guard for the duplicate-session bug.
+    Two ``omnigent cursor`` launches from the same dir share one ``md5(cwd)``
+    chats dir. Each must mirror only its own chat (pinned via ``create-chat``
+    or owned by its pane); if two sessions ever name the same store, the
+    forwarder's per-chat claim lets only ONE (the earlier-launched) mirror it.
+    A marker injected into the FIRST session must therefore surface in its
+    transcript but NEVER in the second's — otherwise the second session mirrors
+    the first one's chat (duplicate or cross-wire). The e2e guard for the
+    duplicate-session bug.
 
     :param resume_test_server: Base URL of the allow-list-free test server.
     :param tmp_path: Per-test temp dir; its ``pwd`` subdir is the shared cwd.

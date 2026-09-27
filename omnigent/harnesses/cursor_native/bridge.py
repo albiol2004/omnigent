@@ -7,6 +7,21 @@ executor then delivers Omnigent web-UI messages into the *same* pane via
 of claude-native's tmux send-keys bridge. This is what wires the web-UI chat box
 to the running Cursor TUI (and, since the web UI embeds that pane, the message
 shows in both surfaces).
+
+Known limitation — one hooks/MCP slot per workspace: the usage ``stop`` hook
+(``.cursor/hooks.json``) and the Omnigent MCP server (``.cursor/mcp.json``) are
+project-scoped files, and each bakes ONE session's bridge dir. Two cursor-native
+sessions launched in the same workspace therefore share one slot, and the last
+launch wins: both TUIs' stop hooks (usage, turn-end idle, completion receipts)
+and MCP tools route to the last launcher's bridge dir. cursor-agent reads these
+only from the project/user/team/enterprise locations (its ``--plugin-dir``
+plugins can also carry hooks and MCP servers, but that route is unverified for
+the TUI and not used). The runner does not refuse such launches (non-isolated
+Trio runs rely on them); it logs a warning naming both sessions when a launch
+overwrites a slot still bound to a LIVE sibling
+(:func:`live_foreign_config_bridges`). Give concurrent sessions distinct
+worktrees to avoid it. Chat-transcript binding is NOT affected: each session is
+pinned to its own chat (see :mod:`omnigent.harnesses.cursor_native.forwarder`).
 """
 
 from __future__ import annotations
@@ -20,6 +35,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -386,6 +402,114 @@ def write_mcp_config(
     enable_mcp_for_workspace(workspace)
     allow_mcp_tools_in_cli_config()
     return path
+
+
+_BRIDGE_OWNER_FILE = "owner.json"
+#: Mirrors the forwarder's ``_STATE_FILE`` / ``_CLAIM_FRESH_MS`` (not imported:
+#: the forwarder imports this module). A bridge whose forwarder persisted within
+#: this window is a live session.
+_FORWARDER_STATE_FILE = "cursor_forwarder.json"
+_FORWARDER_FRESH_MS = 30_000
+
+
+def write_bridge_owner(bridge_dir: Path, session_id: str) -> None:
+    """Record which session owns *bridge_dir* (its name is a one-way hash).
+
+    Lets a later same-workspace launch name the session whose hooks/MCP slot it
+    is about to overwrite. Best-effort.
+    """
+    with contextlib.suppress(OSError):
+        _ensure_dir(bridge_dir)
+        tmp = bridge_dir / (_BRIDGE_OWNER_FILE + ".tmp")
+        tmp.write_text(json.dumps({"session_id": session_id}), encoding="utf-8")
+        os.replace(tmp, bridge_dir / _BRIDGE_OWNER_FILE)
+
+
+def read_bridge_owner(bridge_dir: Path) -> str | None:
+    """Return the session id recorded by :func:`write_bridge_owner`, if any."""
+    loaded = _load_json_config(bridge_dir / _BRIDGE_OWNER_FILE)
+    sid = loaded.get("session_id") if isinstance(loaded, dict) else None
+    return sid if isinstance(sid, str) and sid else None
+
+
+def _bridge_session_live(bridge_dir: Path) -> bool:
+    """Whether the session behind *bridge_dir* still runs (fresh forwarder or live pane)."""
+    state = _load_json_config(bridge_dir / _FORWARDER_STATE_FILE)
+    heartbeat = state.get("heartbeat_ms") if isinstance(state, dict) else None
+    if isinstance(heartbeat, int) and time.time() * 1000 - heartbeat <= _FORWARDER_FRESH_MS:
+        return True
+    info = read_tmux_info(bridge_dir)
+    return info is not None and _session_alive(info["socket_path"], info["tmux_target"])
+
+
+def _arg_after(argv: object, flag: str) -> str | None:
+    """Return the argv element following *flag*, or ``None``."""
+    if not isinstance(argv, list):
+        return None
+    for i, arg in enumerate(argv[:-1]):
+        if arg == flag and isinstance(argv[i + 1], str):
+            return argv[i + 1]
+    return None
+
+
+def _config_bridge_dirs(workspace: Path) -> dict[str, set[str]]:
+    """Bridge dirs baked into *workspace*'s ``.cursor/hooks.json`` / ``mcp.json``."""
+    import shlex
+
+    found: dict[str, set[str]] = {_HOOKS_CONFIG_FILE: set(), _MCP_CONFIG_FILE: set()}
+    hooks_cfg = _load_json_config(workspace / ".cursor" / _HOOKS_CONFIG_FILE)
+    hooks = hooks_cfg.get("hooks") if isinstance(hooks_cfg, dict) else None
+    if isinstance(hooks, dict):
+        for entries in hooks.values():
+            for entry in entries if isinstance(entries, list) else ():
+                if not _is_omnigent_usage_hook(entry):
+                    continue
+                try:
+                    bridge = _arg_after(shlex.split(str(entry.get("command"))), "--bridge-dir")
+                except ValueError:
+                    bridge = None
+                if bridge:
+                    found[_HOOKS_CONFIG_FILE].add(bridge)
+    mcp_cfg = _load_json_config(workspace / ".cursor" / _MCP_CONFIG_FILE)
+    servers = mcp_cfg.get("mcpServers") if isinstance(mcp_cfg, dict) else None
+    server = servers.get(_MCP_SERVER_NAME) if isinstance(servers, dict) else None
+    bridge = _arg_after(server.get("args"), "--bridge-dir") if isinstance(server, dict) else None
+    if bridge:
+        found[_MCP_CONFIG_FILE].add(bridge)
+    return found
+
+
+def live_foreign_config_bridges(
+    workspace: Path,
+    bridge_dir: Path,
+    *,
+    is_live: Callable[[Path], bool] | None = None,
+) -> dict[str, list[Path]]:
+    """Find LIVE sibling sessions whose hooks/MCP slot this launch would overwrite.
+
+    ``.cursor/hooks.json`` and ``.cursor/mcp.json`` hold one bridge dir each per
+    workspace (see the module docstring), so a same-workspace launch re-points
+    them at itself and silently detaches the sibling's stop hook and MCP tools.
+    Call before :func:`write_hooks_config` / :func:`write_mcp_config`.
+
+    :param workspace: The launch workspace.
+    :param bridge_dir: This launch's bridge dir (never reported).
+    :param is_live: Liveness probe for a bridge dir (tests); defaults to a fresh
+        forwarder heartbeat or a live tmux pane.
+    :returns: ``{config file name: [live foreign bridge dirs]}``, only non-empty
+        entries.
+    """
+    probe = is_live or _bridge_session_live
+    result: dict[str, list[Path]] = {}
+    for name, bridges in _config_bridge_dirs(workspace).items():
+        live = [
+            Path(b)
+            for b in sorted(bridges)
+            if not _same_path(b, bridge_dir) and Path(b).is_dir() and probe(Path(b))
+        ]
+        if live:
+            result[name] = live
+    return result
 
 
 def build_hooks_config(bridge_dir: Path, *, python_executable: str | None = None) -> _JsonObject:

@@ -10,6 +10,7 @@ The clear now floods ``Backspace`` until the pane stops changing.
 
 from __future__ import annotations
 
+import json
 import os
 import types
 from pathlib import Path
@@ -1510,3 +1511,78 @@ class TestCursorLaunchAdmission:
         assert (
             cursor_native_bridge.user_mcp_has_session_bound_omnigent_server(home=home) is expected
         )
+
+
+class TestLiveForeignConfigBridges:
+    """Same-workspace launches share one hooks.json/mcp.json slot: detect it."""
+
+    @staticmethod
+    def _bind_configs(workspace: Path, bridge: Path) -> None:
+        cursor_dir = workspace / ".cursor"
+        cursor_dir.mkdir(parents=True, exist_ok=True)
+        (cursor_dir / "hooks.json").write_text(
+            json.dumps(cursor_native_bridge.build_hooks_config(bridge))
+        )
+        (cursor_dir / "mcp.json").write_text(
+            json.dumps(cursor_native_bridge.build_mcp_config(bridge))
+        )
+
+    def test_reports_live_sibling_for_both_files(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        sibling = tmp_path / "bridges" / "sib"
+        mine = tmp_path / "bridges" / "mine"
+        sibling.mkdir(parents=True)
+        mine.mkdir(parents=True)
+        self._bind_configs(ws, sibling)
+        found = cursor_native_bridge.live_foreign_config_bridges(
+            ws, mine, is_live=lambda b: b == sibling
+        )
+        assert found == {"hooks.json": [sibling], "mcp.json": [sibling]}
+
+    def test_dead_sibling_or_own_bridge_is_not_reported(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        sibling = tmp_path / "bridges" / "sib"
+        sibling.mkdir(parents=True)
+        self._bind_configs(ws, sibling)
+        assert (
+            cursor_native_bridge.live_foreign_config_bridges(
+                ws, tmp_path / "bridges" / "mine", is_live=lambda _b: False
+            )
+            == {}
+        )
+        assert (
+            cursor_native_bridge.live_foreign_config_bridges(ws, sibling, is_live=lambda _b: True)
+            == {}
+        )
+
+    def test_missing_or_malformed_configs_are_quiet(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        (ws / ".cursor").mkdir(parents=True)
+        (ws / ".cursor" / "hooks.json").write_text("{nope")
+        (ws / ".cursor" / "mcp.json").write_text(json.dumps({"mcpServers": []}))
+        assert (
+            cursor_native_bridge.live_foreign_config_bridges(
+                ws, tmp_path / "mine", is_live=lambda _b: True
+            )
+            == {}
+        )
+
+    def test_default_liveness_uses_fresh_forwarder_heartbeat(self, tmp_path: Path) -> None:
+        import time as _time
+
+        ws = tmp_path / "ws"
+        sibling = tmp_path / "bridges" / "sib"
+        sibling.mkdir(parents=True)
+        self._bind_configs(ws, sibling)
+        state = sibling / "cursor_forwarder.json"
+        state.write_text(json.dumps({"heartbeat_ms": int(_time.time() * 1000)}))
+        found = cursor_native_bridge.live_foreign_config_bridges(ws, tmp_path / "mine")
+        assert set(found) == {"hooks.json", "mcp.json"}
+        state.write_text(json.dumps({"heartbeat_ms": 1}))  # stale, and no tmux.json
+        assert cursor_native_bridge.live_foreign_config_bridges(ws, tmp_path / "mine") == {}
+
+    def test_owner_round_trip(self, tmp_path: Path) -> None:
+        bridge = tmp_path / "b"
+        assert cursor_native_bridge.read_bridge_owner(bridge) is None
+        cursor_native_bridge.write_bridge_owner(bridge, "conv_sibling")
+        assert cursor_native_bridge.read_bridge_owner(bridge) == "conv_sibling"

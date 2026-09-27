@@ -2892,10 +2892,11 @@ async def _auto_create_cursor_terminal(
     from omnigent.harnesses.cursor_native.main import resolve_cursor_executable
     from omnigent.inner.datamodel import OSEnvSpec, TerminalEnvSpec
 
-    # Stamp the launch time before the TUI starts. cursor creates the chat's
-    # on-disk store lazily on the first message, so its ``meta.json``
-    # ``createdAtMs`` is always >= this — which lets the forwarder discover
-    # *this* session's chat by recency under ``~/.cursor/chats/<md5(cwd)>``.
+    # Stamp the launch time before the TUI starts. The TUI creates its chat
+    # store at startup, so its ``meta.json`` ``createdAtMs`` is >= this. A fresh
+    # launch normally pins its chat id up front (``create-chat`` below), so the
+    # forwarder never has to guess; the recency window only feeds the
+    # discovery fallback (and the claim tie-break / pinned-store grace).
     launch_epoch_ms = int(time.time() * 1000)
     # Tear down any forwarder left from a prior terminal for this session before
     # re-creating, so the old and new tasks can't both mirror (double-posting),
@@ -2916,9 +2917,14 @@ async def _auto_create_cursor_terminal(
     from omnigent.harnesses.cursor_native.forwarder import (
         clear_cursor_bridge_state,
         clear_receipt_forwarder_state,
+        preseed_new_chat_state,
         preseed_resume_state,
     )
-    from omnigent.harnesses.cursor_native.main import is_valid_cursor_chat_id
+    from omnigent.harnesses.cursor_native.main import (
+        create_cursor_chat,
+        is_valid_cursor_chat_id,
+        launch_args_select_chat,
+    )
     from omnigent.harnesses.cursor_native.status import (
         ReceiptEpochClearError,
         clear_cursor_status_state,
@@ -2990,6 +2996,36 @@ async def _auto_create_cursor_terminal(
                 extra={"session_id": session_id},
             )
             resume_chat_id = None
+    # Fresh launch: mint this session's chat id BEFORE the TUI starts and launch
+    # with ``--resume <id>``, pinning the forwarder to that exact store. Without
+    # the pin the forwarder must guess by launch recency, and two sessions
+    # started milliseconds apart in one workspace (one ``md5(cwd)`` chats dir)
+    # bound each other's chats (live 2026-09-27). Skipped when the passthrough
+    # args already pick the chat or its cwd; on any create-chat failure we fall
+    # back to discovery, whose ownership checks refuse ambiguous candidates.
+    fresh_chat_id: str | None = None
+    if not preseeded and not launch_args_select_chat(launch_config.terminal_launch_args or []):
+        fresh_chat_id = await asyncio.to_thread(
+            create_cursor_chat, resolve_cursor_executable(), workspace
+        )
+        if fresh_chat_id is not None:
+            pinned_store = preseed_new_chat_state(
+                bridge_dir, workspace, fresh_chat_id, launch_epoch_ms
+            )
+            _logger.info(
+                "cursor-native: pinned fresh chat %s (store %s) (session=%s).",
+                fresh_chat_id,
+                pinned_store,
+                session_id,
+                extra={"session_id": session_id},
+            )
+        else:
+            _logger.warning(
+                "cursor-native: could not mint a chat id with `create-chat`; falling "
+                "back to chat-store discovery for this launch (session=%s).",
+                session_id,
+                extra={"session_id": session_id},
+            )
     # Completion receipts (opt-in): each launch is a new terminal epoch, and the
     # transcript ACK state restarts from this launch's forward cursor.
     clear_receipt_forwarder_state(bridge_dir)
@@ -3094,7 +3130,9 @@ async def _auto_create_cursor_terminal(
     # On cold resume, pass ``--resume <chatId>`` to cursor-agent so the TUI
     # reloads the prior conversation. The id was validated above; ``None`` on a
     # brand-new session, so no ``--resume`` is injected and cursor starts fresh.
-    cursor_args.extend(_cursor_native_resume_args(resume_chat_id, cursor_args))
+    # A fresh launch pinned above reuses the same ``--resume <id>`` argv: cursor
+    # opens the (still empty) minted chat as a new conversation.
+    cursor_args.extend(_cursor_native_resume_args(resume_chat_id or fresh_chat_id, cursor_args))
     # Launch cursor-agent with ``--model <model>``. Precedence mirrors the
     # codex-native path above: the persisted ``/model`` override
     # (``model_override``) wins, falling back to the spec's pinned model

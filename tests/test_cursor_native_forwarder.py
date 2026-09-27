@@ -1504,3 +1504,223 @@ async def test_persist_native_compaction_item_no_store_skips_messages() -> None:
     assert body["type"] == "compaction"
     assert body["data"]["last_item_id"] == "item_abc"
     assert "compacted_messages" not in body["data"]
+
+
+class TestSameCwdConcurrentLaunches:
+    """Two sessions launched 80 ms apart in ONE workspace each mirror their own chat.
+
+    Live regression (2026-09-27): two cursor-native sessions started 83 ms apart
+    in the same worktree share one ``~/.cursor/chats/<md5(cwd)>/`` dir. Session
+    B's forwarder polled while only A's chat existed and bound it (newest chat in
+    the launch window); A's forwarder then took the newest unclaimed chat — B's.
+    Each broker transcript mirrored the OTHER session's conversation.
+    ``_chat_claimed_by_other`` never fired: it only protects a chat whose real
+    owner binds first.
+    """
+
+    _ID_A = "aaaaaaaa-0000-4000-8000-00000000000a"
+    _ID_B = "bbbbbbbb-0000-4000-8000-00000000000b"
+
+    @staticmethod
+    def _chat(root: Path, ws: str, chat_id: str, created_ms: int, text: str) -> Path:
+        chat = root / hashlib.md5(ws.encode()).hexdigest() / chat_id
+        chat.mkdir(parents=True, exist_ok=True)
+        writer = _make_store(
+            chat / "store.db", [(f"u-{chat_id}", _user(f"<user_query>\n{text}\n</user_query>"))]
+        )
+        writer.close()
+        (chat / "meta.json").write_text(json.dumps({"createdAtMs": created_ms, "cwd": ws}))
+        return chat / "store.db"
+
+    async def _run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        *,
+        first: str,
+        mode: str,
+    ) -> None:
+        import time as _time
+
+        chats = tmp_path / "chats"
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: chats)
+        ws_dir = tmp_path / "ws"
+        ws_dir.mkdir()
+        ws = str(ws_dir.resolve())
+        root = tmp_path / "cursor-native"
+        bridges = {"A": root / "bridge-a", "B": root / "bridge-b"}
+        for b in bridges.values():
+            b.mkdir(parents=True)
+        launch = {"A": int(_time.time() * 1000)}
+        launch["B"] = launch["A"] + 80
+        ids = {"A": self._ID_A, "B": self._ID_B}
+        sessions = {"A": "conv_A", "B": "conv_B"}
+
+        discover_calls: list[tuple[object, ...]] = []
+        real_discover = fwd._discover_store
+
+        def _recording_discover(*args: object, **kwargs: object) -> Path | None:
+            discover_calls.append(args)
+            return real_discover(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(fwd, "_discover_store", _recording_discover)
+
+        held: dict[str, set[str]] = {"bridge-a": set(), "bridge-b": set()}
+        extra_kwargs: dict[str, dict[str, object]] = {"A": {}, "B": {}}
+        if mode == "preseed":
+            for k in ("A", "B"):
+                fwd.preseed_new_chat_state(bridges[k], ws, ids[k], launch[k])
+        else:
+            for k in ("A", "B"):
+                extra_kwargs[k] = {
+                    "pane_store_reader": lambda bridge_dir: held.get(bridge_dir.name)
+                }
+
+        delivered: dict[str, list[str]] = {"conv_A": [], "conv_B": []}
+        patched: dict[str, str] = {}
+
+        async def _collect(client: object, *, session_id: str, item: fwd._MirrorItem) -> None:
+            delivered[session_id].append(item.item_data["content"][0]["text"])
+
+        async def _patch(client: object, *, session_id: str, chat_id: str) -> None:
+            patched[session_id] = chat_id
+
+        monkeypatch.setattr(fwd, "_post_conversation_item", _collect)
+        monkeypatch.setattr(fwd, "_patch_external_session_id", _patch)
+
+        def _start(k: str) -> asyncio.Task[None]:
+            return asyncio.create_task(
+                fwd.forward_cursor_store_to_session(
+                    base_url="http://test",
+                    headers={},
+                    session_id=sessions[k],
+                    bridge_dir=bridges[k],
+                    agent_name="cursor-native-ui",
+                    workspace=ws,
+                    launch_epoch_ms=launch[k],
+                    poll_interval_s=0.001,
+                    **extra_kwargs[k],  # type: ignore[arg-type]
+                )
+            )
+
+        # A's TUI starts first and opens its chat; nothing of B's exists yet.
+        store_a = self._chat(chats, ws, ids["A"], launch["A"] + 300, "from A")
+        held["bridge-a"] = {str(store_a)}
+        second = "B" if first == "A" else "A"
+        tasks = [_start(first)]
+        try:
+            await asyncio.sleep(0.05)
+            tasks.append(_start(second))
+            await asyncio.sleep(0.05)
+            # B must NOT have bound A's chat while its own did not exist yet.
+            assert fwd._read_state(bridges["B"]).store_path != str(store_a)
+            assert delivered["conv_B"] == []
+            # B's TUI now opens its own chat.
+            store_b = self._chat(chats, ws, ids["B"], launch["B"] + 310, "from B")
+            held["bridge-b"] = {str(store_b)}
+            for _ in range(3000):
+                if delivered["conv_A"] and delivered["conv_B"]:
+                    break
+                await asyncio.sleep(0.001)
+            else:
+                raise AssertionError(f"forwarders never mirrored both chats: {delivered}")
+        finally:
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        assert delivered == {"conv_A": ["from A"], "conv_B": ["from B"]}
+        assert patched == {"conv_A": ids["A"], "conv_B": ids["B"]}
+        assert fwd._read_state(bridges["A"]).store_path == str(store_a)
+        assert fwd._read_state(bridges["B"]).store_path == str(store_b)
+        if mode == "preseed":
+            # Pinned launches never guess by recency.
+            assert discover_calls == []
+
+    @pytest.mark.parametrize("first", ["A", "B"], ids=["a-polls-first", "b-polls-first"])
+    @pytest.mark.parametrize("mode", ["preseed"])
+    @pytest.mark.asyncio
+    async def test_each_session_binds_its_own_chat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: str, mode: str
+    ) -> None:
+        await self._run(monkeypatch, tmp_path, first=first, mode=mode)
+
+    @pytest.mark.asyncio
+    async def test_pinned_store_waits_instead_of_discovering(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Within the grace window a pinned launch never falls back to discovery."""
+        import time as _time
+
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path / "chats")
+        bridge = tmp_path / "cursor-native" / "sess"
+        bridge.mkdir(parents=True)
+        launch = int(_time.time() * 1000)
+        pinned = fwd.preseed_new_chat_state(bridge, "/ws", self._ID_A, launch)
+        state = fwd._read_state(bridge)
+        assert state.pinned is True and state.store_path == str(pinned)
+        assert state.last_rowid == 0
+        assert not pinned.exists()  # create-chat writes nothing; the TUI creates it
+        calls: list[object] = []
+        monkeypatch.setattr(fwd, "_discover_store", lambda *a, **k: calls.append(a))
+        task = asyncio.create_task(
+            fwd.forward_cursor_store_to_session(
+                base_url="http://test",
+                headers={},
+                session_id="conv_1",
+                bridge_dir=bridge,
+                agent_name="cursor-native-ui",
+                workspace="/ws",
+                launch_epoch_ms=launch,
+                poll_interval_s=0.001,
+            )
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert calls == []
+        assert fwd._read_state(bridge).store_path == str(pinned)
+
+    @pytest.mark.asyncio
+    async def test_pinned_store_falls_back_to_discovery_after_grace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If cursor never opens the pinned store, discovery takes over (logged)."""
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path / "chats")
+        bridge = tmp_path / "cursor-native" / "sess"
+        bridge.mkdir(parents=True)
+        launch = 1_000  # far in the past: the grace window has long expired
+        fwd.preseed_new_chat_state(bridge, "/ws", self._ID_A, launch)
+        found = tmp_path / "other" / "store.db"
+        found.parent.mkdir(parents=True)
+        _make_store(found, [("u", _user("<user_query>\nhi\n</user_query>"))]).close()
+        calls: list[object] = []
+
+        def _discover(*a: object, **k: object) -> Path:
+            calls.append(a)
+            return found
+
+        monkeypatch.setattr(fwd, "_discover_store", _discover)
+        monkeypatch.setattr(fwd, "_post_conversation_item", _FakePoster(lambda _: None))
+        monkeypatch.setattr(fwd, "_patch_external_session_id", AsyncMock())
+        task = asyncio.create_task(
+            fwd.forward_cursor_store_to_session(
+                base_url="http://test",
+                headers={},
+                session_id="conv_1",
+                bridge_dir=bridge,
+                agent_name="cursor-native-ui",
+                workspace="/ws",
+                launch_epoch_ms=launch,
+                poll_interval_s=0.001,
+            )
+        )
+        for _ in range(2000):
+            if fwd._read_state(bridge).store_path == str(found):
+                break
+            await asyncio.sleep(0.001)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert calls
+        state = fwd._read_state(bridge)
+        assert state.store_path == str(found) and state.pinned is False

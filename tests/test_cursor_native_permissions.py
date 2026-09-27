@@ -1153,3 +1153,58 @@ class _FakeAsyncCM:
 
     async def __aexit__(self, *_exc: object) -> bool:
         return False
+
+
+async def test_supervise_transcript_follows_forwarder_bound_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The approval detector tails the store the forwarder bound/pinned, never its own guess.
+
+    Two same-cwd sessions share one ``md5(cwd)`` chats dir; if the detector
+    discovered independently it could watch the sibling's chat (live
+    2026-09-27 cross-wire). A bound store in the bridge state wins.
+    """
+    from omnigent.harnesses.cursor_native import forwarder as fwd
+
+    bridge = tmp_path / "bridge"
+    bridge.mkdir()
+    mine = tmp_path / "mine" / "store.db"
+    mine.parent.mkdir()
+    mine.write_bytes(b"")
+    fwd._write_state(bridge, fwd._ForwardState(store_path=str(mine), pinned=True))
+    sibling = tmp_path / "sibling.db"
+    sibling.write_bytes(b"")
+    monkeypatch.setattr(cnp, "_discover_store", lambda *_a, **_k: sibling)
+    read: list[Path] = []
+
+    def _read(store: Path) -> list:
+        read.append(store)
+        return []
+
+    monkeypatch.setattr(cnp, "read_cursor_pending_tool_calls", _read)
+
+    class _Client:
+        async def post(self, *_a, **_k):  # pragma: no cover - nothing pending
+            raise AssertionError("no posts expected")
+
+    monkeypatch.setattr(cnp.httpx, "AsyncClient", lambda **_k: _FakeAsyncCM(_Client()))
+    task = asyncio.create_task(
+        cnp.supervise_cursor_transcript_elicitations(
+            base_url="http://x",
+            headers={},
+            session_id="conv_z",
+            bridge_dir=bridge,
+            workspace="/ws",
+            launch_epoch_ms=0,
+            poll_interval_s=0.01,
+            settle_s=0.0,
+        )
+    )
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if read:
+            break
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert read and set(read) == {mine}

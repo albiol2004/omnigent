@@ -1874,6 +1874,99 @@ async def test_auto_create_cursor_terminal_inherits_agent_os_env(
     assert captured["spec"].os_env.sandbox is agent_os_env.sandbox
 
 
+_PINNED_CHAT_ID = "3c2948ec-4186-4042-b096-e5f412b32954"
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_pins_fresh_chat_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh launch mints its chat id up front and resumes into it.
+
+    Same-workspace launches milliseconds apart share one ``md5(cwd)`` chats
+    dir; recency discovery cross-wired them (live 2026-09-27). The runner now
+    runs ``cursor-agent create-chat`` in the workspace, launches the TUI with
+    ``--resume <id>`` and pins the forwarder state to that exact store.
+    """
+    from omnigent.harnesses.cursor_native import forwarder as cursor_fwd
+
+    monkeypatch.setattr(cursor_fwd, "_cursor_chats_root", lambda: tmp_path / "chats")
+    minted: list[tuple[str, str]] = []
+
+    def _fake_create(command: str, workspace: str) -> str:
+        minted.append((command, workspace))
+        return _PINNED_CHAT_ID
+
+    monkeypatch.setattr("omnigent.harnesses.cursor_native.main.create_cursor_chat", _fake_create)
+    captured = await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=None,
+    )
+    args = captured["spec"].args
+    assert args[args.index("--resume") + 1] == _PINNED_CHAT_ID
+    workspace = os.path.realpath(tmp_path / "ws")
+    assert minted == [("cursor-agent", workspace)]
+    bridge_dir = cursor_native_bridge.bridge_dir_for_session_id("c42dbcb16fd3a87ee8f5d1fe4cabfdf8")
+    state = cursor_fwd._read_state(bridge_dir)
+    assert state.pinned is True
+    assert state.store_path == str(cursor_fwd.chat_store_path(workspace, _PINNED_CHAT_ID))
+
+
+@pytest.mark.parametrize(
+    "passthrough",
+    [["--resume", _PINNED_CHAT_ID], ["--continue"], ["--worktree=feat"]],
+    ids=["resume", "continue", "worktree"],
+)
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_skips_pin_when_args_pick_chat(
+    passthrough: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Passthrough args that choose the chat (or its cwd) are never overridden."""
+
+    def _unexpected(*_a: Any, **_k: Any) -> str:
+        raise AssertionError("create-chat must not run when args pick the chat")
+
+    monkeypatch.setattr("omnigent.harnesses.cursor_native.main.create_cursor_chat", _unexpected)
+    captured = await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=passthrough,
+    )
+    args = captured["spec"].args
+    assert args.count("--resume") == passthrough.count("--resume")
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_create_chat_failure_falls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No minted id → no ``--resume``, cleared state, and a logged fallback."""
+    from omnigent.harnesses.cursor_native import forwarder as cursor_fwd
+
+    monkeypatch.setattr(
+        "omnigent.harnesses.cursor_native.main.create_cursor_chat", lambda *_a, **_k: None
+    )
+    with caplog.at_level(logging.WARNING):
+        captured = await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+        )
+    assert "--resume" not in captured["spec"].args
+    bridge_dir = cursor_native_bridge.bridge_dir_for_session_id("c42dbcb16fd3a87ee8f5d1fe4cabfdf8")
+    assert cursor_fwd._read_state(bridge_dir).store_path is None
+    assert "falling back to chat-store discovery" in caplog.text
+
+
 @pytest.mark.parametrize(
     "passthrough",
     [

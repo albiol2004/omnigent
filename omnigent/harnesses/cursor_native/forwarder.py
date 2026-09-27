@@ -96,6 +96,14 @@ _SUPERVISOR_HEALTHY_UPTIME_S = 60.0
 #: writing the chat's ``meta.json`` once the first message lands.
 _DISCOVERY_SKEW_MS = 10_000
 
+#: How long after launch the forwarder waits for a *pinned* chat store (a fresh
+#: launch whose chat id was minted up front with ``cursor-agent create-chat`` and
+#: passed to the TUI as ``--resume <id>``; see :func:`preseed_new_chat_state`)
+#: before it gives up on the pin and falls back to discovery. The TUI opens the
+#: pinned store within ~1 s of starting, so this only fires when cursor ignored
+#: the id (a CLI drift) — then discovery's ownership checks take over.
+_PINNED_STORE_GRACE_MS = 60_000
+
 _STATE_FILE = "cursor_forwarder.json"
 
 # fd-table exhaustion (EMFILE/ENFILE) is an environmental, process-wide
@@ -167,12 +175,17 @@ class _ForwardState:
     :param heartbeat_ms: Wall-clock ms of the last persist. A sibling reads this
         to tell a live owner from a dead session's leftover claim (see
         :func:`_chat_claimed_by_other`). Stamped by :func:`_write_state`.
+    :param pinned: ``True`` when ``store_path`` was fixed at launch from a chat id
+        minted up front (:func:`preseed_new_chat_state`) and may not exist on
+        disk yet. The forwarder then waits for that exact store instead of
+        discovering one by recency.
     """
 
     store_path: str | None = None
     last_rowid: int = 0
     launch_epoch_ms: int = 0
     heartbeat_ms: int = 0
+    pinned: bool = False
 
 
 @dataclass
@@ -208,6 +221,7 @@ def _read_state(bridge_dir: Path) -> _ForwardState:
         last_rowid=last_rowid if isinstance(last_rowid, int) else 0,
         launch_epoch_ms=launch_epoch_ms if isinstance(launch_epoch_ms, int) else 0,
         heartbeat_ms=heartbeat_ms if isinstance(heartbeat_ms, int) else 0,
+        pinned=data.get("pinned") is True,
     )
 
 
@@ -232,6 +246,7 @@ def _write_state(bridge_dir: Path, state: _ForwardState) -> bool:
                     # the chat claim; a peer treats a claim older than
                     # ``_CLAIM_FRESH_MS`` as a dead session it may take over.
                     "heartbeat_ms": int(time.time() * 1000),
+                    "pinned": state.pinned,
                 }
             ),
             encoding="utf-8",
@@ -260,9 +275,14 @@ def clear_cursor_bridge_state(bridge_dir: Path) -> None:
 def _chat_claimed_by_other(bridge_dir: Path, store_path: Path, my_launch_ms: int) -> bool:
     """Whether another LIVE session is already mirroring *store_path*.
 
-    cursor keeps one chat per working directory, so two cursor-native sessions
-    launched in the same cwd discover the SAME store — without this guard both
-    would mirror it into two separate conversations (the duplicate-session bug).
+    Sessions in one cwd share one ``md5(cwd)`` chats dir (each with its own
+    chat), and a resumed or discovered store can still be named by two bridge
+    dirs — without this guard both would mirror it into two separate
+    conversations (the duplicate-session bug). It only protects a chat whose
+    real owner binds FIRST; it does not stop a session from binding a sibling's
+    chat that nobody has claimed yet — deterministic pinning
+    (:func:`preseed_new_chat_state`) and pane ownership in
+    :func:`_discover_store` cover that.
     A sibling bridge dir under the same root claims the chat when its persisted
     state names the same store with a heartbeat fresher than ``_CLAIM_FRESH_MS``.
     Ties resolve toward the EARLIER-launched session (then the lexicographically
@@ -377,6 +397,63 @@ def preseed_resume_state(
         ),
     )
     return True
+
+
+def chat_store_path(workspace: str, chat_id: str) -> Path:
+    """Return where cursor keeps *chat_id*'s store for a TUI run in *workspace*."""
+    return _cursor_chats_root() / _workspace_hash(workspace) / chat_id / "store.db"
+
+
+def preseed_new_chat_state(
+    bridge_dir: Path,
+    workspace: str,
+    chat_id: str,
+    launch_epoch_ms: int,
+) -> Path:
+    """Pin a FRESH launch to the chat id minted for it before the TUI starts.
+
+    The runner mints a chat id with ``cursor-agent create-chat`` and launches the
+    TUI with ``--resume <id>``. ``create-chat`` only returns the id — it writes
+    nothing under ``~/.cursor/chats`` — and the TUI creates
+    ``<md5(cwd)>/<id>/store.db`` when it starts (verified live against
+    2026.09.26-dd393fe). So unlike :func:`preseed_resume_state` the store may
+    not exist yet: the state is written ``pinned`` with ``last_rowid=0`` and the
+    forwarder waits for that exact store instead of discovering one by recency.
+
+    This is what makes same-workspace launches deterministic: two sessions
+    started milliseconds apart in one cwd share one ``md5(cwd)`` chats dir, and
+    recency discovery could hand each the other's chat. With a pinned id there
+    is nothing to guess.
+
+    :param bridge_dir: Per-session bridge directory.
+    :param workspace: Realpath-normalised workspace (the TUI's cwd).
+    :param chat_id: The minted, validated cursor chat id.
+    :param launch_epoch_ms: Wall-clock ms of this terminal launch.
+    :returns: The pinned store path.
+    """
+    store_path = chat_store_path(workspace, chat_id)
+    _write_state(
+        bridge_dir,
+        _ForwardState(
+            store_path=str(store_path),
+            last_rowid=0,
+            launch_epoch_ms=launch_epoch_ms,
+            pinned=True,
+        ),
+    )
+    return store_path
+
+
+def bound_store_path(bridge_dir: Path) -> Path | None:
+    """Return the store this session's forwarder is bound (or pinned) to, if any.
+
+    Sibling tailers of the same chat (the tool-approval detector) follow this
+    instead of running their own discovery, so they can never pick a different
+    chat than the one the forwarder mirrors. The path may not exist yet for a
+    freshly pinned launch.
+    """
+    store_path = _read_state(bridge_dir).store_path
+    return Path(store_path) if store_path else None
 
 
 def _cursor_chats_root() -> Path:
@@ -1263,9 +1340,11 @@ async def forward_cursor_store_to_session(
 ) -> None:
     """Tail the cursor chat store and mirror new messages into the AP session.
 
-    Discovers this session's store (newest chat under ``md5(workspace)`` created
-    at/after ``launch_epoch_ms``), then polls it, posting each new user/assistant
-    message as an ``external_conversation_item``. The high-water rowid is
+    Binds this session's store — the pinned/pre-seeded one from the bridge state
+    when the runner fixed it at launch (fresh ``create-chat`` pin or cold
+    resume), otherwise by discovery (see :func:`_discover_store`) — then polls
+    it, posting each new user/assistant message as an
+    ``external_conversation_item``. The high-water rowid is
     persisted to ``bridge_dir`` so a supervisor restart resumes without
     re-posting; if discovery resolves a *different* store than the persisted one
     (a cold resume relaunched a fresh chat), the cursor resets to that store.
@@ -1349,7 +1428,29 @@ async def forward_cursor_store_to_session(
                     # launch-recency filter would miss a store created before this
                     # launch. For a normal fresh start the persisted path is absent
                     # (bridge state was cleared) and we fall through to discovery.
-                    if persisted.store_path and Path(persisted.store_path).exists():
+                    pinned_waiting = (
+                        persisted.pinned
+                        and persisted.store_path is not None
+                        and not Path(persisted.store_path).exists()
+                    )
+                    if pinned_waiting and (
+                        int(time.time() * 1000) - launch_epoch_ms > _PINNED_STORE_GRACE_MS
+                    ):
+                        _logger.warning(
+                            "cursor-native: pinned chat store %s never appeared within "
+                            "%d ms of launch; falling back to discovery (session=%s)",
+                            persisted.store_path,
+                            _PINNED_STORE_GRACE_MS,
+                            session_id,
+                        )
+                        persisted = _ForwardState()
+                        pinned_waiting = False
+                    if pinned_waiting:
+                        # A fresh launch pinned to a pre-minted chat id: wait for
+                        # the TUI to open exactly that store. Never discover —
+                        # recency discovery is what cross-wired same-cwd sessions.
+                        pass
+                    elif persisted.store_path and Path(persisted.store_path).exists():
                         store_path = Path(persisted.store_path)
                         last_rowid = persisted.last_rowid
                         _write_state(
@@ -1403,11 +1504,11 @@ async def forward_cursor_store_to_session(
                                 )
                                 chat_id_patched = True
                 if store_path is not None and store_path.exists():
-                    # cursor keeps ONE chat per working dir, so two cursor-native
-                    # sessions launched in the same cwd discover the same store.
-                    # Yield to an earlier-launched live session rather than mirror
-                    # the same chat into a second conversation (the duplicate-
-                    # session bug); the released store is re-evaluated next poll.
+                    # Several sessions can share one cwd (one ``md5(cwd)`` chats
+                    # dir, one chat per session). If another live, earlier-
+                    # launched session already mirrors this exact store, yield
+                    # rather than mirror it into a second conversation (the
+                    # duplicate-session bug); re-evaluated next poll.
                     if await asyncio.to_thread(
                         _chat_claimed_by_other, bridge_dir, store_path, launch_epoch_ms
                     ):

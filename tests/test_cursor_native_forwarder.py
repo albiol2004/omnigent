@@ -316,14 +316,51 @@ class TestDiscoverStore:
         (chat / "meta.json").write_text(json.dumps(meta))
         return chat / "store.db"
 
-    def test_picks_newest_chat_at_or_after_launch(
+    def test_binds_unique_chat_at_or_after_launch(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
         ws = "/home/u/proj"
-        self._seed_chat(tmp_path, ws, "old", 1_000)
-        newest = self._seed_chat(tmp_path, ws, "new", 5_000)
-        assert fwd._discover_store(ws, launch_epoch_ms=4_000) == newest
+        self._seed_chat(tmp_path, ws, "old", 1_000)  # before launch - skew
+        mine = self._seed_chat(tmp_path, ws, "new", 25_000)
+        assert fwd._discover_store(ws, launch_epoch_ms=20_000) == mine
+
+    def test_two_chats_in_window_without_ownership_is_ambiguous(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same-cwd sessions each create a chat in one md5(cwd) dir: never take
+        the newest when ownership cannot be observed (the 2026-09-27 cross-wire
+        bound a sibling's chat exactly that way)."""
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = "/home/u/proj"
+        self._seed_chat(tmp_path, ws, "a", 5_000, cwd=ws)
+        self._seed_chat(tmp_path, ws, "b", 5_080, cwd=ws)
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000) is None
+
+    def test_held_store_selects_own_chat_among_many(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = "/home/u/proj"
+        a = self._seed_chat(tmp_path, ws, "a", 5_000, cwd=ws)
+        b = self._seed_chat(tmp_path, ws, "b", 5_080, cwd=ws)
+        held = frozenset({str(a.resolve())})
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000, held_stores=held) == a
+        held = frozenset({str(b.resolve())})
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000, held_stores=held) == b
+
+    def test_held_nothing_never_binds_the_only_sibling_chat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B polls while only A's chat exists: with ownership evidence showing B's
+        pane holds no store yet, the lone candidate is NOT B's."""
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = "/home/u/proj"
+        self._seed_chat(tmp_path, ws, "a", 5_000, cwd=ws)
+        assert fwd._discover_store(ws, launch_epoch_ms=4_080, held_stores=frozenset()) is None
+        # A store held open elsewhere (not a candidate) is not bound either.
+        other = frozenset({str(tmp_path / "elsewhere" / "store.db")})
+        assert fwd._discover_store(ws, launch_epoch_ms=4_080, held_stores=other) is None
 
     def test_excludes_chats_created_before_launch(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -467,9 +504,11 @@ class TestStateRoundTrip:
 class TestChatClaim:
     """``_chat_claimed_by_other`` keeps one cursor chat → one mirroring session.
 
-    cursor keeps one chat per working dir, so two cursor-native sessions in the
-    same cwd discover the same store; this guard stops both from mirroring it
-    into two conversations (the duplicate-session bug).
+    Sessions in one cwd share one ``md5(cwd)`` chats dir (a chat each); when two
+    bridge dirs still name the SAME store (a resume, a discovery race) this
+    guard stops both from mirroring it into two conversations (the
+    duplicate-session bug). It does not decide ownership of an unclaimed chat —
+    pinning and pane ownership in discovery do.
     """
 
     def test_yields_to_earlier_live_session(self, tmp_path: Path) -> None:
@@ -1638,7 +1677,7 @@ class TestSameCwdConcurrentLaunches:
             assert discover_calls == []
 
     @pytest.mark.parametrize("first", ["A", "B"], ids=["a-polls-first", "b-polls-first"])
-    @pytest.mark.parametrize("mode", ["preseed"])
+    @pytest.mark.parametrize("mode", ["preseed", "pane"])
     @pytest.mark.asyncio
     async def test_each_session_binds_its_own_chat(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: str, mode: str
@@ -1724,3 +1763,49 @@ class TestSameCwdConcurrentLaunches:
         assert calls
         state = fwd._read_state(bridge)
         assert state.store_path == str(found) and state.pinned is False
+
+
+class TestPaneHeldStores:
+    """``_pane_held_stores`` reads the pane process tree's open ``store.db`` fds."""
+
+    @staticmethod
+    def _proc(root: Path, pid: int, ppid: int, fds: dict[str, Path]) -> None:
+        d = root / str(pid)
+        (d / "fd").mkdir(parents=True)
+        (d / "stat").write_text(f"{pid} (node (x)) S {ppid} 1 1 0 -1\n")
+        for n, target in fds.items():
+            (d / "fd" / n).symlink_to(target)
+
+    def test_reads_store_held_by_pane_descendant(self, tmp_path: Path) -> None:
+        from omnigent.harnesses.cursor_native.bridge import write_tmux_target
+
+        proc = tmp_path / "proc"
+        store = tmp_path / "chats" / "h" / "id" / "store.db"
+        store.parent.mkdir(parents=True)
+        store.write_bytes(b"")
+        other = tmp_path / "chats" / "h" / "sibling" / "store.db"
+        other.parent.mkdir(parents=True)
+        other.write_bytes(b"")
+        self._proc(proc, 100, 1, {"3": tmp_path / "chats"})  # pane (wrapper)
+        self._proc(proc, 101, 100, {"40": store, "41": Path(str(store) + "-wal")})  # TUI
+        self._proc(proc, 200, 1, {"40": other})  # a sibling session's TUI
+        bridge = tmp_path / "bridge"
+        write_tmux_target(bridge, socket_path=tmp_path / "s.sock", tmux_target="t", pid=100)
+        assert fwd._pane_held_stores(bridge, proc=proc) == frozenset({str(store.resolve())})
+
+    def test_unknown_without_pane_pid_or_proc(self, tmp_path: Path) -> None:
+        bridge = tmp_path / "bridge"
+        bridge.mkdir()
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        assert fwd._pane_held_stores(bridge, proc=proc) is None  # no tmux.json
+        assert fwd._pane_held_stores(bridge, proc=tmp_path / "missing") is None
+
+    def test_empty_while_tui_has_no_store_open(self, tmp_path: Path) -> None:
+        from omnigent.harnesses.cursor_native.bridge import write_tmux_target
+
+        proc = tmp_path / "proc"
+        self._proc(proc, 100, 1, {})
+        bridge = tmp_path / "bridge"
+        write_tmux_target(bridge, socket_path=tmp_path / "s.sock", tmux_target="t", pid=100)
+        assert fwd._pane_held_stores(bridge, proc=proc) == frozenset()

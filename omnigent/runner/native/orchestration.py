@@ -2908,8 +2908,11 @@ async def _auto_create_cursor_terminal(
         arm_completion_receipts,
         bridge_dir_for_session_id,
         check_cursor_launch_admission,
+        live_foreign_config_bridges,
         prepare_completion_receipts,
+        read_bridge_owner,
         user_mcp_has_omnigent_server,
+        write_bridge_owner,
         write_fork_preamble,
         write_hooks_config,
         write_mcp_config,
@@ -3068,6 +3071,31 @@ async def _auto_create_cursor_terminal(
                 "cursor-native: could not build fork history preamble (session=%s).",
                 session_id,
                 exc_info=True,
+                extra={"session_id": session_id},
+            )
+    # ``.cursor/hooks.json`` / ``mcp.json`` hold ONE bridge dir per workspace:
+    # a same-workspace launch re-points both at itself and the sibling's stop
+    # hook (usage / idle / receipts) and MCP tools silently follow. Not refused
+    # (non-isolated Trio runs share a workspace), but make it loud.
+    write_bridge_owner(bridge_dir, session_id)
+    for config_name, siblings in (
+        await asyncio.to_thread(live_foreign_config_bridges, Path(workspace), bridge_dir)
+    ).items():
+        for sibling in siblings:
+            _logger.warning(
+                "cursor-native: workspace %s .cursor/%s is bound to LIVE session %s "
+                "(bridge %s); this launch (session=%s, bridge %s) overwrites it, so that "
+                "session's %s now route here. Use a separate worktree per concurrent "
+                "session to avoid this.",
+                workspace,
+                config_name,
+                read_bridge_owner(sibling) or "<unknown>",
+                sibling,
+                session_id,
+                bridge_dir,
+                "stop hooks (usage, turn-end idle, receipts)"
+                if config_name == "hooks.json"
+                else "Omnigent MCP tools",
                 extra={"session_id": session_id},
             )
     # Skipped when the project mcp.json is the user one (workspace == HOME): a

@@ -1915,6 +1915,53 @@ async def test_auto_create_cursor_terminal_pins_fresh_chat_id(
     assert state.store_path == str(cursor_fwd.chat_store_path(workspace, _PINNED_CHAT_ID))
 
 
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_warns_on_live_same_workspace_sibling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A launch that overwrites a LIVE sibling's hooks/MCP slot says so, naming both.
+
+    ``.cursor/hooks.json`` / ``mcp.json`` hold one bridge dir per workspace, so
+    same-workspace sessions are last-writer-wins (live 2026-09-27: both TUIs'
+    stop hooks landed in one bridge dir). Not refused — only made loud.
+    """
+    import time as _time
+
+    sibling = tmp_path / "cursor-bridge" / "sibling"
+    sibling.mkdir(parents=True)
+    cursor_native_bridge.write_bridge_owner(sibling, "conv_sibling")
+    (sibling / "cursor_forwarder.json").write_text(
+        json.dumps({"heartbeat_ms": int(_time.time() * 1000)})
+    )
+
+    def _bind_to_sibling(workspace: Path) -> None:
+        (workspace / ".cursor").mkdir(exist_ok=True)
+        (workspace / ".cursor" / "hooks.json").write_text(
+            json.dumps(cursor_native_bridge.build_hooks_config(sibling))
+        )
+        (workspace / ".cursor" / "mcp.json").write_text(
+            json.dumps(cursor_native_bridge.build_mcp_config(sibling))
+        )
+
+    with caplog.at_level(logging.WARNING):
+        await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+            prepare_workspace=_bind_to_sibling,
+        )
+    collisions = [
+        r.getMessage() for r in caplog.records if "is bound to LIVE session" in r.message
+    ]
+    assert len(collisions) == 2, collisions
+    assert all("conv_sibling" in m and "c42dbcb16fd3a87ee8f5d1fe4cabfdf8" in m for m in collisions)
+    assert any(".cursor/hooks.json" in m for m in collisions)
+    assert any(".cursor/mcp.json" in m for m in collisions)
+
+
 @pytest.mark.parametrize(
     "passthrough",
     [["--resume", _PINNED_CHAT_ID], ["--continue"], ["--worktree=feat"]],

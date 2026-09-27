@@ -368,6 +368,21 @@ def frozen_recurrence_clock(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_real_cursor_chat_minting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Keep cursor-native launches from running ``cursor-agent create-chat``.
+
+    Launch tests stub the executable as a bare ``cursor-agent``, which resolves
+    to a real CLI on a developer box; minting would hit Cursor's servers and
+    change the launch argv (``--resume <id>``). Tests that cover the pin clear
+    this and inject a fake ``run``.
+
+    :returns: None.
+    """
+    monkeypatch.setenv("OMNIGENT_CURSOR_PIN_CHAT", "0")
+
+
+@pytest.fixture(autouse=True)
 def _reset_runner_catalog_cache() -> Generator[None, None, None]:
     """
     Clear smart routing's per-session runner-catalog cache after every test.

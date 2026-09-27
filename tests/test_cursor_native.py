@@ -306,3 +306,75 @@ class TestIsValidCursorChatId:
     )
     def test_rejects_malformed_or_empty(self, chat_id: str | None) -> None:
         assert cursor_native.is_valid_cursor_chat_id(chat_id) is False
+
+
+class TestCreateCursorChat:
+    """``create_cursor_chat`` mints a pinned chat id or degrades to ``None``."""
+
+    _ID = "3c2948ec-4186-4042-b096-e5f412b32954"
+
+    @staticmethod
+    def _runner(stdout: str = "", rc: int = 0, exc: Exception | None = None):
+        import subprocess
+
+        calls: list[dict[str, Any]] = []
+
+        def _run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            calls.append({"argv": argv, **kwargs})
+            if exc is not None:
+                raise exc
+            return subprocess.CompletedProcess(argv, rc, stdout=stdout, stderr="")
+
+        return _run, calls
+
+    def test_returns_printed_uuid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(cursor_native.CURSOR_PIN_CHAT_ENV, raising=False)
+        run, calls = self._runner(stdout=f"{self._ID}\n")
+        assert cursor_native.create_cursor_chat("/bin/cursor-agent", "/ws", run=run) == self._ID
+        assert calls[0]["argv"] == ["/bin/cursor-agent", "create-chat"]
+        assert calls[0]["cwd"] == "/ws"
+
+    @pytest.mark.parametrize(
+        ("stdout", "rc", "exc"),
+        [
+            ("", 0, None),
+            ("not-a-uuid\n", 0, None),
+            ("3c2948ec-4186-4042-b096-e5f412b32954\n", 1, None),
+            ("error: unknown command 'create-chat'\n", 1, None),
+            ("", 0, OSError("no such file")),
+            ("", 0, __import__("subprocess").TimeoutExpired(["x"], 20)),
+        ],
+        ids=["empty", "garbage", "nonzero-rc", "old-cli", "oserror", "timeout"],
+    )
+    def test_failures_return_none(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        stdout: str,
+        rc: int,
+        exc: Exception | None,
+    ) -> None:
+        monkeypatch.delenv(cursor_native.CURSOR_PIN_CHAT_ENV, raising=False)
+        run, _calls = self._runner(stdout=stdout, rc=rc, exc=exc)
+        assert cursor_native.create_cursor_chat("cursor-agent", "/ws", run=run) is None
+
+    def test_kill_switch_skips_the_cli(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(cursor_native.CURSOR_PIN_CHAT_ENV, "0")
+        run, calls = self._runner(stdout=f"{self._ID}\n")
+        assert cursor_native.create_cursor_chat("cursor-agent", "/ws", run=run) is None
+        assert calls == []
+
+    @pytest.mark.parametrize(
+        ("args", "selects"),
+        [
+            ([], False),
+            (["--model", "gpt-5", "--yolo"], False),
+            (["--resume", "x"], True),
+            (["--resume=x"], True),
+            (["--continue"], True),
+            (["-w"], True),
+            (["--worktree=feat"], True),
+            (["--workspace", "/elsewhere"], True),
+        ],
+    )
+    def test_launch_args_select_chat(self, args: list[str], selects: bool) -> None:
+        assert cursor_native.launch_args_select_chat(args) is selects

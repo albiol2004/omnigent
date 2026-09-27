@@ -89,6 +89,84 @@ def is_valid_cursor_chat_id(chat_id: str | None) -> bool:
     return chat_id is not None and _CURSOR_CHAT_ID_RE.fullmatch(chat_id) is not None
 
 
+#: Operator/test kill switch: ``0`` skips the ``create-chat`` pin (fresh
+#: launches then rely on store discovery). The test suite sets it so no test can
+#: mint real cursor chats through a ``cursor-agent`` on PATH.
+CURSOR_PIN_CHAT_ENV = "OMNIGENT_CURSOR_PIN_CHAT"
+
+#: Budget for ``cursor-agent create-chat`` (a server round trip; ~2 s live).
+_CREATE_CHAT_TIMEOUT_S = 20.0
+
+#: Passthrough flags that pick the chat or the cwd themselves; a pre-minted chat
+#: id would fight them (``--resume``/``--continue``) or hash under a different
+#: cwd than the pinned store path (``--worktree``/``--workspace``).
+_CHAT_SELECTING_FLAGS = ("--resume", "--continue", "-w", "--worktree", "--workspace")
+
+
+def launch_args_select_chat(args: Sequence[str]) -> bool:
+    """Whether passthrough *args* already choose the chat or the chat's cwd."""
+    return any(
+        arg == flag or arg.startswith(f"{flag}=") for arg in args for flag in _CHAT_SELECTING_FLAGS
+    )
+
+
+def create_cursor_chat(
+    command: str,
+    workspace: str,
+    *,
+    timeout_s: float = _CREATE_CHAT_TIMEOUT_S,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> str | None:
+    """Mint a new empty cursor chat id with ``cursor-agent create-chat``.
+
+    The runner passes the id to the TUI as ``--resume <id>`` so the session's
+    chat store is known before the TUI starts, instead of being guessed by
+    launch recency (which cross-wired two sessions launched milliseconds apart
+    in one workspace). Verified live (cursor-agent 2026.09.26-dd393fe):
+    ``create-chat`` prints the bare UUID on stdout and writes nothing under
+    ``~/.cursor/chats``; ``cursor-agent --resume <id>`` then creates
+    ``~/.cursor/chats/<md5(cwd)>/<id>/store.db`` at startup, before any message.
+
+    Best-effort: any failure (missing subcommand on an older CLI, auth or
+    network error, timeout, unexpected output) is logged and returns ``None``;
+    the caller then falls back to store discovery.
+
+    :param command: Resolved cursor-agent executable.
+    :param workspace: The TUI's cwd (run there so any cwd-scoped state matches).
+    :param timeout_s: Subprocess budget in seconds.
+    :param run: ``subprocess.run`` indirection for tests.
+    :returns: The validated chat id, or ``None``.
+    """
+    if os.environ.get(CURSOR_PIN_CHAT_ENV, "").strip() == "0":
+        _logger.info("cursor-native: %s=0; not minting a chat id", CURSOR_PIN_CHAT_ENV)
+        return None
+    try:
+        proc = run(
+            [command, "create-chat"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _logger.warning("cursor-native: `%s create-chat` failed to run: %s", command, exc)
+        return None
+    lines = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+    chat_id = lines[-1] if lines else None
+    if proc.returncode != 0 or not is_valid_cursor_chat_id(chat_id):
+        _logger.warning(
+            "cursor-native: `%s create-chat` gave no usable chat id (rc=%s, stdout=%r, stderr=%r)",
+            command,
+            proc.returncode,
+            (proc.stdout or "")[-200:],
+            (proc.stderr or "")[-200:],
+        )
+        return None
+    return chat_id
+
+
 _AGENT_NAME = "cursor-native-ui"
 _TERMINAL_NAME = "cursor"
 _TERMINAL_SESSION_KEY = "main"

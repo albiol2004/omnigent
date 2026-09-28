@@ -517,6 +517,7 @@ def live_foreign_config_bridges(
     bridge_dir: Path,
     *,
     is_live: Callable[[Path], bool] | None = None,
+    launch_grace: bool = False,
 ) -> dict[str, list[Path]]:
     """Find LIVE sibling sessions whose hooks/MCP slot this launch would overwrite.
 
@@ -529,10 +530,12 @@ def live_foreign_config_bridges(
     :param bridge_dir: This launch's bridge dir (never reported).
     :param is_live: Liveness probe for a bridge dir (tests); defaults to a fresh
         forwarder heartbeat or a live tmux pane.
+    :param launch_grace: Also count a sibling launched within
+        :data:`_LAUNCH_GRACE_S` (the plugin route keeps those entries).
     :returns: ``{config file name: [live foreign bridge dirs]}``, only non-empty
         entries.
     """
-    probe = is_live or _bridge_session_live
+    probe = is_live or (_bridge_live_or_launching if launch_grace else _bridge_session_live)
     result: dict[str, list[Path]] = {}
     for name, bridges in _config_bridge_dirs(workspace).items():
         live = [
@@ -825,9 +828,22 @@ def check_plugin_route_launch(
 
 
 def _write_json_atomic(path: Path, payload: _JsonObject) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    # A per-writer tmp name: concurrent first launches in one workspace must not
+    # rename each other's half-written file.
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        mode = 0o644
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def write_cursor_plugin(
@@ -890,9 +906,35 @@ def is_plugin_stop_armer(entry: object) -> bool:
     )
 
 
-def _owned_bridge_is_live(bridge: str, is_live: Callable[[Path], bool] | None) -> bool:
+#: A bridge whose owner file (written first by every launch, before any
+#: ``.cursor`` config) is this recent counts as live: its session may be
+#: mid-launch, with hooks written but no forwarder heartbeat or tmux target yet.
+_LAUNCH_GRACE_S = 120.0
+
+
+def _bridge_live_or_launching(bridge_dir: Path) -> bool:
+    """:func:`_bridge_session_live`, or launched within :data:`_LAUNCH_GRACE_S`."""
+    if _bridge_session_live(bridge_dir):
+        return True
+    try:
+        written = (bridge_dir / _BRIDGE_OWNER_FILE).stat().st_mtime
+    except OSError:
+        return False
+    return time.time() - written <= _LAUNCH_GRACE_S
+
+
+def _owned_bridge_is_live(
+    bridge: str, is_live: Callable[[Path], bool] | None, own_bridge: Path | None = None
+) -> bool:
+    """Whether an Omnigent entry bound to *bridge* must be kept for a sibling.
+
+    Entries bound to *own_bridge* (this launch's earlier project-route config)
+    are never kept: this launch replaces them with its plugin.
+    """
+    if own_bridge is not None and _same_path(bridge, own_bridge):
+        return False
     path = Path(bridge)
-    return path.is_dir() and (is_live or _bridge_session_live)(path)
+    return path.is_dir() and (is_live or _bridge_live_or_launching)(path)
 
 
 def write_plugin_stop_armer(
@@ -900,6 +942,7 @@ def write_plugin_stop_armer(
     *,
     home: Path | None = None,
     is_live: Callable[[Path], bool] | None = None,
+    own_bridge: Path | None = None,
 ) -> Path | None:
     """Make cursor-agent dispatch ``stop`` to plugin hooks in *workspace*.
 
@@ -908,9 +951,10 @@ def write_plugin_stop_armer(
     merges one constant no-op entry (:data:`PLUGIN_STOP_ARMER_COMMAND`) into the
     project ``hooks.json``; it is identical for every session, so concurrent
     launches write the same bytes. Omnigent usage hooks left by earlier
-    project-route launches are dropped unless their session is still live
-    (a live one keeps working and is reported by
-    :func:`live_foreign_config_bridges`). Other hooks are preserved.
+    project-route launches are dropped unless their session is still live or
+    launched within :data:`_LAUNCH_GRACE_S` (a live one keeps working and is
+    reported by :func:`live_foreign_config_bridges`); one bound to *own_bridge*
+    is always dropped. Other hooks are preserved.
 
     :returns: The written path, or ``None`` (nothing written) when the project
         file is the user file (:func:`shared_hooks_scope_reason`).
@@ -939,7 +983,7 @@ def write_plugin_stop_armer(
                     bridge = _arg_after(shlex.split(str(entry.get("command"))), "--bridge-dir")
                 except ValueError:
                     bridge = None
-                if bridge is None or not _owned_bridge_is_live(bridge, is_live):
+                if bridge is None or not _owned_bridge_is_live(bridge, is_live, own_bridge):
                     continue
             kept.append(entry)
         hooks[event] = kept
@@ -958,6 +1002,7 @@ def remove_stale_workspace_mcp_server(
     *,
     home: Path | None = None,
     is_live: Callable[[Path], bool] | None = None,
+    own_bridge: Path | None = None,
 ) -> bool:
     """Drop a dead session's ``omnigent`` server from the project ``mcp.json``.
 
@@ -965,7 +1010,8 @@ def remove_stale_workspace_mcp_server(
     earlier project-route launch left there would still load next to this
     session's plugin server and route to that old bridge. Removes the entry
     only when it has Omnigent's shape (``serve-mcp --bridge-dir``) and its
-    session is not live. The file is rewritten, never deleted (it may be
+    session is neither live nor launching (see :func:`write_plugin_stop_armer`;
+    *own_bridge* always counts as stale). The file is rewritten, never deleted (it may be
     tracked): with no other server left it holds ``{"mcpServers": {}}``.
     Never touches the user file (:func:`shared_mcp_scope_reason`).
 
@@ -987,7 +1033,7 @@ def remove_stale_workspace_mcp_server(
     if not isinstance(args, list) or "serve-mcp" not in args:
         return False
     bridge = _arg_after(args, "--bridge-dir")
-    if bridge is not None and _owned_bridge_is_live(bridge, is_live):
+    if bridge is not None and _owned_bridge_is_live(bridge, is_live, own_bridge):
         return False
     del servers[_MCP_SERVER_NAME]
     # Never unlink: the file may be tracked (a deletion is a foreign ``D`` change

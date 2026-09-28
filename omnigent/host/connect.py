@@ -715,6 +715,12 @@ _RUNNER_ENV_ALLOWLIST: frozenset[str] = frozenset(
         "OMNIGENT_CLAUDE_CODE_ENTRYPOINT",
         # Claude-family background-title model override (a model alias). Not a secret.
         "OMNIGENT_BACKGROUND_TITLE_CLAUDE_MODEL",
+        # cursor-native per-launch ``--plugin-dir`` route switch (read by
+        # omnigent.harnesses.cursor_native.bridge.plugin_dir_mode_enabled in the
+        # runner's ``_auto_create_cursor_terminal``). Set on the host service,
+        # it must reach the runner or the route silently stays off. Not a
+        # secret — a plain boolean.
+        "OMNIGENT_CURSOR_PLUGIN_DIR",
         # Testing knob: override the context window size for compaction
         # trigger threshold. Not a secret — a plain integer.
         "AP_CONTEXT_WINDOW_OVERRIDE",

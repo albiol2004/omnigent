@@ -76,6 +76,10 @@ _USAGE_HOOK_MODULE = "omnigent.harnesses.cursor_native.usage"
 _MCP_SERVER_NAME = "omnigent"
 #: Env flag enabling the per-launch ``--plugin-dir`` config route (default off).
 PLUGIN_DIR_ENV_VAR = "OMNIGENT_CURSOR_PLUGIN_DIR"
+#: Config-file switch for the same route: ``cursor_native: {plugin_dir: true}``.
+PLUGIN_DIR_CONFIG_SECTION = "cursor_native"
+PLUGIN_DIR_CONFIG_KEY = "plugin_dir"
+_TRUTHY_FLAG_VALUES = frozenset({"1", "true", "yes", "on"})
 #: Plugin directory name. cursor-agent names a ``--plugin-dir`` plugin's MCP
 #: servers ``plugin-<directory basename>-<server>`` (not the manifest ``name``),
 #: so a constant basename keeps the server id -- and the ``Mcp(<id>:<tool>)``
@@ -645,14 +649,43 @@ def write_hooks_config(
     return path
 
 
-def plugin_dir_mode_enabled(env: Mapping[str, str] | None = None) -> bool:
+def plugin_dir_mode_enabled(
+    env: Mapping[str, str] | None = None,
+    config: Mapping[str, object] | None = None,
+) -> bool:
     """Whether launches use the per-launch ``--plugin-dir`` config route.
 
-    Opt-in via ``OMNIGENT_CURSOR_PLUGIN_DIR`` (``1``/``true``/``yes``/``on``);
-    off by default, which keeps the project ``.cursor/{hooks,mcp}.json`` route.
+    Off by default, which keeps the project ``.cursor/{hooks,mcp}.json`` route.
+    Read in the runner at every cursor launch. A non-empty
+    ``OMNIGENT_CURSOR_PLUGIN_DIR`` decides (``1``/``true``/``yes``/``on`` enable,
+    anything else, e.g. ``0``, disables); unset or empty falls back to the user
+    config (``~/.omnigent/config.yaml``, or ``$OMNIGENT_CONFIG_HOME``)::
+
+        cursor_native:
+          plugin_dir: true
+
+    The config switch needs no host restart; the env var must be set on the
+    host service (the runner env is allowlisted from it).
+
+    :param env: Environment to read (default ``os.environ``).
+    :param config: User config mapping (default: loaded from disk; a missing
+        or unreadable file counts as unset).
     """
-    value = (os.environ if env is None else env).get(PLUGIN_DIR_ENV_VAR, "")
-    return value.strip().casefold() in {"1", "true", "yes", "on"}
+    value = (os.environ if env is None else env).get(PLUGIN_DIR_ENV_VAR, "").strip()
+    if value:
+        return value.casefold() in _TRUTHY_FLAG_VALUES
+    if config is None:
+        try:
+            from omnigent.config import load_global_config
+
+            config = load_global_config()
+        except Exception:  # noqa: BLE001 — a bad config must not break the launch
+            return False
+    section = config.get(PLUGIN_DIR_CONFIG_SECTION) if isinstance(config, Mapping) else None
+    setting = section.get(PLUGIN_DIR_CONFIG_KEY) if isinstance(section, Mapping) else None
+    if isinstance(setting, str):
+        return setting.strip().casefold() in _TRUTHY_FLAG_VALUES
+    return setting is True
 
 
 def plugin_dir_for_bridge(bridge_dir: Path) -> Path:

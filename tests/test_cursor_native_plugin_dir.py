@@ -206,12 +206,34 @@ class TestRemoveStaleWorkspaceMcpServer:
         path.write_text(json.dumps({"mcpServers": servers}))
         return path
 
-    def test_removes_dead_entry_and_empty_file(self, tmp_path: Path) -> None:
+    def test_dead_only_entry_leaves_empty_servers_untracked(self, tmp_path: Path) -> None:
         ws = tmp_path / "ws"
         dead = tmp_path / "cb" / "dead"
         path = self._write(ws, dict(cb.build_mcp_config(dead)["mcpServers"]))  # type: ignore[arg-type]
         assert cb.remove_stale_workspace_mcp_server(ws, home=tmp_path / "home") is True
-        assert not path.exists()
+        assert json.loads(path.read_text()) == {"mcpServers": {}}
+
+    def test_tracked_file_is_never_deleted(self, tmp_path: Path) -> None:
+        """A committed mcp.json holding only a dead entry is stripped, not deleted.
+
+        A deletion shows as `` D .cursor/mcp.json`` and Trio refuses the
+        aggregate as a foreign change; a stripped file is a plain modification.
+        """
+        import subprocess
+
+        ws = tmp_path / "ws"
+        dead = tmp_path / "cb" / "dead"
+        path = self._write(ws, dict(cb.build_mcp_config(dead)["mcpServers"]))  # type: ignore[arg-type]
+        git = ["git", "-C", str(ws), "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run([*git, "init", "-q"], check=True)
+        subprocess.run([*git, "add", ".cursor/mcp.json"], check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "init"], check=True)
+        assert cb.remove_stale_workspace_mcp_server(ws, home=tmp_path / "home") is True
+        assert json.loads(path.read_text()) == {"mcpServers": {}}
+        status = subprocess.run(
+            [*git, "status", "--porcelain"], check=True, capture_output=True, text=True
+        ).stdout
+        assert status.splitlines() == [" M .cursor/mcp.json"]
 
     def test_keeps_other_servers(self, tmp_path: Path) -> None:
         ws = tmp_path / "ws"

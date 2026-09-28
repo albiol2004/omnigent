@@ -1126,7 +1126,20 @@ def _stop_hooks_hold_reason(
         return f"hooks_config_malformed:{path}"
     if not isinstance(data, dict):
         return f"hooks_config_malformed:{path}"
-    hooks = data.get("hooks")
+    return _stop_hooks_data_hold_reason(
+        data.get("hooks"), str(path), owned_bridge=owned_bridge, stale_ok=stale_ok
+    )
+
+
+def _stop_hooks_data_hold_reason(
+    hooks: object, label: str, *, owned_bridge: Path | None = None, stale_ok: bool = False
+) -> str | None:
+    """:func:`_stop_hooks_hold_reason` on an already-parsed ``hooks`` event map.
+
+    *label* names the source in the returned reason (a path, or a plugin
+    manifest's inline ``hooks``).
+    """
+    path = label
     if hooks is None:
         return None
     if not isinstance(hooks, dict):
@@ -1146,6 +1159,89 @@ def _stop_hooks_hold_reason(
                 return f"foreign_stop_hook:{path}"
             if not stale_ok and (owned_bridge is None or not _same_path(bridge, owned_bridge)):
                 return f"foreign_stop_hook:{path}"
+    return None
+
+
+#: Plugin manifest files cursor-agent reads, in its order (bundle 2026.09.26).
+_PLUGIN_MANIFEST_FILES = (
+    Path(".cursor-plugin") / "plugin.json",
+    Path(".claude-plugin") / "plugin.json",
+    Path("plugin.json"),
+)
+
+#: Read-only plugin cache cursor-agent also installs into (next to ``~/.cursor/plugins/cache``).
+_READONLY_PLUGIN_CACHE = Path("/tmp/cursor-readonly-plugin-cache")
+
+
+def _is_plugin_root(path: Path) -> bool:
+    """Whether *path* looks like a plugin directory (a manifest or a hooks file)."""
+    return (
+        any((path / m).is_file() for m in _PLUGIN_MANIFEST_FILES)
+        or (path / "hooks" / _HOOKS_CONFIG_FILE).is_file()
+    )
+
+
+def _child_dirs(path: Path) -> list[Path]:
+    """Sorted non-hidden subdirectories of *path* (empty when unreadable)."""
+    try:
+        return sorted(p for p in path.iterdir() if not p.name.startswith(".") and p.is_dir())
+    except OSError:
+        return []
+
+
+def installed_cursor_plugin_dirs(
+    home: Path | None = None, *, cache_roots: tuple[Path, ...] | None = None
+) -> list[Path]:
+    """Plugin directories cursor-agent may load without a ``--plugin-dir`` flag.
+
+    User-local plugins (``~/.cursor/plugins/local/<name>``) and marketplace
+    installs (``~/.cursor/plugins/cache/<marketplace>/<plugin>[/<version>]`` and
+    the read-only cache under ``/tmp``). Enablement lives in cursor's server-side
+    and per-project state, so every installed plugin counts (fails closed).
+    """
+    base = (home if home is not None else Path.home()) / ".cursor" / "plugins"
+    found = [p for p in _child_dirs(base / "local") if _is_plugin_root(p)]
+    for cache in (base / "cache", _READONLY_PLUGIN_CACHE) if cache_roots is None else cache_roots:
+        for marketplace in _child_dirs(cache):
+            for plugin in _child_dirs(marketplace):
+                if _is_plugin_root(plugin):
+                    found.append(plugin)
+                found.extend(v for v in _child_dirs(plugin) if _is_plugin_root(v))
+    return found
+
+
+def _plugin_stop_hooks_hold_reason(plugin: Path) -> str | None:
+    """Why a (non-Omnigent) plugin's hooks rule out completion receipts.
+
+    Checks ``hooks/hooks.json`` and whatever each manifest's ``hooks`` names
+    (an inline event map, or a ``.json`` file / directory holding
+    ``hooks.json``). Every stop entry holds: the plugin is shared by every
+    session that loads it. Scans a superset of what cursor loads (it reads only
+    the first usable manifest, and skips ``hooks/hooks.json`` when a manifest
+    names hooks), which only errs toward holding.
+    """
+    files = [plugin / "hooks" / _HOOKS_CONFIG_FILE]
+    for manifest_rel in _PLUGIN_MANIFEST_FILES:
+        manifest = plugin / manifest_rel
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return f"plugin_manifest_malformed:{manifest}"
+        declared = data.get("hooks") if isinstance(data, dict) else None
+        if isinstance(declared, str):
+            target = plugin / declared.removeprefix("./")
+            files.append(target if declared.endswith(".json") else target / _HOOKS_CONFIG_FILE)
+        elif isinstance(declared, dict):
+            inline = declared.get("hooks", declared)
+            reason = _stop_hooks_data_hold_reason(inline, f"{manifest}#hooks")
+            if reason is not None:
+                return reason
+    for path in files:
+        reason = _stop_hooks_hold_reason(path)
+        if reason is not None:
+            return reason
     return None
 
 
@@ -1370,6 +1466,8 @@ def completion_receipt_hook_hold_reason(
     home: Path | None = None,
     system_paths: tuple[Path, ...] | None = None,
     plugin_dir: Path | None = None,
+    extra_plugin_dirs: Sequence[Path] = (),
+    installed_plugin_dirs: Sequence[Path] | None = None,
 ) -> str | None:
     """Check the hooks.json files Cursor loads for this launch before receipts arm.
 
@@ -1385,6 +1483,11 @@ def completion_receipt_hook_hold_reason(
     the plugin's ``hooks/hooks.json`` instead: that file must exist and hold
     only this launch's hook, and the project file may hold only the no-op
     armer (any Omnigent hook there belongs to another session).
+
+    Other plugins load hooks too: the user's passthrough ``--plugin-dir``s
+    (*extra_plugin_dirs*) and installed plugins (*installed_plugin_dirs*,
+    default :func:`installed_cursor_plugin_dirs`). Any stop hook in one of them
+    holds, as for the user file; *plugin_dir* itself is exempt.
 
     :returns: ``None`` when no such hook exists, else the first hold reason.
     """
@@ -1411,7 +1514,20 @@ def completion_receipt_hook_hold_reason(
         reason = _stop_hooks_hold_reason(path)
         if reason is not None:
             return reason
+    if installed_plugin_dirs is None:
+        installed_plugin_dirs = installed_cursor_plugin_dirs(home)
+    for plugin in (*extra_plugin_dirs, *installed_plugin_dirs):
+        if plugin_dir is not None and _same_path(plugin, plugin_dir):
+            continue
+        reason = _plugin_stop_hooks_hold_reason(plugin)
+        if reason is not None:
+            return reason
     return None
+
+
+def launch_plugin_dirs(args: Sequence[str], cwd: Path) -> list[Path]:
+    """The user's passthrough ``--plugin-dir``s in *args*, relative ones resolved against *cwd*."""
+    return [cwd / os.path.expanduser(raw) for raw in _passthrough_plugin_dirs(args)]
 
 
 def prepare_completion_receipts(
@@ -1440,6 +1556,8 @@ def arm_completion_receipts(
     home: Path | None = None,
     system_paths: tuple[Path, ...] | None = None,
     plugin_dir: Path | None = None,
+    extra_plugin_dirs: Sequence[Path] = (),
+    installed_plugin_dirs: Sequence[Path] | None = None,
 ) -> str | None:
     """Set this launch's completion-receipt capability from the opt-in and hooks.
 
@@ -1457,7 +1575,13 @@ def arm_completion_receipts(
     if not opted_in:
         return "not_opted_in"
     reason = precheck or completion_receipt_hook_hold_reason(
-        workspace, bridge_dir, home=home, system_paths=system_paths, plugin_dir=plugin_dir
+        workspace,
+        bridge_dir,
+        home=home,
+        system_paths=system_paths,
+        plugin_dir=plugin_dir,
+        extra_plugin_dirs=extra_plugin_dirs,
+        installed_plugin_dirs=installed_plugin_dirs,
     )
     if reason is None:
         cursor_native_status.write_receipt_epoch(bridge_dir, launch_epoch_ms)

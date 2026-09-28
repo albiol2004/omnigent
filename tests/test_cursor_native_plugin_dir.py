@@ -323,6 +323,156 @@ class TestPluginRouteReceipts:
         assert self._arm(tmp_path, None) is None
 
 
+_FOLLOWUP_STOP = {"command": 'echo \'{"followup_message": "again"}\''}
+
+
+def _user_plugin(root: Path, *, stop: object = None, manifest: object = None) -> Path:
+    """A user plugin dir with an optional ``hooks/hooks.json`` stop list and manifest."""
+    root.mkdir(parents=True, exist_ok=True)
+    if stop is not None:
+        (root / "hooks").mkdir()
+        (root / "hooks" / "hooks.json").write_text(
+            json.dumps({"version": 1, "hooks": {"stop": stop}})
+        )
+    if manifest is not None:
+        (root / ".cursor-plugin").mkdir()
+        (root / ".cursor-plugin" / "plugin.json").write_text(json.dumps(manifest))
+    return root
+
+
+class TestOtherPluginStopHooks:
+    """r17 N12: passthrough and installed plugins' stop hooks hold receipts too."""
+
+    def _gate(self, tmp_path: Path, plugin_dir: Path | None, **kw: object) -> str | None:
+        return cb.completion_receipt_hook_hold_reason(
+            tmp_path / "ws",
+            tmp_path / "cb" / "bridge",
+            home=tmp_path / "home",
+            system_paths=(),
+            plugin_dir=plugin_dir,
+            **kw,  # type: ignore[arg-type]
+        )
+
+    @pytest.fixture
+    def plugin_route(self, tmp_path: Path, home: Path) -> Path:
+        del home
+        (tmp_path / "ws").mkdir()
+        cb.write_plugin_stop_armer(tmp_path / "ws", home=tmp_path / "home")
+        return cb.write_cursor_plugin(tmp_path / "cb" / "bridge")
+
+    def test_passthrough_plugin_stop_hook_holds(self, tmp_path: Path, plugin_route: Path) -> None:
+        user = _user_plugin(tmp_path / "mine", stop=[_FOLLOWUP_STOP])
+        assert self._gate(tmp_path, plugin_route, installed_plugin_dirs=()) is None
+        reason = self._gate(tmp_path, plugin_route, extra_plugin_dirs=[user])
+        assert reason == f"foreign_stop_hook:{user / 'hooks' / 'hooks.json'}"
+
+    def test_passthrough_plugin_holds_on_the_project_route(self, tmp_path: Path) -> None:
+        bridge = tmp_path / "cb" / "bridge"
+        path = tmp_path / "ws" / ".cursor" / "hooks.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"hooks": {"stop": [_owned(bridge)]}}))
+        user = _user_plugin(tmp_path / "mine", stop=[_FOLLOWUP_STOP])
+        assert self._gate(tmp_path, None, installed_plugin_dirs=()) is None
+        assert self._gate(tmp_path, None, extra_plugin_dirs=[user], installed_plugin_dirs=())
+
+    def test_plugin_without_stop_hooks_is_fine(self, tmp_path: Path, plugin_route: Path) -> None:
+        user = _user_plugin(tmp_path / "mine", manifest={"name": "mine"})
+        (user / "hooks").mkdir()
+        (user / "hooks" / "hooks.json").write_text(
+            json.dumps({"hooks": {"afterFileEdit": [{"command": "true"}]}})
+        )
+        assert self._gate(tmp_path, plugin_route, extra_plugin_dirs=[user]) is None
+
+    def test_own_plugin_is_exempt_even_when_passed_again(
+        self, tmp_path: Path, plugin_route: Path
+    ) -> None:
+        assert self._gate(tmp_path, plugin_route, extra_plugin_dirs=[plugin_route]) is None
+
+    def test_own_plugin_hook_is_foreign_in_another_launch(
+        self, tmp_path: Path, plugin_route: Path
+    ) -> None:
+        other = cb.write_cursor_plugin(tmp_path / "cb" / "other")
+        reason = self._gate(tmp_path, plugin_route, extra_plugin_dirs=[other])
+        assert reason == f"foreign_stop_hook:{other / 'hooks' / 'hooks.json'}"
+
+    def test_manifest_inline_and_path_hooks_hold(self, tmp_path: Path, plugin_route: Path) -> None:
+        inline = _user_plugin(
+            tmp_path / "inline", manifest={"name": "i", "hooks": {"stop": [_FOLLOWUP_STOP]}}
+        )
+        manifest = inline / ".cursor-plugin" / "plugin.json"
+        assert self._gate(tmp_path, plugin_route, extra_plugin_dirs=[inline]) == (
+            f"foreign_stop_hook:{manifest}#hooks"
+        )
+        pathed = _user_plugin(tmp_path / "pathed", manifest={"name": "p", "hooks": "./cfg"})
+        (pathed / "cfg").mkdir()
+        (pathed / "cfg" / "hooks.json").write_text(
+            json.dumps({"hooks": {"stop": [_FOLLOWUP_STOP]}})
+        )
+        assert self._gate(tmp_path, plugin_route, extra_plugin_dirs=[pathed]) == (
+            f"foreign_stop_hook:{pathed / 'cfg' / 'hooks.json'}"
+        )
+
+    def test_claude_format_plugin_stop_hook_holds(
+        self, tmp_path: Path, plugin_route: Path
+    ) -> None:
+        # Claude-format entries ({"hooks": [...]}, no "command"; cursor maps Stop -> stop).
+        plugin = tmp_path / "claude"
+        (plugin / "hooks").mkdir(parents=True)
+        (plugin / "hooks" / "hooks.json").write_text(
+            json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x.sh"}]}]}})
+        )
+        assert self._gate(tmp_path, plugin_route, extra_plugin_dirs=[plugin]) == (
+            f"foreign_stop_hook:{plugin / 'hooks' / 'hooks.json'}"
+        )
+
+    def test_malformed_manifest_holds(self, tmp_path: Path, plugin_route: Path) -> None:
+        plugin = tmp_path / "bad"
+        (plugin / ".claude-plugin").mkdir(parents=True)
+        (plugin / ".claude-plugin" / "plugin.json").write_text("{nope")
+        reason = self._gate(tmp_path, plugin_route, extra_plugin_dirs=[plugin])
+        assert reason == f"plugin_manifest_malformed:{plugin / '.claude-plugin' / 'plugin.json'}"
+
+    def test_installed_plugins_are_found_and_hold(
+        self, tmp_path: Path, plugin_route: Path
+    ) -> None:
+        plugins = tmp_path / "home" / ".cursor" / "plugins"
+        quiet = _user_plugin(plugins / "cache" / "mkt" / "quiet" / "sha1", manifest={"name": "q"})
+        local = _user_plugin(plugins / "local" / "mine", stop=[_FOLLOWUP_STOP])
+        (plugins / "local" / ".hidden").mkdir()
+        unversioned = _user_plugin(plugins / "cache" / "mkt" / "flat", manifest={"name": "f"})
+        ro_cache = tmp_path / "ro"
+        ro = _user_plugin(ro_cache / "mkt" / "p" / "v1", stop=[_FOLLOWUP_STOP])
+        found = cb.installed_cursor_plugin_dirs(
+            tmp_path / "home", cache_roots=(plugins / "cache", ro_cache)
+        )
+        assert sorted(found) == sorted([quiet, local, unversioned, ro])
+        reason = self._gate(tmp_path, plugin_route)
+        assert reason == f"foreign_stop_hook:{local / 'hooks' / 'hooks.json'}"
+
+    def test_no_installed_plugins_arms(self, tmp_path: Path, plugin_route: Path) -> None:
+        assert cb.installed_cursor_plugin_dirs(tmp_path / "home", cache_roots=()) == []
+        assert self._gate(tmp_path, plugin_route, installed_plugin_dirs=()) is None
+
+    def test_arm_passes_the_plugin_dirs_through(self, tmp_path: Path, plugin_route: Path) -> None:
+        user = _user_plugin(tmp_path / "mine", stop=[_FOLLOWUP_STOP])
+        reason = cb.arm_completion_receipts(
+            tmp_path / "cb" / "bridge",
+            tmp_path / "ws",
+            7,
+            opted_in=True,
+            home=tmp_path / "home",
+            system_paths=(),
+            plugin_dir=plugin_route,
+            extra_plugin_dirs=[user],
+        )
+        assert reason == f"foreign_stop_hook:{user / 'hooks' / 'hooks.json'}"
+        assert cursor_native_status.read_receipt_epoch(tmp_path / "cb" / "bridge") is None
+
+    def test_launch_plugin_dirs_resolves_both_spellings(self, tmp_path: Path) -> None:
+        args = ["--plugin-dir", "rel/p", "--model", "x", "--plugin-dir=/abs/q"]
+        assert cb.launch_plugin_dirs(args, tmp_path) == [tmp_path / "rel" / "p", Path("/abs/q")]
+
+
 class TestPluginRouteLaunchChecks:
     """enableUserLocalPlugins detection (N4) and plugin basename collisions (N5)."""
 

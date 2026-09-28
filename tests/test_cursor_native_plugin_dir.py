@@ -11,6 +11,9 @@ user or project hooks file declares one (verified against the 2026.09.26 CLI).
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -18,6 +21,9 @@ import pytest
 
 from omnigent.harnesses.cursor_native import bridge as cb
 from omnigent.harnesses.cursor_native import status as cursor_native_status
+from omnigent.harnesses.cursor_native import usage as cursor_native_usage
+
+_MARKER = cursor_native_usage.SESSION_BRIDGE_ENV_VAR
 
 
 @pytest.fixture(autouse=True)
@@ -453,3 +459,105 @@ def test_recorder_recreates_bridge_dir_owner_only(tmp_path: Path) -> None:
     cursor_native_status.record_turn_end(bridge, {"generation_id": "g1"})
     assert bridge.stat().st_mode & 0o777 == 0o700
     assert (tmp_path / "gone").stat().st_mode & 0o777 == 0o700
+
+
+class TestServeMcpParentBridgeGate:
+    """r17 N11: ``serve-mcp`` refuses when its parent cursor names another bridge."""
+
+    def _conflict(self, bridge: Path, env: Mapping[str, str] | None) -> str | None:
+        from omnigent.harnesses.claude_native import bridge as claude_bridge
+
+        return claude_bridge.parent_session_bridge_conflict(
+            bridge, read_parent_environ=lambda: env
+        )
+
+    def test_marker_constant_matches_the_cursor_one(self) -> None:
+        from omnigent.harnesses.claude_native import bridge as claude_bridge
+        from omnigent.harnesses.cursor_native import usage
+
+        assert claude_bridge.CURSOR_SESSION_BRIDGE_ENV_VAR == usage.SESSION_BRIDGE_ENV_VAR
+
+    def test_serves_when_parent_names_no_bridge(self, tmp_path: Path) -> None:
+        assert self._conflict(tmp_path / "b", None) is None
+        assert self._conflict(tmp_path / "b", {}) is None
+        assert self._conflict(tmp_path / "b", {"PATH": "/bin"}) is None
+        assert self._conflict(tmp_path / "b", {_MARKER: ""}) is None
+
+    def test_serves_its_own_bridge_via_any_spelling(self, tmp_path: Path) -> None:
+        own = tmp_path / "own"
+        own.mkdir()
+        (tmp_path / "alias").symlink_to(own)
+        for spelling in (str(own), f"{own}/", str(tmp_path / "alias"), f"{tmp_path}/./own"):
+            assert self._conflict(own, {_MARKER: spelling}) is None
+
+    def test_refuses_a_parent_bound_to_another_bridge(self, tmp_path: Path) -> None:
+        other = str(tmp_path / "plugin-session")
+        assert self._conflict(tmp_path / "sibling", {_MARKER: other}) == other
+
+    def test_reads_the_real_parent_environ(self) -> None:
+        from omnigent.harnesses.claude_native import bridge as claude_bridge
+
+        env = claude_bridge._read_parent_environ()
+        if env is None:
+            pytest.skip("no /proc/<ppid>/environ on this platform")
+        assert isinstance(env, dict)
+
+    def _serve(self, bridge: Path, parent_marker: str | None) -> subprocess.CompletedProcess[str]:
+        """Run real ``serve-mcp`` under a parent whose env carries *parent_marker*.
+
+        Like cursor-agent, the parent does not pass the marker on to the server.
+        """
+        parent_env = {k: v for k, v in os.environ.items() if k != _MARKER}
+        if parent_marker is not None:
+            parent_env[_MARKER] = parent_marker
+        child = [sys.executable, "-m", "omnigent.harnesses.claude_native.bridge", "serve-mcp"]
+        parent = (
+            "import os, subprocess, sys\n"
+            f"env = {{k: v for k, v in os.environ.items() if k != {_MARKER!r}}}\n"
+            f"sys.exit(subprocess.run({child!r} + ['--bridge-dir', sys.argv[1]], env=env)"
+            ".returncode)\n"
+        )
+        requests = "".join(
+            json.dumps({"jsonrpc": "2.0", "id": i, "method": m, "params": p}) + "\n"
+            for i, m, p in (
+                (1, "initialize", {}),
+                (2, "tools/list", {}),
+                (3, "tools/call", {"name": "sys_read_inbox", "arguments": {}}),
+            )
+        )
+        return subprocess.run(
+            [sys.executable, "-c", parent, str(bridge)],
+            input=requests,
+            env=parent_env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+    def test_real_server_refuses_every_request_and_touches_nothing(self, tmp_path: Path) -> None:
+        sibling = tmp_path / "sibling"
+        sibling.mkdir()
+        own = tmp_path / "own"
+        out = self._serve(sibling, str(own))
+        assert out.returncode == 0, out.stderr
+        replies = [json.loads(line) for line in out.stdout.splitlines()]
+        assert [r["id"] for r in replies] == [1, 2, 3]
+        for reply in replies:
+            assert "result" not in reply
+            assert reply["error"]["code"] == -32001
+            assert str(sibling) in reply["error"]["message"]
+            assert str(own) in reply["error"]["message"]
+        assert out.stderr.count("refused") == 1  # logged once
+        assert list(sibling.iterdir()) == []  # no server.json over the sibling's
+
+    @pytest.mark.parametrize("marker", [None, "own"])
+    def test_real_server_passes_the_gate_otherwise(
+        self, tmp_path: Path, marker: str | None
+    ) -> None:
+        own = tmp_path / "own"
+        own.mkdir()
+        out = self._serve(own, None if marker is None else str(own))
+        # Past the gate it reads bridge.json (absent here) and exits on that.
+        assert "bridge config missing" in out.stderr
+        assert "refused" not in out.stderr + out.stdout

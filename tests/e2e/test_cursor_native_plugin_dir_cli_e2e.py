@@ -10,20 +10,28 @@ Verifies the cursor-agent behaviour :func:`write_cursor_plugin` and
    ``hooks.json`` carries the constant armer (cursor-agent dispatches ``stop``
    only when a user/project stop hook exists).
 
+3. a LIVE project-route sibling's usage hook left in the project ``hooks.json``
+   does not record the plugin session's turns (the recorder skips a firing
+   whose ``--bridge-dir`` is not the TUI's ``OMNIGENT_CURSOR_SESSION_BRIDGE_DIR``).
+
 The MCP server and hook commands are swapped for trivial probes (the layout and
-the armer are the real ones), so no Omnigent server is needed. Needs an
-authenticated ``cursor-agent`` (real model turns) and ``tmux``; skipped when
-either binary is missing. Cleans up the workspace's Cursor chat/project state.
+the armer are the real ones), so no Omnigent server is needed; test 3 runs the
+real recorder from this tree. **Opt-in only** (paid real-model turns): set
+``OMNIGENT_E2E_CURSOR_NATIVE=1``; also needs an authenticated ``cursor-agent``
+and ``tmux``. Cleans up the workspace's Cursor chat/project state.
 
 Run::
 
-    .venv/bin/python -m pytest tests/e2e/test_cursor_native_plugin_dir_cli_e2e.py -v
+    OMNIGENT_E2E_CURSOR_NATIVE=1 \
+        .venv/bin/python -m pytest tests/e2e/test_cursor_native_plugin_dir_cli_e2e.py -v
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -36,8 +44,11 @@ import pytest
 from omnigent.harnesses.cursor_native import bridge as cb
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("cursor-agent") is None or shutil.which("tmux") is None,
-    reason="needs the cursor-agent CLI (authenticated) and tmux",
+    os.environ.get("OMNIGENT_E2E_CURSOR_NATIVE") != "1"
+    or shutil.which("cursor-agent") is None
+    or shutil.which("tmux") is None,
+    reason="opt-in real-CLI e2e: set OMNIGENT_E2E_CURSOR_NATIVE=1; needs the "
+    "cursor-agent CLI (authenticated) and tmux",
 )
 
 _PROBE_SERVER = r"""
@@ -168,3 +179,81 @@ def test_same_workspace_tui_sessions_get_own_stop_hooks(
         conversations[tag] = lines[0]["conversation_id"]
         assert '"tools/call"' in mcp_log.read_text()
     assert conversations["A"] != conversations["B"]
+
+
+def _wait_idle(sock: Path, targets: list[str], timeout: float = 60) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and not all(
+        any(m in _tmux(sock, "capture-pane", "-p", "-t", t) for m in cb._IDLE_MARKERS)
+        for t in targets
+    ):
+        time.sleep(1)
+
+
+def test_live_sibling_project_hook_skips_plugin_session_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workspace: Path
+) -> None:
+    """Mixed rollout: a sibling's project usage hook must not bill our turns."""
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+    from omnigent.harnesses.cursor_native import usage as cursor_native_usage
+
+    tree = Path(__file__).resolve().parents[2]
+
+    def recorder(bridge: Path) -> str:
+        # This tree's recorder (``-I`` dropped so PYTHONPATH wins over the install).
+        return (
+            f"env PYTHONPATH={shlex.quote(str(tree))} {shlex.quote(sys.executable)} -m "
+            f"omnigent.harnesses.cursor_native.usage record-usage --bridge-dir "
+            f"{shlex.quote(str(bridge))}"
+        )
+
+    _probe_plugin(tmp_path, monkeypatch, "A")
+    monkeypatch.setattr(
+        cb,
+        "build_hooks_config",
+        lambda b, **_k: {"version": 1, "hooks": {"stop": [{"command": recorder(b)}]}},
+    )
+    own = tmp_path / "cb" / "own"
+    sibling = tmp_path / "cb" / "sibling"
+    sibling.mkdir(parents=True)
+    plugin_dir = cb.write_cursor_plugin(own)
+    (workspace / ".cursor").mkdir()
+    (workspace / ".cursor" / "hooks.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "hooks": {
+                    "stop": [
+                        {"command": recorder(sibling)},
+                        {"command": cb.PLUGIN_STOP_ARMER_COMMAND},
+                    ]
+                },
+            }
+        )
+    )
+    sock = tmp_path / "tmux.sock"
+    own_turn_end = own / cursor_native_status.TURN_END_FILE
+    try:
+        command = (
+            f"env {cursor_native_usage.SESSION_BRIDGE_ENV_VAR}={shlex.quote(str(own))} "
+            f"cursor-agent --trust --approve-mcps --plugin-dir {shlex.quote(str(plugin_dir))}"
+        )
+        _tmux(sock, "new-session", "-d", "-s", "A", "-x", "200", "-y", "50", "-c",
+              str(workspace), command)  # fmt: skip
+        _wait_idle(sock, ["A"])
+        _tmux(sock, "send-keys", "-t", "A", "-l", "Reply with the single word: hi")
+        time.sleep(2)
+        _tmux(sock, "send-keys", "-t", "A", "Enter")
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline and not (
+            own_turn_end.exists() and own_turn_end.read_text().strip()
+        ):
+            time.sleep(2)
+        time.sleep(5)  # the sibling hook runs in the same stop dispatch
+        pane = _tmux(sock, "capture-pane", "-p", "-t", "A")
+    finally:
+        _tmux(sock, "kill-server")
+    assert own_turn_end.exists(), pane
+    assert len(own_turn_end.read_text().splitlines()) == 1
+    assert (own / cursor_native_usage.USAGE_FILE).read_text().strip()
+    assert list(sibling.iterdir()) == []

@@ -47,7 +47,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -85,6 +85,10 @@ _TRUTHY_FLAG_VALUES = frozenset({"1", "true", "yes", "on"})
 #: so a constant basename keeps the server id -- and the ``Mcp(<id>:<tool>)``
 #: permission entries -- the same for every session.
 _PLUGIN_DIR_NAME = "omnigent"
+#: Used instead when the user's own launch args already pass a ``--plugin-dir``
+#: named ``omnigent``: two plugin dirs with one basename get one id and
+#: cursor-agent silently keeps only the LAST (the user's), dropping ours.
+_PLUGIN_DIR_FALLBACK_NAME = "omnigent-session"
 _PLUGIN_PARENT_DIR = "cursor-plugin"
 #: MCP server id cursor-agent gives the plugin's ``omnigent`` server.
 PLUGIN_MCP_SERVER_ID = f"plugin-{_PLUGIN_DIR_NAME}-{_MCP_SERVER_NAME}"
@@ -688,9 +692,136 @@ def plugin_dir_mode_enabled(
     return setting is True
 
 
-def plugin_dir_for_bridge(bridge_dir: Path) -> Path:
+def plugin_dir_for_bridge(bridge_dir: Path, name: str = _PLUGIN_DIR_NAME) -> Path:
     """This session's private Cursor plugin dir, inside its bridge dir."""
-    return bridge_dir / _PLUGIN_PARENT_DIR / _PLUGIN_DIR_NAME
+    return bridge_dir / _PLUGIN_PARENT_DIR / name
+
+
+def plugin_mcp_server_id(name: str = _PLUGIN_DIR_NAME) -> str:
+    """The MCP server id cursor-agent gives the plugin named *name*."""
+    return f"plugin-{name}-{_MCP_SERVER_NAME}"
+
+
+class CursorPluginRouteError(RuntimeError):
+    """A plugin-route (``--plugin-dir``) launch that cannot work as configured.
+
+    Raised before the terminal starts so the session fails loudly instead of
+    running with no Omnigent tools and completion receipts waiting forever.
+    """
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(f"cursor-native plugin-route launch refused: {message}")
+
+    def user_message(self) -> str:
+        """Actionable text for the failed-launch status."""
+        return self.message
+
+
+def _passthrough_plugin_dirs(args: Sequence[str]) -> list[str]:
+    """The ``--plugin-dir`` values in cursor-agent launch args (both spellings)."""
+    found: list[str] = []
+    for i, arg in enumerate(args):
+        if arg == "--plugin-dir" and i + 1 < len(args):
+            found.append(args[i + 1])
+        elif arg.startswith("--plugin-dir="):
+            found.append(arg.split("=", 1)[1])
+    return found
+
+
+def plugin_dir_name_for_launch(args: Sequence[str]) -> str:
+    """Pick this launch's plugin dir basename given the user's launch args.
+
+    cursor-agent ids a ``--plugin-dir`` plugin by its directory basename and,
+    for two dirs with the same basename, silently keeps only the last one. When
+    the user's args already pass a plugin dir named ``omnigent``, ours is named
+    :data:`_PLUGIN_DIR_FALLBACK_NAME` instead, so both load; its MCP server id
+    is then ``plugin-omnigent-session-omnigent`` (tools are allow-listed under
+    that id).
+
+    :raises CursorPluginRouteError: When both names are taken.
+    """
+    taken = {os.path.basename(os.path.normpath(path)) for path in _passthrough_plugin_dirs(args)}
+    for name in (_PLUGIN_DIR_NAME, _PLUGIN_DIR_FALLBACK_NAME):
+        if name not in taken:
+            return name
+    raise CursorPluginRouteError(
+        "the Cursor launch args already pass --plugin-dir directories named "
+        f"{_PLUGIN_DIR_NAME!r} and {_PLUGIN_DIR_FALLBACK_NAME!r}; cursor-agent keeps only "
+        "one plugin per directory name, so Omnigent's own plugin would be dropped. "
+        "Rename one of them, or unset OMNIGENT_CURSOR_PLUGIN_DIR / cursor_native.plugin_dir."
+    )
+
+
+#: cursor-agent launch flags / env that select the local-agent authless or
+#: Bedrock profile, whose ``enableUserLocalPlugins`` capability is false.
+_PLUGINS_OFF_FLAGS = ("--authless", "--enable-bedrock", "--enable-local-bedrock")
+_PLUGINS_OFF_ENV = (
+    "CURSOR_ENABLE_AUTHLESS",
+    "CURSOR_ENABLE_BEDROCK",
+    "CURSOR_ENABLE_LOCAL_BEDROCK",
+)
+_LOCAL_AGENT_BUILD = "cursor-agent-local"
+
+
+def user_local_plugins_disabled_reason(
+    cursor_command: str,
+    args: Sequence[str],
+    env: Mapping[str, str] | None = None,
+) -> str | None:
+    """Why cursor-agent would ignore ``--plugin-dir`` for this launch, if it would.
+
+    cursor-agent loads ``--plugin-dir`` plugins only when its local-agent
+    profile has ``enableUserLocalPlugins`` (2026.09.26 bundle,
+    ``src/local-agent-profile.ts``). That is not a config-file setting: the
+    standard ``cursor-agent`` build always runs the remote profile, where it is
+    true. Only the ``cursor-agent-local`` build in authless or Bedrock mode
+    (``--authless``, ``--enable-bedrock``, ``--enable-local-bedrock``, or
+    ``CURSOR_ENABLE_AUTHLESS`` / ``CURSOR_ENABLE_BEDROCK`` /
+    ``CURSOR_ENABLE_LOCAL_BEDROCK`` = ``1``) uses the ``local-authless``
+    profile, where it is false. The flags count for any build (the standard
+    build rejects them anyway); the env vars only for the local build.
+
+    :returns: ``None`` when plugins load, else ``enableUserLocalPlugins_off:<marker>``.
+    """
+    env = os.environ if env is None else env
+    for arg in args:
+        if arg.split("=", 1)[0] in _PLUGINS_OFF_FLAGS:
+            return f"enableUserLocalPlugins_off:{arg}"
+    resolved = Path(os.path.realpath(cursor_command))
+    if any(part.startswith(_LOCAL_AGENT_BUILD) for part in (*resolved.parts, cursor_command)):
+        for name in _PLUGINS_OFF_ENV:
+            if env.get(name) == "1":
+                return f"enableUserLocalPlugins_off:{name}=1"
+    return None
+
+
+def check_plugin_route_launch(
+    cursor_command: str,
+    args: Sequence[str],
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """Refuse a plugin-route launch cursor-agent would run without the plugin.
+
+    Run before any launch write. With ``enableUserLocalPlugins`` off the
+    session would have no Omnigent tools, no usage/idle stop hook, and
+    completion receipts armed on a hook that never fires.
+
+    :returns: The plugin dir basename to use (:func:`plugin_dir_name_for_launch`).
+    :raises CursorPluginRouteError: When the plugin would not load.
+    """
+    reason = user_local_plugins_disabled_reason(cursor_command, args, env)
+    if reason is not None:
+        marker = reason.split(":", 1)[1]
+        raise CursorPluginRouteError(
+            f"cursor-agent runs in its authless/Bedrock local-agent profile ({marker}), "
+            "where enableUserLocalPlugins is off, so it ignores --plugin-dir and this "
+            "session would get no Omnigent tools, no usage or turn-end hook, and "
+            "completion receipts that never arrive. Remove that setting, or turn the "
+            "plugin route off (unset OMNIGENT_CURSOR_PLUGIN_DIR on the host service, or "
+            "cursor_native.plugin_dir in config.yaml)."
+        )
+    return plugin_dir_name_for_launch(args)
 
 
 def _write_json_atomic(path: Path, payload: _JsonObject) -> None:
@@ -704,6 +835,7 @@ def write_cursor_plugin(
     *,
     workspace: Path | None = None,
     python_executable: str | None = None,
+    name: str = _PLUGIN_DIR_NAME,
 ) -> Path:
     """Write this session's Cursor plugin (MCP server + usage stop hook).
 
@@ -719,16 +851,19 @@ def write_cursor_plugin(
 
     :param workspace: When given, re-enable the plugin server if Cursor has it
         in the workspace's disabled list.
+    :param name: Plugin dir basename (:func:`plugin_dir_name_for_launch`); it
+        sets the server id (:func:`plugin_mcp_server_id`).
     :returns: The plugin dir.
     """
     write_mcp_bridge_config(bridge_dir)
-    plugin_dir = plugin_dir_for_bridge(bridge_dir)
+    plugin_dir = plugin_dir_for_bridge(bridge_dir, name)
+    server_id = plugin_mcp_server_id(name)
     _ensure_dir(plugin_dir / ".cursor-plugin")
     _ensure_dir(plugin_dir / "hooks")
     _write_json_atomic(
         plugin_dir / ".cursor-plugin" / "plugin.json",
         {
-            "name": _PLUGIN_DIR_NAME,
+            "name": name,
             "description": "Omnigent session bridge (MCP tools and usage hook).",
         },
     )
@@ -741,8 +876,8 @@ def write_cursor_plugin(
         build_hooks_config(bridge_dir, python_executable=python_executable),
     )
     if workspace is not None:
-        enable_mcp_for_workspace(workspace, PLUGIN_MCP_SERVER_ID)
-    allow_mcp_tools_in_cli_config(PLUGIN_MCP_SERVER_ID)
+        enable_mcp_for_workspace(workspace, server_id)
+    allow_mcp_tools_in_cli_config(server_id)
     return plugin_dir
 
 

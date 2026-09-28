@@ -2908,6 +2908,7 @@ async def _auto_create_cursor_terminal(
         arm_completion_receipts,
         bridge_dir_for_session_id,
         check_cursor_launch_admission,
+        check_plugin_route_launch,
         live_foreign_config_bridges,
         plugin_dir_mode_enabled,
         prepare_completion_receipts,
@@ -2954,6 +2955,16 @@ async def _auto_create_cursor_terminal(
     # config (from its git root) is the user ~/.cursor one: no own tools, and it
     # would load a leftover ``omnigent`` server. Surfaced as a failed launch.
     check_cursor_launch_admission(Path(workspace))
+    # Per-launch config route (opt-in): refuse, also before any write, a launch
+    # whose cursor-agent would ignore ``--plugin-dir`` (enableUserLocalPlugins
+    # off), and pick a plugin name the user's own ``--plugin-dir`` does not take.
+    plugin_name = (
+        check_plugin_route_launch(
+            resolve_cursor_executable(), list(launch_config.terminal_launch_args or [])
+        )
+        if plugin_dir_mode_enabled()
+        else None
+    )
     # Validate the persisted chat id ONCE, up front. It feeds two untrusted
     # sinks below — the cursor store path in preseed_resume_state (filesystem)
     # and the ``--resume`` argv in _cursor_native_resume_args — so a malformed
@@ -3086,10 +3097,20 @@ async def _auto_create_cursor_terminal(
     plugin_dir: Path | None = None
     mcp_config: Path | None = None
     write_bridge_owner(bridge_dir, session_id)
-    if plugin_dir_mode_enabled():
+    if plugin_name is not None:
         plugin_dir = await asyncio.to_thread(
-            write_cursor_plugin, bridge_dir, workspace=Path(workspace)
+            write_cursor_plugin, bridge_dir, workspace=Path(workspace), name=plugin_name
         )
+        if plugin_name != "omnigent":
+            _logger.warning(
+                "cursor-native: the launch args already pass a --plugin-dir named "
+                "'omnigent'; this session's plugin is %s, so its MCP server id is "
+                "plugin-%s-omnigent (session=%s).",
+                plugin_dir,
+                plugin_name,
+                session_id,
+                extra={"session_id": session_id},
+            )
         await asyncio.to_thread(remove_stale_workspace_mcp_server, Path(workspace))
         if await asyncio.to_thread(write_plugin_stop_armer, Path(workspace)) is None:
             _logger.warning(
@@ -7823,10 +7844,13 @@ def _native_terminal_start_error_payload(
         extra=extra,
     )
     from omnigent.harnesses.claude_native.bridge import ClaudeNativeHookInterpreterMismatchError
-    from omnigent.harnesses.cursor_native.bridge import CursorSharedWorkspaceError
+    from omnigent.harnesses.cursor_native.bridge import (
+        CursorPluginRouteError,
+        CursorSharedWorkspaceError,
+    )
     from omnigent.terminals.registry import TerminalExitedDuringLaunch
 
-    if isinstance(exc, CursorSharedWorkspaceError):
+    if isinstance(exc, (CursorSharedWorkspaceError, CursorPluginRouteError)):
         message = exc.user_message()
     elif runtime_name == "Codex" and isinstance(exc, TerminalExitedDuringLaunch):
         message = _codex_terminal_exit_summary(exc.instance, before_thread=False)

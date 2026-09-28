@@ -1732,8 +1732,9 @@ async def _run_auto_create_cursor_terminal(
     monkeypatch.setattr(cursor_native_bridge, "_BRIDGE_ROOT", tmp_path / "cursor-bridge")
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://127.0.0.1:8000")
     if "OMNIGENT_CONFIG_HOME" not in os.environ:
-        # The plugin-route switch also reads the user config; keep the real one out.
-        (tmp_path / "config-isolated").mkdir(exist_ok=True)
+        # The plugin-route switch also reads the user config; keep the real one
+        # out (a missing config dir reads as empty; not created, so tree-state
+        # assertions over tmp_path are unaffected).
         monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path / "config-isolated"))
     monkeypatch.setattr(
         "omnigent.harnesses.cursor_native.main.resolve_cursor_executable", lambda: "cursor-agent"
@@ -2039,6 +2040,52 @@ async def test_auto_create_cursor_terminal_plugin_route_off_by_default(
     )
     assert "--plugin-dir" not in captured["spec"].args
     assert (tmp_path / "ws" / ".cursor" / "mcp.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_plugin_route_refuses_plugins_off_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--authless`` (enableUserLocalPlugins off) fails the launch before any write.
+
+    Otherwise the session would run with no Omnigent tools and completion
+    receipts armed on a plugin stop hook cursor-agent never loads.
+    """
+    _plugin_route_env(tmp_path, monkeypatch)
+    with pytest.raises(cursor_native_bridge.CursorPluginRouteError) as refused:
+        await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=["--authless"],
+        )
+    assert "enableUserLocalPlugins" in refused.value.user_message()
+    assert not (tmp_path / "cursor-bridge").exists()
+    assert not (tmp_path / "ws" / ".cursor").exists()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_plugin_route_avoids_user_plugin_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A user ``--plugin-dir .../omnigent`` must not shadow Omnigent's own plugin."""
+    home = _plugin_route_env(tmp_path, monkeypatch)
+    user_plugin = tmp_path / "mine" / "omnigent"
+    captured = await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=["--plugin-dir", str(user_plugin)],
+    )
+    bridge_dir = cursor_native_bridge.bridge_dir_for_session_id("c42dbcb16fd3a87ee8f5d1fe4cabfdf8")
+    ours = cursor_native_bridge.plugin_dir_for_bridge(bridge_dir, "omnigent-session")
+    args = captured["spec"].args
+    assert args[:4] == ["--plugin-dir", str(ours), "--plugin-dir", str(user_plugin)]
+    assert (ours / "hooks" / "hooks.json").is_file()
+    allow = json.loads((home / ".cursor" / "cli-config.json").read_text())["permissions"]["allow"]
+    assert "Mcp(plugin-omnigent-session-omnigent:sys_os_read)" in allow
 
 
 @pytest.mark.asyncio

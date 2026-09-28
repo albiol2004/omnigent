@@ -1962,6 +1962,132 @@ async def test_auto_create_cursor_terminal_warns_on_live_same_workspace_sibling(
     assert any(".cursor/mcp.json" in m for m in collisions)
 
 
+def _plugin_route_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Enable the ``--plugin-dir`` route with a private HOME; returns HOME."""
+    home = tmp_path / "home"
+    (home / ".cursor").mkdir(parents=True)
+    (home / ".cursor" / "cli-config.json").write_text(json.dumps({"permissions": {"allow": []}}))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv(cursor_native_bridge.PLUGIN_DIR_ENV_VAR, "1")
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    monkeypatch.setattr(
+        "omnigent.harnesses.cursor_native.main.create_cursor_chat", lambda *_a, **_k: None
+    )
+    return home
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_plugin_route_passes_own_plugin_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``OMNIGENT_CURSOR_PLUGIN_DIR=1``: hooks + MCP ride a per-session plugin.
+
+    The project ``mcp.json`` is not written, the project ``hooks.json`` holds
+    only the constant no-op armer, and ``--plugin-dir`` names the session's own
+    plugin under its bridge dir. Completion receipts arm on the plugin hook.
+    """
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+    _plugin_route_env(tmp_path, monkeypatch)
+    labels = {
+        cursor_native_status.COMPLETION_RECEIPTS_LABEL: (
+            cursor_native_status.COMPLETION_RECEIPTS_VERSION
+        )
+    }
+    captured = await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=["--force"],
+        labels=labels,
+    )
+    bridge_dir = cursor_native_bridge.bridge_dir_for_session_id("c42dbcb16fd3a87ee8f5d1fe4cabfdf8")
+    plugin_dir = cursor_native_bridge.plugin_dir_for_bridge(bridge_dir)
+    args = captured["spec"].args
+    assert args[:2] == ["--plugin-dir", str(plugin_dir)]
+    assert "--force" in args and "--approve-mcps" in args
+    ws = tmp_path / "ws"
+    assert not (ws / ".cursor" / "mcp.json").exists()
+    hooks = json.loads((ws / ".cursor" / "hooks.json").read_text())
+    assert hooks["hooks"]["stop"] == [{"command": cursor_native_bridge.PLUGIN_STOP_ARMER_COMMAND}]
+    plugin_hooks = json.loads((plugin_dir / "hooks" / "hooks.json").read_text())
+    assert plugin_hooks == cursor_native_bridge.build_hooks_config(bridge_dir)
+    assert json.loads((plugin_dir / "mcp.json").read_text()) == (
+        cursor_native_bridge.build_mcp_config(bridge_dir)
+    )
+    assert cursor_native_status.read_receipt_epoch(bridge_dir) is not None
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_plugin_route_off_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the flag the project-file route is unchanged: no ``--plugin-dir``."""
+    _plugin_route_env(tmp_path, monkeypatch)
+    monkeypatch.delenv(cursor_native_bridge.PLUGIN_DIR_ENV_VAR)
+    captured = await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=None,
+    )
+    assert "--plugin-dir" not in captured["spec"].args
+    assert (tmp_path / "ws" / ".cursor" / "mcp.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_plugin_route_leaves_live_sibling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A LIVE project-route sibling keeps its slot; a dead one is cleared.
+
+    The plugin-route launch must not re-point the sibling's project files (that
+    is the old last-writer-wins bug); it warns that it loads them too.
+    """
+    import time as _time
+
+    _plugin_route_env(tmp_path, monkeypatch)
+    live = tmp_path / "cursor-bridge" / "live"
+    live.mkdir(parents=True)
+    cursor_native_bridge.write_bridge_owner(live, "conv_live")
+    (live / "cursor_forwarder.json").write_text(
+        json.dumps({"heartbeat_ms": int(_time.time() * 1000)})
+    )
+    dead = tmp_path / "cursor-bridge" / "dead"
+
+    def _bind(workspace: Path) -> None:
+        (workspace / ".cursor").mkdir(exist_ok=True)
+        live_hook = cursor_native_bridge.build_hooks_config(live)["hooks"]["stop"][0]  # type: ignore[index]
+        dead_hook = cursor_native_bridge.build_hooks_config(dead)["hooks"]["stop"][0]  # type: ignore[index]
+        (workspace / ".cursor" / "hooks.json").write_text(
+            json.dumps({"version": 1, "hooks": {"stop": [dead_hook, live_hook]}})
+        )
+        (workspace / ".cursor" / "mcp.json").write_text(
+            json.dumps(cursor_native_bridge.build_mcp_config(live))
+        )
+
+    with caplog.at_level(logging.WARNING):
+        await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+            prepare_workspace=_bind,
+        )
+    ws = tmp_path / "ws"
+    stop = json.loads((ws / ".cursor" / "hooks.json").read_text())["hooks"]["stop"]
+    assert str(dead) not in json.dumps(stop)
+    assert str(live) in stop[0]["command"]
+    assert stop[1] == {"command": cursor_native_bridge.PLUGIN_STOP_ARMER_COMMAND}
+    assert str(live) in (ws / ".cursor" / "mcp.json").read_text()
+    notes = [r.getMessage() for r in caplog.records if "project-route session" in r.message]
+    assert len(notes) == 2 and all("conv_live" in m for m in notes)
+
+
 @pytest.mark.parametrize(
     "passthrough",
     [["--resume", _PINNED_CHAT_ID], ["--continue"], ["--worktree=feat"]],

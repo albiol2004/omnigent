@@ -2909,13 +2909,17 @@ async def _auto_create_cursor_terminal(
         bridge_dir_for_session_id,
         check_cursor_launch_admission,
         live_foreign_config_bridges,
+        plugin_dir_mode_enabled,
         prepare_completion_receipts,
         read_bridge_owner,
+        remove_stale_workspace_mcp_server,
         user_mcp_has_omnigent_server,
         write_bridge_owner,
+        write_cursor_plugin,
         write_fork_preamble,
         write_hooks_config,
         write_mcp_config,
+        write_plugin_stop_armer,
     )
     from omnigent.harnesses.cursor_native.forwarder import (
         clear_cursor_bridge_state,
@@ -3073,65 +3077,106 @@ async def _auto_create_cursor_terminal(
                 exc_info=True,
                 extra={"session_id": session_id},
             )
-    # ``.cursor/hooks.json`` / ``mcp.json`` hold ONE bridge dir per workspace:
-    # a same-workspace launch re-points both at itself and the sibling's stop
-    # hook (usage / idle / receipts) and MCP tools silently follow. Not refused
-    # (non-isolated Trio runs share a workspace), but make it loud.
+    # Per-launch config route (opt-in, OMNIGENT_CURSOR_PLUGIN_DIR=1): this
+    # session's MCP server and usage stop hook live in a private plugin under its
+    # bridge dir, loaded with ``--plugin-dir``; the project mcp.json is not
+    # written and the project hooks.json only gets a constant no-op stop entry
+    # (cursor-agent dispatches ``stop`` to plugins only when one exists), so
+    # same-workspace sessions no longer overwrite each other.
+    plugin_dir: Path | None = None
+    mcp_config: Path | None = None
     write_bridge_owner(bridge_dir, session_id)
-    for config_name, siblings in (
-        await asyncio.to_thread(live_foreign_config_bridges, Path(workspace), bridge_dir)
-    ).items():
-        for sibling in siblings:
+    if plugin_dir_mode_enabled():
+        plugin_dir = await asyncio.to_thread(
+            write_cursor_plugin, bridge_dir, workspace=Path(workspace)
+        )
+        await asyncio.to_thread(remove_stale_workspace_mcp_server, Path(workspace))
+        if await asyncio.to_thread(write_plugin_stop_armer, Path(workspace)) is None:
             _logger.warning(
-                "cursor-native: workspace %s .cursor/%s is bound to LIVE session %s "
-                "(bridge %s); this launch (session=%s, bridge %s) overwrites it, so that "
-                "session's %s now route here. Use a separate worktree per concurrent "
-                "session to avoid this.",
+                "cursor-native: workspace %s shares the user ~/.cursor/hooks.json; not "
+                "adding the plugin stop armer, so this session reports no token usage "
+                "and no turn-end idle unless the user hooks declare a stop hook "
+                "(session=%s).",
                 workspace,
-                config_name,
-                read_bridge_owner(sibling) or "<unknown>",
-                sibling,
                 session_id,
-                bridge_dir,
-                "stop hooks (usage, turn-end idle, receipts)"
-                if config_name == "hooks.json"
-                else "Omnigent MCP tools",
                 extra={"session_id": session_id},
             )
-    # Skipped when the project mcp.json is the user one (workspace == HOME): a
-    # server bound to this bridge there would attach every Cursor on the machine
-    # to this session. Cursor has no per-session MCP config, so no tools here.
-    mcp_config = write_mcp_config(Path(workspace), bridge_dir)
-    if mcp_config is None:
-        _logger.warning(
-            "cursor-native: workspace %s shares the user ~/.cursor/mcp.json; not "
-            "registering this session's Omnigent MCP server, so the Cursor TUI has no "
-            "Omnigent tools (launch from a project directory to get them) (session=%s).",
-            workspace,
-            session_id,
-            extra={"session_id": session_id},
-        )
-        if user_mcp_has_omnigent_server():
+        # A LIVE project-route sibling's server/hook stays in the project files
+        # and is loaded by this session too; say so (it clears once that ends).
+        for config_name, siblings in (
+            await asyncio.to_thread(live_foreign_config_bridges, Path(workspace), bridge_dir)
+        ).items():
+            for sibling in siblings:
+                _logger.warning(
+                    "cursor-native: workspace %s .cursor/%s is still bound to LIVE "
+                    "project-route session %s (bridge %s); this plugin-route session "
+                    "(session=%s) loads it as well until that session ends.",
+                    workspace,
+                    config_name,
+                    read_bridge_owner(sibling) or "<unknown>",
+                    sibling,
+                    session_id,
+                    extra={"session_id": session_id},
+                )
+    else:
+        # ``.cursor/hooks.json`` / ``mcp.json`` hold ONE bridge dir per workspace:
+        # a same-workspace launch re-points both at itself and the sibling's stop
+        # hook (usage / idle / receipts) and MCP tools silently follow. Not refused
+        # (non-isolated Trio runs share a workspace), but make it loud.
+        for config_name, siblings in (
+            await asyncio.to_thread(live_foreign_config_bridges, Path(workspace), bridge_dir)
+        ).items():
+            for sibling in siblings:
+                _logger.warning(
+                    "cursor-native: workspace %s .cursor/%s is bound to LIVE session %s "
+                    "(bridge %s); this launch (session=%s, bridge %s) overwrites it, so that "
+                    "session's %s now route here. Use a separate worktree per concurrent "
+                    "session to avoid this.",
+                    workspace,
+                    config_name,
+                    read_bridge_owner(sibling) or "<unknown>",
+                    sibling,
+                    session_id,
+                    bridge_dir,
+                    "stop hooks (usage, turn-end idle, receipts)"
+                    if config_name == "hooks.json"
+                    else "Omnigent MCP tools",
+                    extra={"session_id": session_id},
+                )
+        # Skipped when the project mcp.json is the user one (workspace == HOME): a
+        # server bound to this bridge there would attach every Cursor on the machine
+        # to this session. Cursor has no per-session MCP config, so no tools here.
+        mcp_config = write_mcp_config(Path(workspace), bridge_dir)
+        if mcp_config is None:
             _logger.warning(
-                "cursor-native: the user ~/.cursor/mcp.json already declares an "
-                "'omnigent' MCP server that is not bound to this session; this Cursor "
-                "will load it. Remove it unless another tool owns it (session=%s).",
+                "cursor-native: workspace %s shares the user ~/.cursor/mcp.json; not "
+                "registering this session's Omnigent MCP server, so the Cursor TUI has no "
+                "Omnigent tools (launch from a project directory to get them) (session=%s).",
+                workspace,
                 session_id,
                 extra={"session_id": session_id},
             )
-    # Register the cursor ``stop`` hook that captures per-turn token usage into
-    # the bridge dir for the usage forwarder below (see cursor_native_usage).
-    # Skipped when the project hooks.json is the user one (workspace == HOME):
-    # there it would fire for every Cursor session on the machine.
-    if write_hooks_config(Path(workspace), bridge_dir) is None:
-        _logger.warning(
-            "cursor-native: workspace %s shares the user ~/.cursor/hooks.json; not "
-            "registering the usage stop hook, so this session reports no token usage "
-            "and no turn-end idle (session=%s).",
-            workspace,
-            session_id,
-            extra={"session_id": session_id},
-        )
+            if user_mcp_has_omnigent_server():
+                _logger.warning(
+                    "cursor-native: the user ~/.cursor/mcp.json already declares an "
+                    "'omnigent' MCP server that is not bound to this session; this Cursor "
+                    "will load it. Remove it unless another tool owns it (session=%s).",
+                    session_id,
+                    extra={"session_id": session_id},
+                )
+        # Register the cursor ``stop`` hook that captures per-turn token usage into
+        # the bridge dir for the usage forwarder below (see cursor_native_usage).
+        # Skipped when the project hooks.json is the user one (workspace == HOME):
+        # there it would fire for every Cursor session on the machine.
+        if write_hooks_config(Path(workspace), bridge_dir) is None:
+            _logger.warning(
+                "cursor-native: workspace %s shares the user ~/.cursor/hooks.json; not "
+                "registering the usage stop hook, so this session reports no token usage "
+                "and no turn-end idle (session=%s).",
+                workspace,
+                session_id,
+                extra={"session_id": session_id},
+            )
     # Armed on the hooks files the TUI will load: only this launch's own project
     # stop hook may remain. Anything else (a foreign or shared-scope stop hook,
     # an unreadable/malformed config, workspace == HOME) leaves this launch
@@ -3142,6 +3187,7 @@ async def _auto_create_cursor_terminal(
         launch_epoch_ms,
         opted_in=launch_config.completion_receipts,
         precheck=receipt_precheck,
+        plugin_dir=plugin_dir,
     )
     if launch_config.completion_receipts and receipt_hold is not None:
         _logger.warning(
@@ -3153,6 +3199,9 @@ async def _auto_create_cursor_terminal(
         )
     cursor_command = resolve_cursor_executable()
     cursor_args = list(launch_config.terminal_launch_args or [])
+    if plugin_dir is not None:
+        # Repeatable flag: a user's own ``--plugin-dir`` passthrough still loads.
+        cursor_args = ["--plugin-dir", str(plugin_dir), *cursor_args]
     if "--approve-mcps" not in cursor_args:
         cursor_args.append("--approve-mcps")
     # On cold resume, pass ``--resume <chatId>`` to cursor-agent so the TUI

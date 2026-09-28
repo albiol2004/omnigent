@@ -333,15 +333,29 @@ class TestBridge:
         write_mcp_bridge_config(bridge_dir)
         assert (bridge_dir / "bridge.json").read_text(encoding="utf-8") == first
 
-    def test_cursor_project_key_matches_cursor_workspace_state(self) -> None:
-        assert cursor_project_key(Path("/Users/corey.zumar")) == "Users-corey.zumar"
+    @pytest.mark.parametrize(
+        ("workspace", "key"),
+        [
+            # Real cursor-agent 2026.09.26 names: every non-[a-zA-Z0-9] char is
+            # "-", runs collapse, the ends are trimmed, case is kept.
+            ("/Users/corey.zumar", "Users-corey-zumar"),
+            ("/var/tmp/r17c-12320/Ab_c.d e f", "var-tmp-r17c-12320-Ab-c-d-e-f"),
+            ("/home/coder/workflow-lab/.runtime/x", "home-coder-workflow-lab-runtime-x"),
+            ("/home/coder/ekona/syngenta_p_l", "home-coder-ekona-syngenta-p-l"),
+            ("/", "root"),
+        ],
+    )
+    def test_cursor_project_key_matches_cursor_workspace_state(
+        self, workspace: str, key: str
+    ) -> None:
+        assert cursor_project_key(Path(workspace)) == key
 
     def test_enable_mcp_for_workspace_removes_disabled_entry(
         self, tmp_path: Path, monkeypatch
     ) -> None:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         disabled_path = (
-            tmp_path / ".cursor" / "projects" / "Users-corey.zumar" / "mcp-disabled.json"
+            tmp_path / ".cursor" / "projects" / "Users-corey-zumar" / "mcp-disabled.json"
         )
         disabled_path.parent.mkdir(parents=True)
         disabled_path.write_text('["omnigent", "other"]\n', encoding="utf-8")
@@ -349,6 +363,18 @@ class TestBridge:
         enable_mcp_for_workspace(Path("/Users/corey.zumar"))
 
         assert json.loads(disabled_path.read_text(encoding="utf-8")) == ["other"]
+
+    def test_enable_mcp_for_underscore_workspace(self, tmp_path: Path, monkeypatch) -> None:
+        # r17 N16: cursor names ``/w/syngenta_p_l``'s state dir ``w-syngenta-p-l``;
+        # the old key (``w-syngenta_p_l``) missed it and the re-enable no-oped.
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        disabled_path = tmp_path / ".cursor" / "projects" / "w-syngenta-p-l" / "mcp-disabled.json"
+        disabled_path.parent.mkdir(parents=True)
+        disabled_path.write_text('["omnigent"]\n', encoding="utf-8")
+
+        enable_mcp_for_workspace(Path("/w/syngenta_p_l"))
+
+        assert json.loads(disabled_path.read_text(encoding="utf-8")) == []
 
     def test_allow_mcp_tools_in_cli_config_adds_specific_allow_rules(
         self, tmp_path: Path, monkeypatch

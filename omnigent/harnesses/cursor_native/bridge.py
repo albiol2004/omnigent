@@ -42,6 +42,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -1491,8 +1492,16 @@ def approve_mcp_server_for_workspace(workspace: Path) -> None:
 
 
 def cursor_project_key(workspace: Path) -> str:
-    """Return Cursor's project-state directory key for *workspace*."""
-    return str(workspace).strip("/").replace("/", "-") or "root"
+    """Return Cursor's project-state directory key for *workspace*.
+
+    Mirrors cursor-agent's own mangling (``~/.cursor/projects/<key>``): every
+    character outside ``[a-zA-Z0-9]`` becomes ``-``, runs of ``-`` collapse to
+    one and leading/trailing ``-`` are dropped; case is kept. So
+    ``/var/tmp/Ab_c.d e`` is ``var-tmp-Ab-c-d-e``. ``root`` stands in for an
+    empty key (``/``), never the projects dir itself.
+    """
+    key = re.sub(r"-+", "-", re.sub(r"[^a-zA-Z0-9]", "-", str(workspace))).strip("-")
+    return key or "root"
 
 
 def enable_mcp_for_workspace(workspace: Path, server_name: str = _MCP_SERVER_NAME) -> None:

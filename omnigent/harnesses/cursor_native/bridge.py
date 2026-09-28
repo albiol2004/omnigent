@@ -14,14 +14,26 @@ project-scoped files, and each bakes ONE session's bridge dir. Two cursor-native
 sessions launched in the same workspace therefore share one slot, and the last
 launch wins: both TUIs' stop hooks (usage, turn-end idle, completion receipts)
 and MCP tools route to the last launcher's bridge dir. cursor-agent reads these
-only from the project/user/team/enterprise locations (its ``--plugin-dir``
-plugins can also carry hooks and MCP servers, but that route is unverified for
-the TUI and not used). The runner does not refuse such launches (non-isolated
-Trio runs rely on them); it logs a warning naming both sessions when a launch
-overwrites a slot still bound to a LIVE sibling
-(:func:`live_foreign_config_bridges`). Give concurrent sessions distinct
-worktrees to avoid it. Chat-transcript binding is NOT affected: each session is
-pinned to its own chat (see :mod:`omnigent.harnesses.cursor_native.forwarder`).
+only from the project/user/team/enterprise locations and from ``--plugin-dir``
+plugins. The runner does not refuse such launches (non-isolated Trio runs rely
+on them); it logs a warning naming both sessions when a launch overwrites a slot
+still bound to a LIVE sibling (:func:`live_foreign_config_bridges`). Give
+concurrent sessions distinct worktrees to avoid it.
+
+Opt-in per-launch config (``OMNIGENT_CURSOR_PLUGIN_DIR=1``, see
+:func:`plugin_dir_mode_enabled`): the launch instead writes a private Cursor
+plugin under its own bridge dir (:func:`write_cursor_plugin` — ``mcp.json`` with
+the bridge server, ``hooks/hooks.json`` with the usage stop hook) and passes it
+as ``--plugin-dir``, so each session has its own hooks and MCP server and the
+project ``mcp.json`` is not written. One constant, session-agnostic entry
+remains in the project ``hooks.json`` (:func:`write_plugin_stop_armer`):
+cursor-agent (2026.09.23 / 2026.09.26 bundles) only dispatches the ``stop``
+event when the user or project hooks file declares a ``stop`` hook, although it
+then runs plugin stop hooks too. The entry is a no-op and identical for every
+session, so concurrent launches no longer overwrite each other.
+
+Chat-transcript binding is NOT affected by either route: each session is pinned
+to its own chat (see :mod:`omnigent.harnesses.cursor_native.forwarder`).
 """
 
 from __future__ import annotations
@@ -35,7 +47,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -62,6 +74,19 @@ _HOOKS_CONFIG_FILE = "hooks.json"
 #: Module invoked by Omnigent's usage ``stop`` hook; marks entries we own.
 _USAGE_HOOK_MODULE = "omnigent.harnesses.cursor_native.usage"
 _MCP_SERVER_NAME = "omnigent"
+#: Env flag enabling the per-launch ``--plugin-dir`` config route (default off).
+PLUGIN_DIR_ENV_VAR = "OMNIGENT_CURSOR_PLUGIN_DIR"
+#: Plugin directory name. cursor-agent names a ``--plugin-dir`` plugin's MCP
+#: servers ``plugin-<directory basename>-<server>`` (not the manifest ``name``),
+#: so a constant basename keeps the server id -- and the ``Mcp(<id>:<tool>)``
+#: permission entries -- the same for every session.
+_PLUGIN_DIR_NAME = "omnigent"
+_PLUGIN_PARENT_DIR = "cursor-plugin"
+#: MCP server id cursor-agent gives the plugin's ``omnigent`` server.
+PLUGIN_MCP_SERVER_ID = f"plugin-{_PLUGIN_DIR_NAME}-{_MCP_SERVER_NAME}"
+#: The project ``stop`` entry that makes cursor-agent dispatch ``stop`` to
+#: plugin hooks. A shell no-op; the comment marks it as Omnigent's.
+PLUGIN_STOP_ARMER_COMMAND = "true # omnigent-plugin-stop-armer"
 _CURSOR_AUTO_APPROVE_TOOLS = [
     "list_comments",
     "sys_add_policy",
@@ -620,6 +645,190 @@ def write_hooks_config(
     return path
 
 
+def plugin_dir_mode_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Whether launches use the per-launch ``--plugin-dir`` config route.
+
+    Opt-in via ``OMNIGENT_CURSOR_PLUGIN_DIR`` (``1``/``true``/``yes``/``on``);
+    off by default, which keeps the project ``.cursor/{hooks,mcp}.json`` route.
+    """
+    value = (os.environ if env is None else env).get(PLUGIN_DIR_ENV_VAR, "")
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def plugin_dir_for_bridge(bridge_dir: Path) -> Path:
+    """This session's private Cursor plugin dir, inside its bridge dir."""
+    return bridge_dir / _PLUGIN_PARENT_DIR / _PLUGIN_DIR_NAME
+
+
+def _write_json_atomic(path: Path, payload: _JsonObject) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def write_cursor_plugin(
+    bridge_dir: Path,
+    *,
+    workspace: Path | None = None,
+    python_executable: str | None = None,
+) -> Path:
+    """Write this session's Cursor plugin (MCP server + usage stop hook).
+
+    The plugin is loaded with ``cursor-agent --plugin-dir <returned path>`` and
+    carries the same MCP server (:func:`build_mcp_config`) and ``stop`` hook
+    (:func:`build_hooks_config`) the project files carry on the default route,
+    bound to this session's bridge dir only. Layout (read in the 2026.09.26
+    bundle): ``.cursor-plugin/plugin.json`` (manifest), ``mcp.json`` and
+    ``hooks/hooks.json``. cursor-agent names the server
+    :data:`PLUGIN_MCP_SERVER_ID` and needs no server approval for it; tool calls
+    still pass its permission config, so the tools are allow-listed under that
+    id. Rewritten on every launch.
+
+    :param workspace: When given, re-enable the plugin server if Cursor has it
+        in the workspace's disabled list.
+    :returns: The plugin dir.
+    """
+    write_mcp_bridge_config(bridge_dir)
+    plugin_dir = plugin_dir_for_bridge(bridge_dir)
+    _ensure_dir(plugin_dir / ".cursor-plugin")
+    _ensure_dir(plugin_dir / "hooks")
+    _write_json_atomic(
+        plugin_dir / ".cursor-plugin" / "plugin.json",
+        {
+            "name": _PLUGIN_DIR_NAME,
+            "description": "Omnigent session bridge (MCP tools and usage hook).",
+        },
+    )
+    _write_json_atomic(
+        plugin_dir / _MCP_CONFIG_FILE,
+        build_mcp_config(bridge_dir, python_executable=python_executable),
+    )
+    _write_json_atomic(
+        plugin_dir / "hooks" / _HOOKS_CONFIG_FILE,
+        build_hooks_config(bridge_dir, python_executable=python_executable),
+    )
+    if workspace is not None:
+        enable_mcp_for_workspace(workspace, PLUGIN_MCP_SERVER_ID)
+    allow_mcp_tools_in_cli_config(PLUGIN_MCP_SERVER_ID)
+    return plugin_dir
+
+
+def is_plugin_stop_armer(entry: object) -> bool:
+    """Whether a hooks.json entry is the no-op plugin stop armer."""
+    return (
+        isinstance(entry, dict)
+        and entry.get("command") == PLUGIN_STOP_ARMER_COMMAND
+        and entry.get("type", "command") == "command"
+    )
+
+
+def _owned_bridge_is_live(bridge: str, is_live: Callable[[Path], bool] | None) -> bool:
+    path = Path(bridge)
+    return path.is_dir() and (is_live or _bridge_session_live)(path)
+
+
+def write_plugin_stop_armer(
+    workspace: Path,
+    *,
+    home: Path | None = None,
+    is_live: Callable[[Path], bool] | None = None,
+) -> Path | None:
+    """Make cursor-agent dispatch ``stop`` to plugin hooks in *workspace*.
+
+    cursor-agent fires the ``stop`` event only when the user or project hooks
+    file declares a ``stop`` hook; it then runs plugin stop hooks as well. This
+    merges one constant no-op entry (:data:`PLUGIN_STOP_ARMER_COMMAND`) into the
+    project ``hooks.json``; it is identical for every session, so concurrent
+    launches write the same bytes. Omnigent usage hooks left by earlier
+    project-route launches are dropped unless their session is still live
+    (a live one keeps working and is reported by
+    :func:`live_foreign_config_bridges`). Other hooks are preserved.
+
+    :returns: The written path, or ``None`` (nothing written) when the project
+        file is the user file (:func:`shared_hooks_scope_reason`).
+    """
+    import shlex
+
+    if shared_hooks_scope_reason(workspace, home=home) is not None:
+        return None
+    cursor_dir = workspace / ".cursor"
+    cursor_dir.mkdir(parents=True, exist_ok=True)
+    path = cursor_dir / _HOOKS_CONFIG_FILE
+    loaded = _load_json_config(path)
+    existing: _JsonObject = loaded if isinstance(loaded, dict) else {}
+    hooks = existing.get("hooks")
+    if not isinstance(hooks, dict):
+        hooks = {}
+    existing["hooks"] = hooks
+    existing.setdefault("version", 1)
+    for event, entries in list(hooks.items()):
+        if not isinstance(entries, list):
+            continue
+        kept = []
+        for entry in entries:
+            if _is_omnigent_usage_hook(entry):
+                try:
+                    bridge = _arg_after(shlex.split(str(entry.get("command"))), "--bridge-dir")
+                except ValueError:
+                    bridge = None
+                if bridge is None or not _owned_bridge_is_live(bridge, is_live):
+                    continue
+            kept.append(entry)
+        hooks[event] = kept
+    stop = hooks.get("stop")
+    if not isinstance(stop, list):
+        stop = []
+    stop = [entry for entry in stop if not is_plugin_stop_armer(entry)]
+    hooks["stop"] = [*stop, {"command": PLUGIN_STOP_ARMER_COMMAND}]
+    if _load_json_config(path) != existing:
+        _write_json_atomic(path, existing)
+    return path
+
+
+def remove_stale_workspace_mcp_server(
+    workspace: Path,
+    *,
+    home: Path | None = None,
+    is_live: Callable[[Path], bool] | None = None,
+) -> bool:
+    """Drop a dead session's ``omnigent`` server from the project ``mcp.json``.
+
+    On the plugin route the project file is not written, but a server an
+    earlier project-route launch left there would still load next to this
+    session's plugin server and route to that old bridge. Removes the entry
+    only when it has Omnigent's shape (``serve-mcp --bridge-dir``) and its
+    session is not live; deletes the file when nothing else is left in it.
+    Never touches the user file (:func:`shared_mcp_scope_reason`).
+
+    :returns: Whether an entry was removed.
+    """
+    if shared_mcp_scope_reason(workspace, home=home) is not None:
+        return False
+    path = workspace / ".cursor" / _MCP_CONFIG_FILE
+    loaded = _load_json_config(path)
+    servers = loaded.get("mcpServers") if isinstance(loaded, dict) else None
+    entry = servers.get(_MCP_SERVER_NAME) if isinstance(servers, dict) else None
+    if (
+        not isinstance(loaded, dict)
+        or not isinstance(servers, dict)
+        or not isinstance(entry, dict)
+    ):
+        return False
+    args = entry.get("args")
+    if not isinstance(args, list) or "serve-mcp" not in args:
+        return False
+    bridge = _arg_after(args, "--bridge-dir")
+    if bridge is not None and _owned_bridge_is_live(bridge, is_live):
+        return False
+    del servers[_MCP_SERVER_NAME]
+    if not servers and set(loaded) <= {"mcpServers"}:
+        with contextlib.suppress(OSError):
+            path.unlink()
+        return True
+    _write_json_atomic(path, loaded)
+    return True
+
+
 #: System-wide ``hooks.json`` locations from Cursor's hooks documentation
 #: (Linux, macOS). Checked when present; not verified against a live install.
 _SYSTEM_HOOKS_PATHS = (
@@ -682,7 +891,8 @@ def _stop_hooks_hold_reason(
 ) -> str | None:
     """Why *path* rules out completion receipts, or ``None`` if it does not.
 
-    A missing file is fine. An unreadable or malformed one fails closed, as does
+    A missing file is fine, and so is the no-op plugin stop armer
+    (:func:`is_plugin_stop_armer`). An unreadable or malformed one fails closed, as does
     any entry under a stop-type event (``stop``, ``subagentStop``, matched
     case-insensitively) that is not an owned Omnigent usage hook for this
     launch: its ``--bridge-dir`` must be *owned_bridge*, or, with *stale_ok*,
@@ -715,6 +925,8 @@ def _stop_hooks_hold_reason(
         for entry in entries:
             if not isinstance(entry, dict):
                 return f"hooks_config_malformed:{path}"
+            if is_plugin_stop_armer(entry):
+                continue
             bridge = _owned_hook_bridge(entry.get("command"))
             if bridge is None:
                 return f"foreign_stop_hook:{path}"
@@ -943,6 +1155,7 @@ def completion_receipt_hook_hold_reason(
     *,
     home: Path | None = None,
     system_paths: tuple[Path, ...] | None = None,
+    plugin_dir: Path | None = None,
 ) -> str | None:
     """Check the hooks.json files Cursor loads for this launch before receipts arm.
 
@@ -954,16 +1167,29 @@ def completion_receipt_hook_hold_reason(
     the project file are never edited to gain the capability. Run after
     :func:`write_hooks_config`, on the files the TUI will load.
 
+    With *plugin_dir* (the per-launch plugin route), this launch's hook lives in
+    the plugin's ``hooks/hooks.json`` instead: that file must exist and hold
+    only this launch's hook, and the project file may hold only the no-op
+    armer (any Omnigent hook there belongs to another session).
+
     :returns: ``None`` when no such hook exists, else the first hold reason.
     """
     reason = shared_hooks_scope_reason(workspace, home=home)
     if reason is not None:
         return reason
     reason = _stop_hooks_hold_reason(
-        workspace / ".cursor" / _HOOKS_CONFIG_FILE, owned_bridge=bridge_dir
+        workspace / ".cursor" / _HOOKS_CONFIG_FILE,
+        owned_bridge=None if plugin_dir is not None else bridge_dir,
     )
     if reason is not None:
         return reason
+    if plugin_dir is not None:
+        plugin_hooks = plugin_dir / "hooks" / _HOOKS_CONFIG_FILE
+        if not plugin_hooks.is_file():
+            return f"plugin_hooks_missing:{plugin_hooks}"
+        reason = _stop_hooks_hold_reason(plugin_hooks, owned_bridge=bridge_dir)
+        if reason is not None:
+            return reason
     for path in (
         (home if home is not None else Path.home()) / ".cursor" / _HOOKS_CONFIG_FILE,
         *(_SYSTEM_HOOKS_PATHS if system_paths is None else system_paths),
@@ -999,6 +1225,7 @@ def arm_completion_receipts(
     precheck: str | None = None,
     home: Path | None = None,
     system_paths: tuple[Path, ...] | None = None,
+    plugin_dir: Path | None = None,
 ) -> str | None:
     """Set this launch's completion-receipt capability from the opt-in and hooks.
 
@@ -1016,7 +1243,7 @@ def arm_completion_receipts(
     if not opted_in:
         return "not_opted_in"
     reason = precheck or completion_receipt_hook_hold_reason(
-        workspace, bridge_dir, home=home, system_paths=system_paths
+        workspace, bridge_dir, home=home, system_paths=system_paths, plugin_dir=plugin_dir
     )
     if reason is None:
         cursor_native_status.write_receipt_epoch(bridge_dir, launch_epoch_ms)
@@ -1055,7 +1282,7 @@ def cursor_project_key(workspace: Path) -> str:
     return str(workspace).strip("/").replace("/", "-") or "root"
 
 
-def enable_mcp_for_workspace(workspace: Path) -> None:
+def enable_mcp_for_workspace(workspace: Path, server_name: str = _MCP_SERVER_NAME) -> None:
     """Ensure Cursor does not keep the Omnigent MCP disabled for this workspace."""
     disabled_path = (
         Path.home() / ".cursor" / "projects" / cursor_project_key(workspace) / "mcp-disabled.json"
@@ -1064,16 +1291,20 @@ def enable_mcp_for_workspace(workspace: Path) -> None:
         raw = json.loads(disabled_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return
-    if not isinstance(raw, list) or _MCP_SERVER_NAME not in raw:
+    if not isinstance(raw, list) or server_name not in raw:
         return
-    updated = [item for item in raw if item != _MCP_SERVER_NAME]
+    updated = [item for item in raw if item != server_name]
     tmp = disabled_path.with_suffix(disabled_path.suffix + ".tmp")
     tmp.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, disabled_path)
 
 
-def allow_mcp_tools_in_cli_config() -> None:
-    """Allow Omnigent MCP tool calls in Cursor's CLI permission config."""
+def allow_mcp_tools_in_cli_config(server_name: str = _MCP_SERVER_NAME) -> None:
+    """Allow Omnigent MCP tool calls in Cursor's CLI permission config.
+
+    *server_name* is the id cursor-agent gives the server: ``omnigent`` for the
+    project ``mcp.json``, :data:`PLUGIN_MCP_SERVER_ID` for the plugin route.
+    """
     path = Path.home() / ".cursor" / "cli-config.json"
     try:
         config = json.loads(path.read_text(encoding="utf-8"))
@@ -1089,7 +1320,7 @@ def allow_mcp_tools_in_cli_config() -> None:
         return
     existing = {item for item in allow if isinstance(item, str)}
     for tool_name in _CURSOR_AUTO_APPROVE_TOOLS:
-        entry = f"Mcp({_MCP_SERVER_NAME}:{tool_name})"
+        entry = f"Mcp({server_name}:{tool_name})"
         if entry not in existing:
             allow.append(entry)
             existing.add(entry)

@@ -1,0 +1,267 @@
+"""Unit tests for the cursor-native per-launch ``--plugin-dir`` config route.
+
+The route (``OMNIGENT_CURSOR_PLUGIN_DIR=1``) gives each session its own Cursor
+plugin under its bridge dir carrying the Omnigent MCP server and the usage
+``stop`` hook, instead of the single-slot project ``.cursor/{hooks,mcp}.json``.
+Only a constant no-op ``stop`` entry (the "armer") is merged into the project
+``hooks.json``: cursor-agent dispatches ``stop`` to plugin hooks only when the
+user or project hooks file declares one (verified against the 2026.09.26 CLI).
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from omnigent.harnesses.cursor_native import bridge as cb
+from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+
+@pytest.fixture(autouse=True)
+def _bridge_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bridge dirs live under ``tmp_path / "cb"`` (the secure-dir allowlist root)."""
+    monkeypatch.setattr(cb, "_BRIDGE_ROOT", tmp_path / "cb")
+
+
+@pytest.fixture
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A private HOME with a Cursor CLI config, so no test touches the real one."""
+    home = tmp_path / "home"
+    (home / ".cursor").mkdir(parents=True)
+    (home / ".cursor" / "cli-config.json").write_text(
+        json.dumps({"permissions": {"allow": ["Shell(ls)"], "deny": []}})
+    )
+    monkeypatch.setenv("HOME", str(home))
+    return home
+
+
+def _stop_hooks(path: Path) -> list[dict[str, object]]:
+    return json.loads(path.read_text())["hooks"]["stop"]
+
+
+def _owned(bridge: Path) -> dict[str, str]:
+    return cb.build_hooks_config(bridge)["hooks"]["stop"][0]  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("value", "enabled"),
+    [("1", True), ("true", True), ("ON", True), (" yes ", True), ("0", False), ("", False)],
+)
+def test_plugin_dir_mode_flag(value: str, enabled: bool) -> None:
+    assert cb.plugin_dir_mode_enabled({cb.PLUGIN_DIR_ENV_VAR: value}) is enabled
+
+
+def test_plugin_dir_mode_defaults_off() -> None:
+    assert cb.plugin_dir_mode_enabled({}) is False
+
+
+def test_plugin_dir_basename_fixes_server_id(tmp_path: Path) -> None:
+    """cursor-agent ids plugin servers ``plugin-<dir basename>-<server>``."""
+    plugin_dir = cb.plugin_dir_for_bridge(tmp_path / "cb" / "bridge")
+    assert plugin_dir.is_relative_to(tmp_path / "cb" / "bridge")
+    assert f"plugin-{plugin_dir.name}-omnigent" == cb.PLUGIN_MCP_SERVER_ID
+
+
+class TestWriteCursorPlugin:
+    def test_layout_binds_only_this_bridge(self, tmp_path: Path, home: Path) -> None:
+        del home
+        bridge = tmp_path / "cb" / "bridge"
+        plugin_dir = cb.write_cursor_plugin(bridge, python_executable="/usr/bin/python3")
+        assert plugin_dir == cb.plugin_dir_for_bridge(bridge)
+        manifest = json.loads((plugin_dir / ".cursor-plugin" / "plugin.json").read_text())
+        assert manifest["name"] == "omnigent"
+        mcp = json.loads((plugin_dir / "mcp.json").read_text())
+        assert mcp == cb.build_mcp_config(bridge, python_executable="/usr/bin/python3")
+        hooks = json.loads((plugin_dir / "hooks" / "hooks.json").read_text())
+        assert hooks == cb.build_hooks_config(bridge, python_executable="/usr/bin/python3")
+        assert cb.is_owned_usage_hook_command(hooks["hooks"]["stop"][0]["command"])
+        assert (bridge / "bridge.json").is_file()  # relay token for serve-mcp
+
+    def test_does_not_touch_the_workspace(self, tmp_path: Path, home: Path) -> None:
+        del home
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        cb.write_cursor_plugin(tmp_path / "cb" / "bridge", workspace=ws)
+        assert list(ws.iterdir()) == []
+
+    def test_allows_tools_under_plugin_server_id(self, tmp_path: Path, home: Path) -> None:
+        cb.write_cursor_plugin(tmp_path / "cb" / "bridge")
+        cb.write_cursor_plugin(tmp_path / "cb" / "bridge2")  # idempotent across sessions
+        allow = json.loads((home / ".cursor" / "cli-config.json").read_text())["permissions"][
+            "allow"
+        ]
+        assert f"Mcp({cb.PLUGIN_MCP_SERVER_ID}:sys_os_read)" in allow
+        assert len(allow) == len(set(allow))
+        assert not any(a.startswith("Mcp(omnigent:") for a in allow)
+
+    def test_reenables_disabled_plugin_server(self, tmp_path: Path, home: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        disabled = home / ".cursor" / "projects" / cb.cursor_project_key(ws) / "mcp-disabled.json"
+        disabled.parent.mkdir(parents=True)
+        disabled.write_text(json.dumps([cb.PLUGIN_MCP_SERVER_ID, "other"]))
+        cb.write_cursor_plugin(tmp_path / "cb" / "bridge", workspace=ws)
+        assert json.loads(disabled.read_text()) == ["other"]
+
+    def test_two_sessions_get_separate_plugins(self, tmp_path: Path, home: Path) -> None:
+        del home
+        a = cb.write_cursor_plugin(tmp_path / "cb" / "a")
+        b = cb.write_cursor_plugin(tmp_path / "cb" / "b")
+        assert a != b
+        assert str(tmp_path / "cb" / "a") in (a / "hooks" / "hooks.json").read_text()
+        assert str(tmp_path / "cb" / "b") not in (a / "hooks" / "hooks.json").read_text()
+        assert str(tmp_path / "cb" / "b") in (b / "mcp.json").read_text()
+
+
+class TestPluginStopArmer:
+    def test_writes_constant_armer(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        path = cb.write_plugin_stop_armer(ws, home=tmp_path / "home")
+        assert path == ws / ".cursor" / "hooks.json"
+        assert _stop_hooks(path) == [{"command": cb.PLUGIN_STOP_ARMER_COMMAND}]
+        before = path.read_bytes()
+        mtime = path.stat().st_mtime_ns
+        assert cb.write_plugin_stop_armer(ws, home=tmp_path / "home") == path
+        assert path.read_bytes() == before
+        assert path.stat().st_mtime_ns == mtime  # no rewrite when already armed
+
+    def test_preserves_foreign_hooks(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        (ws / ".cursor").mkdir(parents=True)
+        (ws / ".cursor" / "hooks.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "hooks": {
+                        "preToolUse": [{"command": "./policy.sh"}],
+                        "stop": [{"command": "./mine.sh"}],
+                    },
+                }
+            )
+        )
+        path = cb.write_plugin_stop_armer(ws, home=tmp_path / "home")
+        assert path is not None
+        data = json.loads(path.read_text())
+        assert data["hooks"]["preToolUse"] == [{"command": "./policy.sh"}]
+        assert data["hooks"]["stop"] == [
+            {"command": "./mine.sh"},
+            {"command": cb.PLUGIN_STOP_ARMER_COMMAND},
+        ]
+
+    def test_drops_dead_project_route_hook_keeps_live(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        dead, live = tmp_path / "cb" / "dead", tmp_path / "cb" / "live"
+        dead.mkdir(parents=True)
+        live.mkdir(parents=True)
+        (ws / ".cursor").mkdir(parents=True)
+        (ws / ".cursor" / "hooks.json").write_text(
+            json.dumps({"version": 1, "hooks": {"stop": [_owned(dead), _owned(live)]}})
+        )
+        path = cb.write_plugin_stop_armer(
+            ws, home=tmp_path / "home", is_live=lambda b: b.name == "live"
+        )
+        assert path is not None
+        assert _stop_hooks(path) == [_owned(live), {"command": cb.PLUGIN_STOP_ARMER_COMMAND}]
+
+    def test_shared_user_scope_is_left_alone(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        assert cb.write_plugin_stop_armer(home, home=home) is None
+        assert not (home / ".cursor").exists()
+
+
+class TestRemoveStaleWorkspaceMcpServer:
+    def _write(self, ws: Path, servers: dict[str, object]) -> Path:
+        path = ws / ".cursor" / "mcp.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": servers}))
+        return path
+
+    def test_removes_dead_entry_and_empty_file(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        dead = tmp_path / "cb" / "dead"
+        path = self._write(ws, dict(cb.build_mcp_config(dead)["mcpServers"]))  # type: ignore[arg-type]
+        assert cb.remove_stale_workspace_mcp_server(ws, home=tmp_path / "home") is True
+        assert not path.exists()
+
+    def test_keeps_other_servers(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        servers = dict(cb.build_mcp_config(tmp_path / "cb" / "dead")["mcpServers"])  # type: ignore[arg-type]
+        servers["user"] = {"command": "user-mcp"}
+        path = self._write(ws, servers)
+        assert cb.remove_stale_workspace_mcp_server(ws, home=tmp_path / "home") is True
+        assert json.loads(path.read_text()) == {"mcpServers": {"user": {"command": "user-mcp"}}}
+
+    def test_keeps_live_sibling_and_foreign_omnigent(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        live = tmp_path / "cb" / "live"
+        live.mkdir(parents=True)
+        path = self._write(ws, dict(cb.build_mcp_config(live)["mcpServers"]))  # type: ignore[arg-type]
+        before = path.read_bytes()
+        assert not cb.remove_stale_workspace_mcp_server(
+            ws, home=tmp_path / "home", is_live=lambda _b: True
+        )
+        assert path.read_bytes() == before
+        path = self._write(ws, {"omnigent": {"command": "npx", "args": ["some-other-omnigent"]}})
+        before = path.read_bytes()
+        assert not cb.remove_stale_workspace_mcp_server(ws, home=tmp_path / "home")
+        assert path.read_bytes() == before
+
+
+class TestPluginRouteReceipts:
+    def _arm(self, tmp_path: Path, plugin_dir: Path | None) -> str | None:
+        return cb.arm_completion_receipts(
+            tmp_path / "cb" / "bridge",
+            tmp_path / "ws",
+            123,
+            opted_in=True,
+            home=tmp_path / "home",
+            system_paths=(),
+            plugin_dir=plugin_dir,
+        )
+
+    def test_armer_plus_own_plugin_hook_arms(self, tmp_path: Path, home: Path) -> None:
+        del home
+        (tmp_path / "ws").mkdir()
+        plugin_dir = cb.write_cursor_plugin(tmp_path / "cb" / "bridge")
+        cb.write_plugin_stop_armer(tmp_path / "ws", home=tmp_path / "home")
+        assert self._arm(tmp_path, plugin_dir) is None
+        assert cursor_native_status.read_receipt_epoch(tmp_path / "cb" / "bridge") == 123
+
+    def test_missing_plugin_hooks_hold(self, tmp_path: Path) -> None:
+        (tmp_path / "ws").mkdir()
+        plugin_dir = tmp_path / "cb" / "bridge" / "cursor-plugin" / "omnigent"
+        reason = self._arm(tmp_path, plugin_dir)
+        assert reason == f"plugin_hooks_missing:{plugin_dir / 'hooks' / 'hooks.json'}"
+        assert cursor_native_status.read_receipt_epoch(tmp_path / "cb" / "bridge") is None
+
+    def test_live_sibling_project_hook_holds(self, tmp_path: Path, home: Path) -> None:
+        del home
+        plugin_dir = cb.write_cursor_plugin(tmp_path / "cb" / "bridge")
+        path = tmp_path / "ws" / ".cursor" / "hooks.json"
+        path.parent.mkdir(parents=True)
+        sibling = _owned(tmp_path / "cb" / "sibling")
+        path.write_text(json.dumps({"hooks": {"stop": [sibling]}}))
+        assert self._arm(tmp_path, plugin_dir) == f"foreign_stop_hook:{path}"
+
+    def test_foreign_bridge_in_plugin_holds(self, tmp_path: Path, home: Path) -> None:
+        del home
+        (tmp_path / "ws").mkdir()
+        plugin_dir = cb.write_cursor_plugin(tmp_path / "cb" / "other")
+        reason = self._arm(tmp_path, plugin_dir)
+        assert reason == f"foreign_stop_hook:{plugin_dir / 'hooks' / 'hooks.json'}"
+
+    def test_armer_is_benign_on_the_project_route(self, tmp_path: Path) -> None:
+        bridge = tmp_path / "cb" / "bridge"
+        ws = tmp_path / "ws"
+        path = ws / ".cursor" / "hooks.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {"hooks": {"stop": [{"command": cb.PLUGIN_STOP_ARMER_COMMAND}, _owned(bridge)]}}
+            )
+        )
+        assert self._arm(tmp_path, None) is None

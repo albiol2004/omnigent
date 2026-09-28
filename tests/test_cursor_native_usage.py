@@ -95,6 +95,52 @@ class TestRecordUsagePayload:
         assert not (tmp_path / usage.USAGE_FILE).exists()
 
 
+@pytest.fixture(autouse=True)
+def _no_session_bridge_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests may run inside a plugin-route cursor TUI; don't inherit its marker."""
+    monkeypatch.delenv(usage.SESSION_BRIDGE_ENV_VAR, raising=False)
+
+
+class TestSiblingHookFiltering:
+    """A live project-route sibling's hook firing inside a plugin-route TUI (N3)."""
+
+    def test_unset_marker_records(self, tmp_path: Path) -> None:
+        assert usage._hook_fired_for_bridge(tmp_path, env={}) is True
+
+    def test_own_bridge_records(self, tmp_path: Path) -> None:
+        env = {usage.SESSION_BRIDGE_ENV_VAR: str(tmp_path)}
+        assert usage._hook_fired_for_bridge(tmp_path, env=env) is True
+
+    def test_other_bridge_skips(self, tmp_path: Path) -> None:
+        env = {usage.SESSION_BRIDGE_ENV_VAR: str(tmp_path / "plugin-session")}
+        assert usage._hook_fired_for_bridge(tmp_path / "sibling", env=env) is False
+
+    def test_cli_skips_foreign_turn_entirely(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """No usage line and no turn-end marker in the sibling's bridge."""
+        import io
+
+        sibling = tmp_path / "sibling"
+        sibling.mkdir()
+        monkeypatch.setenv(usage.SESSION_BRIDGE_ENV_VAR, str(tmp_path / "plugin-session"))
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(_TURN1)))
+        assert usage._cli_record_usage(sibling) == 0
+        assert capsys.readouterr().out == "{}"
+        assert list(sibling.iterdir()) == []
+
+    def test_cli_records_own_turn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        import io
+
+        monkeypatch.setenv(usage.SESSION_BRIDGE_ENV_VAR, str(tmp_path))
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(_TURN1)))
+        assert usage._cli_record_usage(tmp_path) == 0
+        assert capsys.readouterr().out == "{}"
+        assert (tmp_path / usage.USAGE_FILE).read_text().strip()
+
+
 class TestRecordUsageCli:
     def test_cli_reads_stdin_appends_and_emits_continue(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture

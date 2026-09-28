@@ -46,6 +46,14 @@ else:
 
 _logger = logging.getLogger(__name__)
 
+#: Set in a plugin-route (``--plugin-dir``) cursor TUI's environment to that
+#: session's bridge dir; cursor-agent passes its env to hook commands. A
+#: project ``hooks.json`` usage hook left by a LIVE project-route sibling in the
+#: same workspace also fires for the plugin session's turns (project hooks load
+#: for every session), so the recorder drops a firing whose ``--bridge-dir`` is
+#: not the one named here: the turn is not the sibling's.
+SESSION_BRIDGE_ENV_VAR = "OMNIGENT_CURSOR_SESSION_BRIDGE_DIR"
+
 #: Append-only log of per-turn usage written by the ``stop`` hook recorder and
 #: tailed by the poller. One JSON object per line (per completed turn).
 USAGE_FILE = "cursor_usage.jsonl"
@@ -125,6 +133,19 @@ def record_usage_payload(bridge_dir: Path, payload: object) -> bool:
     return True
 
 
+def _hook_fired_for_bridge(bridge_dir: Path, env: dict[str, str] | None = None) -> bool:
+    """Whether this hook firing belongs to *bridge_dir*'s session.
+
+    True unless the cursor process names a different session's bridge in
+    :data:`SESSION_BRIDGE_ENV_VAR` (only plugin-route launches set it, so the
+    project-file route is unaffected).
+    """
+    owner = (os.environ if env is None else env).get(SESSION_BRIDGE_ENV_VAR, "")
+    if not owner:
+        return True
+    return os.path.realpath(owner) == os.path.realpath(bridge_dir)
+
+
 def _cli_record_usage(bridge_dir: Path) -> int:
     """Hook entrypoint: read the JSON payload from stdin and append it.
 
@@ -141,6 +162,12 @@ def _cli_record_usage(bridge_dir: Path) -> int:
     """
     from omnigent.harnesses.cursor_native import status as cursor_native_status
 
+    if not _hook_fired_for_bridge(bridge_dir):
+        # A sibling session's project hook firing inside a plugin-route TUI.
+        with contextlib.suppress(OSError):
+            sys.stdin.read()
+        sys.stdout.write("{}")
+        return 0
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}

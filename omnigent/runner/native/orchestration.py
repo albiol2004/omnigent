@@ -2937,7 +2937,10 @@ async def _auto_create_cursor_terminal(
         ReceiptEpochClearError,
         clear_cursor_status_state,
     )
-    from omnigent.harnesses.cursor_native.usage import clear_cursor_usage_state
+    from omnigent.harnesses.cursor_native.usage import (
+        SESSION_BRIDGE_ENV_VAR,
+        clear_cursor_usage_state,
+    )
 
     bridge_dir = bridge_dir_for_session_id(session_id)
 
@@ -3123,22 +3126,32 @@ async def _auto_create_cursor_terminal(
                 extra={"session_id": session_id},
             )
         # A LIVE project-route sibling's server/hook stays in the project files
-        # and is loaded by this session too; say so (it clears once that ends).
+        # and is loaded by this session too (it clears once that ends). Its stop
+        # hook skips this session's turns (SESSION_BRIDGE_ENV_VAR in the terminal
+        # env below); its MCP server cannot be filtered, so say so, once.
+        siblings_by_bridge: dict[Path, list[str]] = {}
         for config_name, siblings in (
             await asyncio.to_thread(live_foreign_config_bridges, Path(workspace), bridge_dir)
         ).items():
             for sibling in siblings:
-                _logger.warning(
-                    "cursor-native: workspace %s .cursor/%s is still bound to LIVE "
-                    "project-route session %s (bridge %s); this plugin-route session "
-                    "(session=%s) loads it as well until that session ends.",
-                    workspace,
-                    config_name,
-                    read_bridge_owner(sibling) or "<unknown>",
-                    sibling,
-                    session_id,
-                    extra={"session_id": session_id},
-                )
+                siblings_by_bridge.setdefault(sibling, []).append(config_name)
+        for sibling, config_names in siblings_by_bridge.items():
+            sibling_session = read_bridge_owner(sibling) or "<unknown>"
+            _logger.warning(
+                "cursor-native: mixed hooks/MCP routes in workspace %s: LIVE project-route "
+                "session %s (bridge %s) still owns .cursor/%s. This plugin-route session "
+                "%s loads that config too until %s ends: its 'omnigent' MCP tools are "
+                "visible here (calls act as %s), while its stop hook ignores this "
+                "session's turns.",
+                workspace,
+                sibling_session,
+                sibling,
+                " and .cursor/".join(config_names),
+                session_id,
+                sibling_session,
+                sibling_session,
+                extra={"session_id": session_id},
+            )
     else:
         # ``.cursor/hooks.json`` / ``mcp.json`` hold ONE bridge dir per workspace:
         # a same-workspace launch re-points both at itself and the sibling's stop
@@ -3260,7 +3273,9 @@ async def _auto_create_cursor_terminal(
             ),
             command=cursor_command,
             args=cursor_args,
-            env={},
+            # Plugin route only: names this session's bridge to its hook
+            # commands (see SESSION_BRIDGE_ENV_VAR); the project route is unchanged.
+            env=({SESSION_BRIDGE_ENV_VAR: str(bridge_dir)} if plugin_dir is not None else {}),
             scrollback=100_000,
             tmux_allow_passthrough=True,
             tmux_start_on_attach=False,

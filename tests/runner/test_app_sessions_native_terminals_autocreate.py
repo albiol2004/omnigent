@@ -46,6 +46,7 @@ from omnigent.harnesses.codex_native.bridge import (
     write_bridge_state as write_codex_bridge_state,
 )
 from omnigent.harnesses.cursor_native import bridge as cursor_native_bridge
+from omnigent.harnesses.cursor_native import usage as cursor_native_usage
 from omnigent.harnesses.kiro_native import bridge as kiro_native_bridge
 from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
 from omnigent.inner.terminal import TerminalInstance
@@ -2022,6 +2023,9 @@ async def test_auto_create_cursor_terminal_plugin_route_passes_own_plugin_dir(
         cursor_native_bridge.build_mcp_config(bridge_dir)
     )
     assert cursor_native_status.read_receipt_epoch(bridge_dir) is not None
+    # Hooks learn which session's TUI fired them (a live project-route
+    # sibling's project hook then skips this session's turns).
+    assert captured["spec"].env == {cursor_native_usage.SESSION_BRIDGE_ENV_VAR: str(bridge_dir)}
 
 
 @pytest.mark.asyncio
@@ -2040,6 +2044,7 @@ async def test_auto_create_cursor_terminal_plugin_route_off_by_default(
     )
     assert "--plugin-dir" not in captured["spec"].args
     assert (tmp_path / "ws" / ".cursor" / "mcp.json").is_file()
+    assert captured["spec"].env == {}
 
 
 @pytest.mark.asyncio
@@ -2136,7 +2141,10 @@ async def test_auto_create_cursor_terminal_plugin_route_leaves_live_sibling(
     assert stop[1] == {"command": cursor_native_bridge.PLUGIN_STOP_ARMER_COMMAND}
     assert str(live) in (ws / ".cursor" / "mcp.json").read_text()
     notes = [r.getMessage() for r in caplog.records if "project-route session" in r.message]
-    assert len(notes) == 2 and all("conv_live" in m for m in notes)
+    # One warning naming both sessions and both files.
+    assert len(notes) == 1
+    assert "conv_live" in notes[0] and "c42dbcb16fd3a87ee8f5d1fe4cabfdf8" in notes[0]
+    assert ".cursor/hooks.json" in notes[0] and ".cursor/mcp.json" in notes[0]
 
 
 @pytest.mark.parametrize(

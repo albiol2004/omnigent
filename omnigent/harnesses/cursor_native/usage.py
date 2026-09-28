@@ -116,6 +116,12 @@ def normalize_hook_payload(payload: object) -> dict[str, object] | None:
     return line
 
 
+def _ensure_private_dir(path: Path) -> None:
+    from omnigent.harnesses.cursor_native.status import ensure_private_dir
+
+    ensure_private_dir(path)
+
+
 def record_usage_payload(bridge_dir: Path, payload: object) -> bool:
     """Append a normalized usage line for one turn to ``cursor_usage.jsonl``.
 
@@ -125,7 +131,7 @@ def record_usage_payload(bridge_dir: Path, payload: object) -> bool:
     line = normalize_hook_payload(payload)
     if line is None:
         return False
-    bridge_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_private_dir(bridge_dir)
     # O_APPEND keeps concurrent writers (a fast-firing hook) from interleaving
     # within a single write() of one short JSON line.
     with open(bridge_dir / USAGE_FILE, "a", encoding="utf-8") as handle:
@@ -240,7 +246,7 @@ def _read_usage_state(bridge_dir: Path) -> _UsageAccumulator:
 
 def _write_usage_state(bridge_dir: Path, acc: _UsageAccumulator) -> None:
     """Atomically persist the accumulator (tmp write + rename)."""
-    bridge_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_private_dir(bridge_dir)
     tmp = bridge_dir / (_USAGE_STATE_FILE + ".tmp")
     tmp.write_text(
         json.dumps(

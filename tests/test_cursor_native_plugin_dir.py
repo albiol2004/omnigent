@@ -371,3 +371,83 @@ class TestPluginRouteLaunchChecks:
             "allow"
         ]
         assert "Mcp(plugin-omnigent-session-omnigent:sys_os_read)" in allow
+
+
+class TestSiblingLivenessGrace:
+    """N10: a mid-launch sibling is not judged dead; this launch's own entries are."""
+
+    def _launching_sibling(self, tmp_path: Path, age_s: float = 0.0) -> Path:
+        import os
+        import time
+
+        sibling = tmp_path / "cb" / "sibling"
+        cb.write_bridge_owner(sibling, "conv_sibling")  # no heartbeat, no tmux.json yet
+        if age_s:
+            stamp = time.time() - age_s
+            os.utime(sibling / "owner.json", (stamp, stamp))
+        return sibling
+
+    def _hooks_bound_to(self, ws: Path, *bridges: Path) -> Path:
+        path = ws / ".cursor" / "hooks.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"version": 1, "hooks": {"stop": [_owned(b) for b in bridges]}})
+        )
+        return path
+
+    def test_armer_keeps_mid_launch_sibling(self, tmp_path: Path) -> None:
+        sibling = self._launching_sibling(tmp_path)
+        path = self._hooks_bound_to(tmp_path / "ws", sibling)
+        cb.write_plugin_stop_armer(tmp_path / "ws", home=tmp_path / "home")
+        assert _stop_hooks(path) == [_owned(sibling), {"command": cb.PLUGIN_STOP_ARMER_COMMAND}]
+        warned = cb.live_foreign_config_bridges(
+            tmp_path / "ws", tmp_path / "cb" / "me", launch_grace=True
+        )
+        assert warned == {"hooks.json": [sibling]}
+
+    def test_armer_drops_sibling_after_grace(self, tmp_path: Path) -> None:
+        sibling = self._launching_sibling(tmp_path, age_s=cb._LAUNCH_GRACE_S + 60)
+        path = self._hooks_bound_to(tmp_path / "ws", sibling)
+        cb.write_plugin_stop_armer(tmp_path / "ws", home=tmp_path / "home")
+        assert _stop_hooks(path) == [{"command": cb.PLUGIN_STOP_ARMER_COMMAND}]
+
+    def test_own_bridge_entries_always_dropped(self, tmp_path: Path) -> None:
+        own = self._launching_sibling(tmp_path)  # fresh owner file == this launch
+        path = self._hooks_bound_to(tmp_path / "ws", own)
+        mcp = tmp_path / "ws" / ".cursor" / "mcp.json"
+        mcp.write_text(json.dumps(cb.build_mcp_config(own)))
+        cb.write_plugin_stop_armer(
+            tmp_path / "ws", home=tmp_path / "home", is_live=lambda _b: True, own_bridge=own
+        )
+        assert _stop_hooks(path) == [{"command": cb.PLUGIN_STOP_ARMER_COMMAND}]
+        assert cb.remove_stale_workspace_mcp_server(
+            tmp_path / "ws", home=tmp_path / "home", is_live=lambda _b: True, own_bridge=own
+        )
+        assert json.loads(mcp.read_text()) == {"mcpServers": {}}
+
+    def test_mcp_cleanup_keeps_mid_launch_sibling(self, tmp_path: Path) -> None:
+        sibling = self._launching_sibling(tmp_path)
+        mcp = tmp_path / "ws" / ".cursor" / "mcp.json"
+        mcp.parent.mkdir(parents=True)
+        mcp.write_text(json.dumps(cb.build_mcp_config(sibling)))
+        assert not cb.remove_stale_workspace_mcp_server(tmp_path / "ws", home=tmp_path / "home")
+
+    def test_atomic_write_keeps_mode_and_leaves_no_tmp(self, tmp_path: Path) -> None:
+        path = self._hooks_bound_to(tmp_path / "ws")
+        path.chmod(0o664)
+        cb.write_plugin_stop_armer(tmp_path / "ws", home=tmp_path / "home")
+        assert path.stat().st_mode & 0o777 == 0o664
+        assert sorted(p.name for p in path.parent.iterdir()) == ["hooks.json"]
+
+
+def test_recorder_recreates_bridge_dir_owner_only(tmp_path: Path) -> None:
+    """N9: a bridge dir deleted mid-session comes back 0700, not umask-default."""
+    from omnigent.harnesses.cursor_native import usage
+
+    bridge = tmp_path / "gone" / "bridge"
+    usage.record_usage_payload(
+        bridge, {"generation_id": "g1", "input_tokens": 5, "output_tokens": 1}
+    )
+    cursor_native_status.record_turn_end(bridge, {"generation_id": "g1"})
+    assert bridge.stat().st_mode & 0o777 == 0o700
+    assert (tmp_path / "gone").stat().st_mode & 0o777 == 0o700

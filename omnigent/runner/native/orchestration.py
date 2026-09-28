@@ -3114,8 +3114,15 @@ async def _auto_create_cursor_terminal(
                 session_id,
                 extra={"session_id": session_id},
             )
-        await asyncio.to_thread(remove_stale_workspace_mcp_server, Path(workspace))
-        if await asyncio.to_thread(write_plugin_stop_armer, Path(workspace)) is None:
+        await asyncio.to_thread(
+            remove_stale_workspace_mcp_server, Path(workspace), own_bridge=bridge_dir
+        )
+        if (
+            await asyncio.to_thread(
+                write_plugin_stop_armer, Path(workspace), own_bridge=bridge_dir
+            )
+            is None
+        ):
             _logger.warning(
                 "cursor-native: workspace %s shares the user ~/.cursor/hooks.json; not "
                 "adding the plugin stop armer, so this session reports no token usage "
@@ -3131,7 +3138,9 @@ async def _auto_create_cursor_terminal(
         # env below); its MCP server cannot be filtered, so say so, once.
         siblings_by_bridge: dict[Path, list[str]] = {}
         for config_name, siblings in (
-            await asyncio.to_thread(live_foreign_config_bridges, Path(workspace), bridge_dir)
+            await asyncio.to_thread(
+                live_foreign_config_bridges, Path(workspace), bridge_dir, launch_grace=True
+            )
         ).items():
             for sibling in siblings:
                 siblings_by_bridge.setdefault(sibling, []).append(config_name)

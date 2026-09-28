@@ -830,7 +830,8 @@ def remove_stale_workspace_mcp_server(
     earlier project-route launch left there would still load next to this
     session's plugin server and route to that old bridge. Removes the entry
     only when it has Omnigent's shape (``serve-mcp --bridge-dir``) and its
-    session is not live; deletes the file when nothing else is left in it.
+    session is not live. The file is rewritten, never deleted (it may be
+    tracked): with no other server left it holds ``{"mcpServers": {}}``.
     Never touches the user file (:func:`shared_mcp_scope_reason`).
 
     :returns: Whether an entry was removed.
@@ -854,10 +855,8 @@ def remove_stale_workspace_mcp_server(
     if bridge is not None and _owned_bridge_is_live(bridge, is_live):
         return False
     del servers[_MCP_SERVER_NAME]
-    if not servers and set(loaded) <= {"mcpServers"}:
-        with contextlib.suppress(OSError):
-            path.unlink()
-        return True
+    # Never unlink: the file may be tracked (a deletion is a foreign ``D`` change
+    # to git/Trio). With nothing else left it becomes ``{"mcpServers": {}}``.
     _write_json_atomic(path, loaded)
     return True
 

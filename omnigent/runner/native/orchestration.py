@@ -3134,8 +3134,9 @@ async def _auto_create_cursor_terminal(
             )
         # A LIVE project-route sibling's server/hook stays in the project files
         # and is loaded by this session too (it clears once that ends). Its stop
-        # hook skips this session's turns (SESSION_BRIDGE_ENV_VAR in the terminal
-        # env below); its MCP server cannot be filtered, so say so, once.
+        # hook skips this session's turns and its MCP server refuses this session
+        # (both key on SESSION_BRIDGE_ENV_VAR in the terminal env below), but its
+        # stop hook still holds receipts; say so, once.
         siblings_by_bridge: dict[Path, list[str]] = {}
         for config_name, siblings in (
             await asyncio.to_thread(
@@ -3149,16 +3150,21 @@ async def _auto_create_cursor_terminal(
             _logger.warning(
                 "cursor-native: mixed hooks/MCP routes in workspace %s: LIVE project-route "
                 "session %s (bridge %s) still owns .cursor/%s. This plugin-route session "
-                "%s loads that config too until %s ends: its 'omnigent' MCP tools are "
-                "visible here (calls act as %s), while its stop hook ignores this "
-                "session's turns.",
+                "%s loads that config too until %s ends. Its 'omnigent' MCP server refuses "
+                "this session (bridge mismatch) and its stop hook ignores this session's "
+                "turns%s",
                 workspace,
                 sibling_session,
                 sibling,
                 " and .cursor/".join(config_names),
                 session_id,
                 sibling_session,
-                sibling_session,
+                (
+                    "; that foreign stop hook holds this session's completion receipts "
+                    "(if opted in) until it relaunches after the sibling ends."
+                    if "hooks.json" in config_names
+                    else "."
+                ),
                 extra={"session_id": session_id},
             )
     else:

@@ -12,7 +12,10 @@ Verifies the cursor-agent behaviour :func:`write_cursor_plugin` and
 
 3. a LIVE project-route sibling's usage hook left in the project ``hooks.json``
    does not record the plugin session's turns (the recorder skips a firing
-   whose ``--bridge-dir`` is not the TUI's ``OMNIGENT_CURSOR_SESSION_BRIDGE_DIR``).
+   whose ``--bridge-dir`` is not the TUI's ``OMNIGENT_CURSOR_SESSION_BRIDGE_DIR``);
+4. a LIVE project-route sibling's ``omnigent`` server left in the project
+   ``mcp.json`` refuses to serve the plugin session (``serve-mcp`` reads the
+   marker from its parent cursor-agent), while the sibling keeps its own server.
 
 The MCP server and hook commands are swapped for trivial probes (the layout and
 the armer are the real ones), so no Omnigent server is needed; test 3 runs the
@@ -42,6 +45,10 @@ from pathlib import Path
 import pytest
 
 from omnigent.harnesses.cursor_native import bridge as cb
+
+#: The production bridge root (tests below monkeypatch ``cb._BRIDGE_ROOT``);
+#: the real ``serve-mcp`` accepts only bridge dirs under it.
+_REAL_BRIDGE_ROOT = cb._BRIDGE_ROOT
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("OMNIGENT_E2E_CURSOR_NATIVE") != "1"
@@ -257,3 +264,77 @@ def test_live_sibling_project_hook_skips_plugin_session_turns(
     assert len(own_turn_end.read_text().splitlines()) == 1
     assert (own / cursor_native_usage.USAGE_FILE).read_text().strip()
     assert list(sibling.iterdir()) == []
+
+
+def test_live_sibling_project_mcp_refuses_plugin_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workspace: Path
+) -> None:
+    """Mixed rollout (r17 N11): a sibling's project ``omnigent`` server never serves us."""
+    import tempfile
+
+    from omnigent.harnesses.cursor_native import usage as cursor_native_usage
+
+    tree = Path(__file__).resolve().parents[2]
+    plugin_dir, own_mcp_log, _ = _probe_plugin(tmp_path, monkeypatch, "A")
+    own = plugin_dir.parents[1]
+    _REAL_BRIDGE_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    sibling = Path(tempfile.mkdtemp(prefix="e2e-n11-sibling-", dir=_REAL_BRIDGE_ROOT))
+    sibling_stderr = tmp_path / "sibling_serve_mcp.stderr"
+    sock = tmp_path / "tmux.sock"
+    try:
+        (sibling / "bridge.json").write_text(
+            json.dumps({"token": "e2e-n11", "workspace": str(workspace)})
+        )
+        # The project-route sibling's server entry, running this tree's serve-mcp
+        # (``exec`` keeps cursor-agent the server's parent).
+        serve = (
+            f"exec env PYTHONPATH={shlex.quote(str(tree))} {shlex.quote(sys.executable)} -m "
+            f"omnigent.harnesses.claude_native.bridge serve-mcp --bridge-dir "
+            f"{shlex.quote(str(sibling))} 2>>{shlex.quote(str(sibling_stderr))}"
+        )
+        (workspace / ".cursor").mkdir()
+        (workspace / ".cursor" / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"omnigent": {"command": "sh", "args": ["-c", serve]}}})
+        )
+        # The live sibling: a project-route TUI (no marker) serving its bridge.
+        _tmux(sock, "new-session", "-d", "-s", "S", "-x", "200", "-y", "50", "-c",
+              str(workspace), "cursor-agent --trust --approve-mcps")  # fmt: skip
+        server_file = sibling / "server.json"
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline and not server_file.exists():
+            time.sleep(1)
+        assert server_file.exists(), _tmux(sock, "capture-pane", "-p", "-t", "S")
+        _wait_idle(sock, ["S"])
+        # Our plugin-route session in the same workspace.
+        command = (
+            f"env {cursor_native_usage.SESSION_BRIDGE_ENV_VAR}={shlex.quote(str(own))} "
+            f"cursor-agent --trust --approve-mcps --plugin-dir {shlex.quote(str(plugin_dir))}"
+        )
+        _tmux(sock, "new-session", "-d", "-s", "A", "-x", "200", "-y", "50", "-c",
+              str(workspace), command)  # fmt: skip
+        _wait_idle(sock, ["A"])
+        prompt = "Call the MCP tool probe_secret, then try the MCP tool sys_os_read on README."
+        _tmux(sock, "send-keys", "-t", "A", "-l", prompt)
+        time.sleep(2)
+        _tmux(sock, "send-keys", "-t", "A", "Enter")
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline and not (
+            own_mcp_log.exists() and '"tools/call"' in own_mcp_log.read_text()
+        ):
+            time.sleep(2)
+        time.sleep(5)
+        pane = _tmux(sock, "capture-pane", "-p", "-t", "A")
+        # The sibling's bridge still points at a server the SIBLING spawned (cursor
+        # spawns its servers more than once, so compare parents, not pids).
+        serving = json.loads(server_file.read_text())["pid"]
+        parent = Path(f"/proc/{serving}/stat").read_text().rsplit(")", 1)[1].split()[1]
+        parent_env = Path(f"/proc/{parent}/environ").read_bytes()
+        assert cursor_native_usage.SESSION_BRIDGE_ENV_VAR.encode() not in parent_env
+    finally:
+        _tmux(sock, "kill-server")
+        shutil.rmtree(sibling, True)
+    assert '"tools/call"' in own_mcp_log.read_text(), pane
+    refusals = [ln for ln in sibling_stderr.read_text().splitlines() if "refused" in ln]
+    # One line per refused server process (cursor-agent spawns its servers twice).
+    assert refusals, sibling_stderr.read_text()
+    assert all(str(sibling) in ln and str(own) in ln for ln in refusals)

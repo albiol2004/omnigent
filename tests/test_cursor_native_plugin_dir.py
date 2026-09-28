@@ -11,6 +11,7 @@ user or project hooks file declares one (verified against the 2026.09.26 CLI).
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,7 @@ class TestPluginStopArmer:
         ws = tmp_path / "ws"
         ws.mkdir()
         path = cb.write_plugin_stop_armer(ws, home=tmp_path / "home")
+        assert path is not None
         assert path == ws / ".cursor" / "hooks.json"
         assert _stop_hooks(path) == [{"command": cb.PLUGIN_STOP_ARMER_COMMAND}]
         before = path.read_bytes()
@@ -200,7 +202,7 @@ class TestPluginStopArmer:
 
 
 class TestRemoveStaleWorkspaceMcpServer:
-    def _write(self, ws: Path, servers: dict[str, object]) -> Path:
+    def _write(self, ws: Path, servers: Mapping[str, object]) -> Path:
         path = ws / ".cursor" / "mcp.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"mcpServers": servers}))

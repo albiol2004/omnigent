@@ -2909,6 +2909,7 @@ async def _auto_create_cursor_terminal(
         bridge_dir_for_session_id,
         check_cursor_launch_admission,
         check_plugin_route_launch,
+        launch_plugin_dirs,
         live_foreign_config_bridges,
         plugin_dir_mode_enabled,
         prepare_completion_receipts,
@@ -3237,6 +3238,9 @@ async def _auto_create_cursor_terminal(
         opted_in=launch_config.completion_receipts,
         precheck=receipt_precheck,
         plugin_dir=plugin_dir,
+        extra_plugin_dirs=launch_plugin_dirs(
+            launch_config.terminal_launch_args or [], Path(workspace)
+        ),
     )
     if launch_config.completion_receipts and receipt_hold is not None:
         _logger.warning(

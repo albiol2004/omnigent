@@ -2071,6 +2071,49 @@ async def test_auto_create_cursor_terminal_plugin_route_refuses_plugins_off_prof
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["passthrough", "installed"])
+async def test_auto_create_cursor_terminal_other_plugin_stop_hook_holds_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    where: str,
+) -> None:
+    """r17 N12: a user plugin's stop hook (``followup_message``) holds receipts."""
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+    home = _plugin_route_env(tmp_path, monkeypatch)
+
+    def _write_plugin(root: Path) -> None:
+        (root / "hooks").mkdir(parents=True)
+        (root / "hooks" / "hooks.json").write_text(
+            json.dumps({"version": 1, "hooks": {"stop": [{"command": "./followup.sh"}]}})
+        )
+
+    if where == "passthrough":
+        # Passed relative to the workspace (the TUI's cwd).
+        args = ["--plugin-dir", "my-plugin"]
+        prepare = lambda ws: _write_plugin(ws / "my-plugin")  # noqa: E731
+    else:
+        args = []
+        _write_plugin(home / ".cursor" / "plugins" / "local" / "my-plugin")
+        prepare = None
+    labels = {
+        cursor_native_status.COMPLETION_RECEIPTS_LABEL: (
+            cursor_native_status.COMPLETION_RECEIPTS_VERSION
+        )
+    }
+    await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=args,
+        labels=labels,
+        prepare_workspace=prepare,
+    )
+    bridge_dir = cursor_native_bridge.bridge_dir_for_session_id("c42dbcb16fd3a87ee8f5d1fe4cabfdf8")
+    assert cursor_native_status.read_receipt_epoch(bridge_dir) is None
+
+
+@pytest.mark.asyncio
 async def test_auto_create_cursor_terminal_plugin_route_avoids_user_plugin_name(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

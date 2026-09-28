@@ -313,3 +313,61 @@ class TestPluginRouteReceipts:
             )
         )
         assert self._arm(tmp_path, None) is None
+
+
+class TestPluginRouteLaunchChecks:
+    """enableUserLocalPlugins detection (N4) and plugin basename collisions (N5)."""
+
+    @pytest.mark.parametrize(
+        "args",
+        [["--authless"], ["--enable-bedrock"], ["--model", "x", "--enable-local-bedrock"]],
+    )
+    def test_plugins_off_flags_refuse(self, args: list[str]) -> None:
+        with pytest.raises(cb.CursorPluginRouteError) as refused:
+            cb.check_plugin_route_launch("/usr/bin/cursor-agent", args, env={})
+        assert "enableUserLocalPlugins" in refused.value.user_message()
+        assert args[-1] in refused.value.user_message()
+
+    @pytest.mark.parametrize(
+        "name", ["CURSOR_ENABLE_AUTHLESS", "CURSOR_ENABLE_BEDROCK", "CURSOR_ENABLE_LOCAL_BEDROCK"]
+    )
+    def test_plugins_off_env_refuses_local_build_only(self, name: str, tmp_path: Path) -> None:
+        local = tmp_path / "cursor-agent-local" / "versions" / "1" / "cursor-agent-local"
+        local.parent.mkdir(parents=True)
+        local.touch()
+        with pytest.raises(cb.CursorPluginRouteError, match=f"{name}=1"):
+            cb.check_plugin_route_launch(str(local), [], env={name: "1"})
+        # The standard build ignores these env vars: plugins still load.
+        assert cb.check_plugin_route_launch("/usr/bin/cursor-agent", [], env={name: "1"}) == (
+            "omnigent"
+        )
+        assert cb.user_local_plugins_disabled_reason(str(local), [], env={name: "0"}) is None
+
+    def test_default_launch_passes(self) -> None:
+        assert cb.check_plugin_route_launch("cursor-agent", ["--force"], env={}) == "omnigent"
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--plugin-dir", "/x/omnigent"],
+            ["--plugin-dir=/x/omnigent/"],
+            ["--plugin-dir", "omnigent"],
+        ],
+    )
+    def test_user_plugin_named_omnigent_gets_distinct_name(self, args: list[str]) -> None:
+        assert cb.plugin_dir_name_for_launch(args) == "omnigent-session"
+        assert cb.plugin_dir_name_for_launch(["--plugin-dir", "/x/other"]) == "omnigent"
+
+    def test_both_names_taken_refuses(self) -> None:
+        args = ["--plugin-dir", "/a/omnigent", "--plugin-dir=/b/omnigent-session"]
+        with pytest.raises(cb.CursorPluginRouteError, match="--plugin-dir"):
+            cb.plugin_dir_name_for_launch(args)
+
+    def test_fallback_name_sets_server_id_and_allowlist(self, tmp_path: Path, home: Path) -> None:
+        plugin_dir = cb.write_cursor_plugin(tmp_path / "cb" / "bridge", name="omnigent-session")
+        assert plugin_dir.name == "omnigent-session"
+        assert cb.plugin_mcp_server_id("omnigent-session") == "plugin-omnigent-session-omnigent"
+        allow = json.loads((home / ".cursor" / "cli-config.json").read_text())["permissions"][
+            "allow"
+        ]
+        assert "Mcp(plugin-omnigent-session-omnigent:sys_os_read)" in allow

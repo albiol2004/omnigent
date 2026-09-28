@@ -1731,6 +1731,10 @@ async def _run_auto_create_cursor_terminal(
         prepare_workspace(workspace)
     monkeypatch.setattr(cursor_native_bridge, "_BRIDGE_ROOT", tmp_path / "cursor-bridge")
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://127.0.0.1:8000")
+    if "OMNIGENT_CONFIG_HOME" not in os.environ:
+        # The plugin-route switch also reads the user config; keep the real one out.
+        (tmp_path / "config-isolated").mkdir(exist_ok=True)
+        monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path / "config-isolated"))
     monkeypatch.setattr(
         "omnigent.harnesses.cursor_native.main.resolve_cursor_executable", lambda: "cursor-agent"
     )

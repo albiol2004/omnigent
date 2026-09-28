@@ -50,10 +50,36 @@ def _owned(bridge: Path) -> dict[str, str]:
     [("1", True), ("true", True), ("ON", True), (" yes ", True), ("0", False), ("", False)],
 )
 def test_plugin_dir_mode_flag(value: str, enabled: bool) -> None:
-    assert cb.plugin_dir_mode_enabled({cb.PLUGIN_DIR_ENV_VAR: value}) is enabled
+    assert cb.plugin_dir_mode_enabled({cb.PLUGIN_DIR_ENV_VAR: value}, config={}) is enabled
 
 
 def test_plugin_dir_mode_defaults_off() -> None:
+    assert cb.plugin_dir_mode_enabled({}, config={}) is False
+
+
+@pytest.mark.parametrize(
+    ("setting", "enabled"),
+    [(True, True), ("on", True), (False, False), ("0", False), (1, False), (None, False)],
+)
+def test_plugin_dir_mode_config_switch(setting: object, enabled: bool) -> None:
+    config = {cb.PLUGIN_DIR_CONFIG_SECTION: {cb.PLUGIN_DIR_CONFIG_KEY: setting}}
+    assert cb.plugin_dir_mode_enabled({}, config=config) is enabled
+
+
+def test_plugin_dir_mode_env_overrides_config() -> None:
+    on = {cb.PLUGIN_DIR_CONFIG_SECTION: {cb.PLUGIN_DIR_CONFIG_KEY: True}}
+    assert cb.plugin_dir_mode_enabled({cb.PLUGIN_DIR_ENV_VAR: "0"}, config=on) is False
+    assert cb.plugin_dir_mode_enabled({cb.PLUGIN_DIR_ENV_VAR: "1"}, config={}) is True
+
+
+def test_plugin_dir_mode_reads_user_config_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path))
+    assert cb.plugin_dir_mode_enabled({}) is False
+    (tmp_path / "config.yaml").write_text("cursor_native:\n  plugin_dir: true\n")
+    assert cb.plugin_dir_mode_enabled({}) is True
+    (tmp_path / "config.yaml").write_text("cursor_native: [unclosed\n")
     assert cb.plugin_dir_mode_enabled({}) is False
 
 

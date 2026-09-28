@@ -4020,6 +4020,31 @@ def test_build_runner_env_passthrough_extends_forwarded_set() -> None:
     assert "UNLISTED_SECRET" not in env
 
 
+def test_build_runner_env_forwards_cursor_plugin_dir_switch() -> None:
+    """
+    OMNIGENT_CURSOR_PLUGIN_DIR is read in the RUNNER (cursor-native launch), so
+    setting it on the host service must reach the runner without also naming
+    it in OMNIGENT_RUNNER_ENV_PASSTHROUGH; otherwise the route silently stays
+    off in host-spawned sessions.
+    """
+    base = {
+        "PATH": "/usr/bin",
+        "HOME": "/root",
+        "OMNIGENT_CURSOR_PLUGIN_DIR": "1",
+    }
+
+    env = _build_runner_env(
+        base,
+        server_url="http://server",
+        runner_id="runner_abc",
+        binding_token="tok",
+        workspace="/ws",
+        parent_pid=42,
+    )
+
+    assert env["OMNIGENT_CURSOR_PLUGIN_DIR"] == "1"
+
+
 def test_dispatch_trace_context_reaches_runner_but_not_daemon(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

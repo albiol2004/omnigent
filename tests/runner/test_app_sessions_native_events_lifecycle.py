@@ -1212,8 +1212,17 @@ async def test_codex_native_model_options_follow_labeled_foreign_bridge(
         )
 
     assert model_resp.status_code == 200, model_resp.text
-    assert model_resp.json() == {"models": expected_models}
-    assert mutation_resp.status_code == 204, mutation_resp.text
+    # v0.16 annotates each row with a ``source`` provenance entry; the labeled
+    # foreign bridge must still supply the catalog rows themselves.
+    assert [
+        {key: value for key, value in row.items() if key != "source"}
+        for row in model_resp.json()["models"]
+    ] == expected_models
+    # v0.16 reports an owner-bound settings update with no loaded bridge for
+    # this session as 503 instead of the old silent 204; either way the foreign
+    # bridge receives no mutation request.
+    assert mutation_resp.status_code == 503, mutation_resp.text
+    assert mutation_resp.json()["error"] == "codex_native_settings_update_failed"
     assert fake_client.requests == [
         ("model/list", {"includeHidden": False}),
     ]

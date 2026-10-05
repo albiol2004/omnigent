@@ -1,0 +1,46 @@
+$ git rev-parse HEAD v0.16.0
+a78169ed884455eea9114ba6307e0e09c7a1503f
+82a74473ee4c01163c4269f4296b10a158f0e47e
+
+$ I=$(mktemp -u); GIT_INDEX_FILE=$I git read-tree v0.16.0 && GIT_INDEX_FILE=$I git apply --check --cached patches/child-reasoning-effort.v0.16.0.patch; echo exit=$?
+exit=0
+
+$ git apply --check patches/child-reasoning-effort.v0.16.0.patch   # on branch tip (HEAD)
+exit=0
+
+$ GIT_INDEX_FILE=$I git read-tree v0.16.0 && ... git apply --check --cached <OLD trio release patch>   # for the record
+error: patch failed: omnigent/runner/tool_dispatch.py:58
+error: omnigent/runner/tool_dispatch.py: patch does not apply
+error: patch failed: omnigent/server/routes/_sessions/helpers.py:9588
+error: omnigent/server/routes/_sessions/helpers.py: patch does not apply
+error: patch failed: omnigent/server/routes/_sessions/orchestration.py:7915
+error: omnigent/server/routes/_sessions/orchestration.py: patch does not apply
+error: patch failed: omnigent/server/routes/sessions/__init__.py:494
+error: omnigent/server/routes/sessions/__init__.py: patch does not apply
+error: patch failed: omnigent/tools/builtins/spawn.py:933
+error: omnigent/tools/builtins/spawn.py: patch does not apply
+exit=1
+
+$ git apply --check <OLD patch>   # on branch tip
+error: patch failed: omnigent/runner/tool_dispatch.py:58
+error: omnigent/runner/tool_dispatch.py: patch does not apply
+error: patch failed: omnigent/server/routes/_sessions/helpers.py:9588
+error: omnigent/server/routes/_sessions/helpers.py: patch does not apply
+error: patch failed: omnigent/server/routes/_sessions/orchestration.py:7915
+error: omnigent/server/routes/_sessions/orchestration.py: patch does not apply
+error: patch failed: omnigent/server/routes/sessions/__init__.py:494
+error: omnigent/server/routes/sessions/__init__.py: patch does not apply
+error: patch failed: omnigent/tools/builtins/spawn.py:933
+error: omnigent/tools/builtins/spawn.py: patch does not apply
+exit=1
+
+## Targeted check
+$ P=patches/child-reasoning-effort.v0.16.0.patch; I="$(mktemp -u)"; GIT_INDEX_FILE="$I" git read-tree v0.16.0 && GIT_INDEX_FILE="$I" git apply --check --cached "$P" && git apply --check "$P" && git apply "$P" && ( uv run --frozen pytest -q -p no:cacheprovider tests/tools/builtins/test_child_reasoning_effort.py tests/tools/builtins/test_sys_session.py tests/runtime/test_reasoning_effort_validation.py; rc=$?; git apply -R "$P"; rm -f "$I"; exit $rc )
+Running 60 items in this shard
+............................................................             [100%]
+60 passed in 97.72s (0:01:37)
+exit=0
+final exit=0
+$ git status --short
+?? docs/v16-evidence/patch-check.txt
+?? patches/

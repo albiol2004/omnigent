@@ -7563,7 +7563,9 @@ def test_native_terminal_ensure_response_carries_cursor_refusal() -> None:
         reason="workspace_is_home:/home/u",
         stale_omnigent_server=False,
     )
-    response = _native_terminal_start_error_response(error, "Cursor")
+    response = _native_terminal_start_error_response(
+        error, "Cursor", session_id="sess-cursor-refusal"
+    )
     assert response.status_code == 500
     payload = json.loads(bytes(response.body))["error"]
     assert payload["code"] == "native_terminal_start_failed"
@@ -7580,7 +7582,9 @@ def test_native_terminal_ensure_response_carries_cursor_refusal() -> None:
         reason="workspace_not_project_root:/src/repo",
         stale_omnigent_server=True,
     )
-    response = _native_terminal_start_error_response(subfolder_error, "Cursor")
+    response = _native_terminal_start_error_response(
+        subfolder_error, "Cursor", session_id="sess-cursor-refusal"
+    )
     message = json.loads(bytes(response.body))["error"]["message"]
     assert message.startswith(
         "Cursor can't start here. Cursor reads its project tools and hooks from the git "

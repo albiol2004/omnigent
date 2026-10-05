@@ -1,0 +1,100 @@
+pristine: no product diff vs v0.16.0
+HEAD: ca5b07c044691136581d49fc0f2730a0829ce1b8
+# env: uv sync --frozen --extra all --group dev (worktree-local .venv); run: bash scripts/v16_focused_suite.sh docs/v16-evidence/baseline-v0.16.0.txt
+# run duration 1487s; flaky on pristine (seen in other runs): tests/test_claude_native_bridge.py::test_channel_server_relays_active_omnigent_tools[True-images], tests/test_claude_native_status_file.py::test_poller_publishes_when_only_the_reason_changes (+ 7 more claude-native failures in a run under load)
+== dispatch ==
+files: tests/runner/test_runner_dispatch.py
+3 failed, 277 passed, 1 skipped, 1 warning, 1 error in 42.03s
+ERROR tests/runner/test_runner_dispatch.py::test_runner_post_returns_503_when_spec_resolver_fails
+FAILED tests/runner/test_runner_dispatch.py::test_runner_background_spawn_failed_reaches_subscribers_with_detail
+FAILED tests/runner/test_runner_dispatch.py::test_runner_post_returns_503_when_spec_resolver_fails
+FAILED tests/runner/test_runner_dispatch.py::test_runner_stream_spawn_failed_reaches_subscribers_with_detail
+== interrupt ==
+files: tests/runner/test_native_interrupt_runner.py
+15 passed in 0.37s
+== runner-native ==
+files: tests/runner/test_app_sessions_native_events_lifecycle.py tests/runner/test_app_sessions_native_events_options.py tests/runner/test_app_sessions_native_session_change_heal.py tests/runner/test_app_sessions_native_supervision.py tests/runner/test_app_sessions_native_terminal_routing.py tests/runner/test_app_sessions_native_terminals_autocreate.py tests/runner/test_app_sessions_native_terminals_runtime.py tests/runner/test_app_sessions_native_wake_forwarders.py tests/runner/test_app_sessions_native_workflow_init.py tests/runner/test_app_sessions_native_workflow_messages.py tests/runner/test_app_cursor_native_model.py tests/runner/test_app_cursor_native_resume.py
+12 failed, 487 passed in 1034.63s (0:17:14)
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_claude_native_model_options_serves_probe_rows_after_pending
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_claude_native_model_options_use_session_launch_catalog[False]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_codex_native_settings_change_uses_thread_settings_update[effort_change]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_codex_native_settings_change_uses_thread_settings_update[model_change]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_codex_native_settings_change_uses_thread_settings_update[plan_mode_change]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_on_codex_native_uses_turn_interrupt_without_marker
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_on_codex_native_with_turn_and_mcp_stops_both
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_on_codex_native_cancels_mcp_startup_without_active_turn[interrupt]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_on_codex_native_cancels_mcp_startup_without_active_turn[stop_session]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_session_on_codex_native_uses_turn_interrupt_without_marker
+FAILED tests/runner/test_app_sessions_native_terminal_routing.py::test_create_session_terminal_ensure_failure_returns_json_without_live_error
+FAILED tests/runner/test_app_sessions_native_terminals_autocreate.py::test_publish_native_terminal_start_error_emits_failed_status_only
+== sys-session ==
+files: tests/tools/builtins/test_sys_session.py
+44 passed in 54.01s
+== terminals ==
+files: tests/terminals
+35 failed, 62 passed, 2 skipped in 7.85s
+FAILED tests/terminals/test_control_bridge.py::test_close_after_client_disconnect_does_not_escape_teardown
+FAILED tests/terminals/test_control_bridge.py::test_control_attach_pins_client_term_over_inherited_dumb
+FAILED tests/terminals/test_control_bridge.py::test_control_bridge_burst_then_exit_delivers_full_tail
+FAILED tests/terminals/test_control_bridge.py::test_control_bridge_coalesces_burst_when_send_lags
+FAILED tests/terminals/test_control_bridge.py::test_control_bridge_forwards_recent_copy_buffer_as_text_frame
+FAILED tests/terminals/test_control_bridge.py::test_control_bridge_ignores_copy_without_recent_input
+FAILED tests/terminals/test_control_bridge.py::test_control_bridge_outer_cancellation_joins_child_tasks
+FAILED tests/terminals/test_control_bridge.py::test_control_bridge_read_only_drops_input
+FAILED tests/terminals/test_control_bridge.py::test_control_bridge_seeds_streams_and_detaches
+FAILED tests/terminals/test_control_bridge.py::test_control_bridge_streams_large_output_burst
+FAILED tests/terminals/test_control_bridge.py::test_native_pbcopy_uses_consent_transport_not_host_clipboard[False-False-none]
+FAILED tests/terminals/test_control_bridge.py::test_native_pbcopy_uses_consent_transport_not_host_clipboard[False-True-none]
+FAILED tests/terminals/test_control_bridge.py::test_native_pbcopy_uses_consent_transport_not_host_clipboard[True-True-none]
+FAILED tests/terminals/test_control_bridge.py::test_seed_alternate_screen_does_not_leak_primary_history
+FAILED tests/terminals/test_control_bridge.py::test_seed_full_height_pane_does_not_scroll_or_shift_cursor
+FAILED tests/terminals/test_control_bridge.py::test_seed_plain_shell_replays_no_modes
+FAILED tests/terminals/test_control_bridge.py::test_seed_recovers_primary_screen_scrollback
+FAILED tests/terminals/test_control_bridge.py::test_seed_rejoins_soft_wrapped_lines
+FAILED tests/terminals/test_control_bridge.py::test_seed_replays_alt_screen_and_mouse_modes
+FAILED tests/terminals/test_control_bridge.py::test_seed_restores_cursor_position
+FAILED tests/terminals/test_control_bridge.py::test_tmux_clipboard_buffer_read_is_exact_and_bounded
+FAILED tests/terminals/test_registry.py::test_cleanup_conversation_closes_all_owners_terminals
+FAILED tests/terminals/test_registry.py::test_close_after_cleanup_returns_false
+FAILED tests/terminals/test_registry.py::test_distinct_conversations_isolated
+FAILED tests/terminals/test_registry.py::test_distinct_session_keys_get_distinct_instances
+FAILED tests/terminals/test_registry.py::test_launch_get_close_round_trip
+FAILED tests/terminals/test_registry.py::test_launch_idempotent_returns_existing_instance
+FAILED tests/terminals/test_registry.py::test_list_for_conversation_returns_only_owners_terminals
+FAILED tests/terminals/test_registry.py::test_shutdown_clears_all_conversations
+FAILED tests/terminals/test_registry_io.py::test_ctrl_c_interrupts_running_command
+FAILED tests/terminals/test_registry_io.py::test_cwd_override_anchors_live_shell_in_subdirectory
+FAILED tests/terminals/test_registry_io.py::test_launched_shell_starts_in_spec_cwd
+FAILED tests/terminals/test_registry_io.py::test_send_and_read_after_close_report_not_running
+FAILED tests/terminals/test_registry_io.py::test_shell_state_persists_across_separate_sends
+FAILED tests/terminals/test_registry_io.py::test_working_directory_change_persists_across_sends
+== claude-native ==
+files: tests/test_claude_native.py tests/test_claude_native_billing_notice.py tests/test_claude_native_bridge.py tests/test_claude_native_daemon.py tests/test_claude_native_diagnostics.py tests/test_claude_native_diagnostics_integration.py tests/test_claude_native_forwarder.py tests/test_claude_native_hook.py tests/test_claude_native_message_display_hook.py tests/test_claude_native_model_catalog.py tests/test_claude_native_pending_prompt.py tests/test_claude_native_router_hook_settings.py tests/test_claude_native_slow_ready.py tests/test_claude_native_state.py tests/test_claude_native_status.py tests/test_claude_native_status_file.py
+3 failed, 1399 passed, 6 warnings in 181.02s (0:03:01)
+FAILED tests/test_claude_native_status_file.py::test_poller_publishes_edges_only
+FAILED tests/test_claude_native_status_file.py::test_poller_publishes_when_only_the_reason_changes
+FAILED tests/test_claude_native_status_file.py::test_unknown_status_clears_dedup_so_next_read_publishes
+== codex-native ==
+files: tests/test_codex_native.py tests/test_codex_native_app_server.py tests/test_codex_native_app_server_rpc.py tests/test_codex_native_app_server_stderr.py tests/test_codex_native_bridge.py tests/test_codex_native_continuous_diagnostics.py tests/test_codex_native_diagnostics.py tests/test_codex_native_forwarder.py tests/test_codex_native_hook.py tests/test_codex_native_launch_args.py tests/test_codex_native_logging_env.py tests/test_codex_native_process_registry.py tests/test_codex_native_reaper_non_utf8.py tests/test_codex_native_side_chat.py tests/test_codex_native_side_chat_routing.py tests/test_codex_native_state.py
+1028 passed, 1 warning in 35.38s
+== cursor-native ==
+files: tests/test_cursor_native.py tests/test_cursor_native_bridge.py tests/test_cursor_native_forwarder.py tests/test_cursor_native_permissions.py tests/test_cursor_native_status.py tests/test_cursor_native_usage.py tests/inner/test_cursor_native_executor.py
+253 passed in 12.21s
+== inner-proc ==
+files: tests/inner/test_proc_and_platform.py
+39 passed, 8 skipped in 0.44s
+== host ==
+files: tests/host/test_connect.py
+7 failed, 240 passed, 73 warnings in 39.36s
+FAILED tests/host/test_connect.py::test_handle_model_options_claude_sdk_rides_the_probe_when_endpoints_list_nothing
+FAILED tests/host/test_connect.py::test_handle_model_options_serves_claude_sdk_endpoint_listing
+FAILED tests/host/test_connect.py::test_handle_model_options_serves_codex_probe_rows_and_caches
+FAILED tests/host/test_connect.py::test_handle_model_options_serves_the_claude_catalog
+FAILED tests/host/test_connect.py::test_host_discovers_harness_skills_without_a_runner[claude-native-expected0]
+FAILED tests/host/test_connect.py::test_model_options_frame_replies_off_the_receive_loop
+FAILED tests/host/test_connect.py::test_run_host_process_announces_session_log_dir_on_start
+== sessions-routes ==
+ABSENT tests/server/integration/test_input_fence.py
+files: tests/server/integration/test_sessions_compact.py tests/server/integration/test_routes_sessions_aliases.py tests/server/integration/test_routes_sessions_title.py
+19 passed in 14.25s
+SUITE_DONE

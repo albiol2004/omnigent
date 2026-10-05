@@ -642,13 +642,14 @@ the service. To opt out, follow our instructions in
 
 ---
 
-## trio-v0.14.0-fixes (this worktree)
+## trio-v0.16.0-fixes (this worktree)
 
-Stock `v0.14.0` plus the Trio keeper set re-ported from
-`trio-v0.12.0-fixes` (cherry-picked `-x`). Live install
-`/home/coder/omnigent` (`~/omnigent`) stays on `trio-v0.12.0-fixes`
+Stock `v0.16.0` plus the Trio keeper set re-ported from
+`trio-v0.14.0-fixes` (cherry-picked `-x`). The fork branch is
+`trio-v0.16.0-fixes`, based on upstream `v0.16.0`. Live install
+`/home/coder/omnigent` (`~/omnigent`) stays on its current fork branch
 until adopted. Motivation: idle native role TUIs from finished Trio loops
-leaked ~5 GB (upstream omnigent-ai/omnigent#7498, still open in v0.14.0);
+leaked ~5 GB (upstream omnigent-ai/omnigent#7498);
 `sys_session_close` now closes tree-scoped children whose title does not
 parse as `<agent>:<title>` and tears down the Claude, Codex, and Cursor
 native tmux panes, terminals, and Codex app-server.
@@ -658,12 +659,10 @@ labeled-bridge model options, summary-only Codex compaction replay, close-guard,
 stop-routing (Claude/Codex/Cursor), kill-escalation (`omnigent/native_tmux_kill.py`),
 pane reaper after harness release, Codex advertise guard.
 
-Dropped on the 0.14 re-port (upstream now covers them):
-- `96b5639d8` — Claude compaction on resume (#6364).
-- `c04442f16` — launch args derived from spec (#6156/#6388).
-- `0c8082af2` — Codex writer-resume rewrite (#7055/#7147).
+The per-commit disposition of the 0.16.0 re-port (ported / adapted / dropped,
+with the superseding upstream change) is in `docs/v16-report.md`.
 
-Do not treat this as upstream `main`. `fd38b1ea8` stays as a thin alias
+Do not treat this as upstream `main`. The fork keeps a thin alias
 `_resolve_agent_spec = _resolve_subagent_spec` since `trioctl omnigent
 doctor` imports the old name; follow-up: import `_resolve_subagent_spec`.
 

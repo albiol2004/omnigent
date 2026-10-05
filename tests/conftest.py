@@ -109,7 +109,38 @@ def pytest_configure(config: pytest.Config) -> None:
         worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
         _PROGRESS_LOG_PATH = os.path.join(log_dir, f"progress-{worker}.log")
 
+    _avoid_git_ancestor_temproot(config)
     _run_test_environment_guardrails(config)
+
+
+def _has_git_ancestor(path: Path) -> bool:
+    """Whether *path* or an ancestor below the filesystem root holds a ``.git`` entry."""
+    current = path
+    while current.parent != current:
+        if os.path.lexists(current / ".git"):
+            return True
+        current = current.parent
+    return False
+
+
+def _avoid_git_ancestor_temproot(config: pytest.Config) -> None:
+    """Keep ``tmp_path`` out of any git checkout, so workspaces are hermetic.
+
+    Cursor-native launch admission resolves a workspace's project root the
+    way cursor-agent does (nearest ancestor holding a ``.git`` entry), so a
+    stray ``.git`` in the system temp dir (e.g. an empty ``/tmp/.git`` left by
+    another tool) would make every ``tmp_path`` workspace a repository
+    subfolder. When neither ``--basetemp`` nor ``PYTEST_DEBUG_TEMPROOT`` is
+    set and the temp dir has such an ancestor, use ``/var/tmp`` instead (when
+    it has none). Assertions are untouched; only the scratch root moves.
+    """
+    if config.option.basetemp or os.environ.get("PYTEST_DEBUG_TEMPROOT"):
+        return
+    if not _has_git_ancestor(Path(tempfile.gettempdir()).resolve()):
+        return
+    fallback = Path("/var/tmp")
+    if fallback.is_dir() and not _has_git_ancestor(fallback.resolve()):
+        os.environ["PYTEST_DEBUG_TEMPROOT"] = str(fallback)
 
 
 def _run_test_environment_guardrails(config: pytest.Config) -> None:

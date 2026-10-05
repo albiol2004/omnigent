@@ -74,7 +74,6 @@ from omnigent.harnesses.claude_native.message_display_hook import MESSAGE_DELTAS
 from omnigent.harnesses.claude_native.status import CONTEXT_RAW_FILE
 from omnigent.harnesses.diagnostics import detect_sign_in_prompt, sign_in_next_step
 from omnigent.harnesses.kiro_native import bridge as kiro_bridge
-from omnigent.inner import _proc
 from omnigent.models.claude_model_vocabulary import MODEL_VOCABULARY_ENV_VARS
 from omnigent.models.model_metadata import concrete_reported_model
 from omnigent.native.failure_telemetry import FailureContext

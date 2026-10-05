@@ -1066,7 +1066,7 @@ def test_kill_session_escalates_live_pane_after_tmux_kill(
     leftover pane process is then SIGKILLed through ``_proc._killpg``. Mirrors
     :func:`tests.test_claude_native_bridge.test_kill_session_escalates_live_pane_after_tmux_kill`.
     """
-    from omnigent.codex_native_bridge import kill_session, write_tmux_target
+    from omnigent.harnesses.codex_native.bridge import kill_session, write_tmux_target
 
     write_tmux_target(
         bridge_dir,

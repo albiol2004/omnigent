@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 
 import httpx
 
+from omnigent._wrapper_labels import CLAUDE_NATIVE_WRAPPER_VALUE
 from omnigent.debug_logging import runner_primary_session_id
 from omnigent.harness_aliases import (
     canonicalize_harness,

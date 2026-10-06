@@ -1,11 +1,11 @@
 | fork sha | subject | disposition | new sha | notes / evidence |
 | --- | --- | --- | --- | --- |
-| 4de324dde | fix(cursor-native): no Backspace into an empty composer; stable readiness before the first paste | ported | c7000842a | Clean pick. |
-| c5444087c | fix(cursor-native): never write a session stop hook into the user hooks.json | adapted | a9a2753b9 | Only conflict: import block in tests/runner/test_app_sessions_native_terminals_autocreate.py; kept upstream `import threading` and the fork's `import os` + `Callable`. |
-| af775e159 | fix(cursor-native): never register a session MCP server in the user mcp.json | ported | 63ed06921 | Clean pick. |
-| a04516b21 | fix(cursor-native): refuse Cursor launches whose project config is the user ~/.cursor | adapted | 5272f08cf | Conflict in `_native_terminal_start_error_payload` (orchestration.py): kept upstream's `TerminalExitedDuringLaunch` Codex branch and put the fork's `CursorSharedWorkspaceError` branch first in the same if/elif chain. Test adaptation (in the slice commit): `test_native_terminal_ensure_response_carries_cursor_refusal` calls `_native_terminal_start_error_response`, which v0.16.0 made require keyword-only `session_id`; the test now passes `session_id=` (same assertions). |
-| 510511735 | fix(cursor-native): refuse Cursor launches from a repository subfolder | ported | 7d1acf15d | Clean pick. |
-| 5a782783f | test(cursor-native): keep the repo-subfolder refusal test's bridge under the launch root | ported | 07be1ec88 | Clean pick. |
+| 4de324dde | fix(cursor-native): no Backspace into an empty composer; stable readiness before the first paste | ported | 37c5ca35e | Clean pick. |
+| c5444087c | fix(cursor-native): never write a session stop hook into the user hooks.json | adapted | cef70d04d | Only conflict: import block in tests/runner/test_app_sessions_native_terminals_autocreate.py; kept upstream `import threading` and the fork's `import os` + `Callable`. |
+| af775e159 | fix(cursor-native): never register a session MCP server in the user mcp.json | ported | c40055f88 | Clean pick. |
+| a04516b21 | fix(cursor-native): refuse Cursor launches whose project config is the user ~/.cursor | adapted | 09488293f | Conflict in `_native_terminal_start_error_payload` (orchestration.py): kept upstream's `TerminalExitedDuringLaunch` Codex branch and put the fork's `CursorSharedWorkspaceError` branch first in the same if/elif chain. Test adaptation (in the slice commit): `test_native_terminal_ensure_response_carries_cursor_refusal` calls `_native_terminal_start_error_response`, which v0.16.0 made require keyword-only `session_id`; the test now passes `session_id=` (same assertions). |
+| 510511735 | fix(cursor-native): refuse Cursor launches from a repository subfolder | ported | eef83cd9e | Clean pick. |
+| 5a782783f | test(cursor-native): keep the repo-subfolder refusal test's bridge under the launch root | ported | f62033d62 | Clean pick. |
 
 Environment notes (no test was weakened, deselected or skipped):
 
@@ -15,3 +15,5 @@ Environment notes (no test was weakened, deselected or skipped):
 - Combined result: autocreate file with `--basetemp=/dev/shm`, the other three files under default `/tmp`: all pass (see final report).
 
 Lead take-over (the driver refused the builder run on its environment-only targeted-check failure): the builder's seven commits were cherry-picked unchanged onto `trio/loop` (fork `(cherry picked from commit …)` trailers preserved). The stray `/tmp/.git` is foreign host state and was left alone; instead `tests/conftest.py` gained `_avoid_git_ancestor_temproot` — when neither `--basetemp` nor `PYTEST_DEBUG_TEMPROOT` is set and the system temp dir has a `.git` ancestor, pytest's tmp root moves to `/var/tmp` (no assertion changes). With it, under the default `TMPDIR`: autocreate + `test_cursor_native_bridge.py` + `test_cursor_cold_start_prompt.py` + `test_cursor_receipt_binding_e2e.py` → `295 passed in 197.79s`.
+
+Note: the new-sha column names the commits on `trio/loop` (the Lead re-picked the builder commits, so builder-worktree shas c7000842a…07be1ec88 are not on the branch).

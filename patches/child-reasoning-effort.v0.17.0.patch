@@ -1,0 +1,317 @@
+diff --git a/omnigent/runner/tool_dispatch.py b/omnigent/runner/tool_dispatch.py
+index 4b916d730..c78fbfcef 100644
+--- a/omnigent/runner/tool_dispatch.py
++++ b/omnigent/runner/tool_dispatch.py
+@@ -119,6 +119,7 @@ from omnigent.tools.builtins.timer import (
+ )
+ from omnigent.tools.builtins.update_comment import UpdateCommentTool
+ from omnigent.tools.builtins.upload_file import UploadFileTool, safe_resolve
++from omnigent.util.reasoning_effort import EFFORT_VALUES, validate_effort
+ from omnigent.util.session_lifecycle import (
+     CLOSED_LABEL_KEY,
+     CLOSED_LABEL_VALUE,
+@@ -3318,11 +3319,12 @@ def _build_session_create_body(
+     message becomes the child's first queued user turn via
+     ``initial_items``.
+ 
+-    ``model`` and ``reasoning_effort`` are passed through unvalidated:
+-    this path never resolves the child's harness (the agent is named by
+-    id and resolved server-side), so neither can be checked against the
+-    harness's capabilities here. The server validates both against their
+-    vocabularies at create.
++    ``model`` is passed through unvalidated: this path never resolves the
++    child's harness (the agent is named by id and resolved server-side),
++    so it cannot be checked against the harness's capabilities here; the
++    server validates it at create. ``reasoning_effort`` is checked against
++    the shared effort vocabulary so a typo fails before any request is
++    sent; per-harness support is still enforced server-side.
+ 
+     :param agent_id: The existing agent to launch, e.g. ``"ag_abc123"``.
+     :param conversation_id: The caller's session id — the forced parent.
+@@ -3335,6 +3337,7 @@ def _build_session_create_body(
+     :param reasoning_effort: Optional reasoning level, e.g. ``"high"``;
+         written as ``reasoning_effort`` on the session.
+     :returns: The JSON request body.
++    :raises ValueError: If ``reasoning_effort`` is not a known effort level.
+     """
+     body: _JsonObject = {
+         "agent_id": agent_id,
+@@ -3344,8 +3347,9 @@ def _build_session_create_body(
+         body["title"] = title
+     if isinstance(model, str) and model:
+         body["model_override"] = model
+-    if isinstance(reasoning_effort, str) and reasoning_effort:
+-        body["reasoning_effort"] = reasoning_effort
++    effort = validate_effort(reasoning_effort, "session", EFFORT_VALUES)
++    if effort is not None:
++        body["reasoning_effort"] = effort
+     if isinstance(message, str) and message:
+         body["initial_items"] = [
+             {
+@@ -3506,14 +3510,17 @@ async def _execute_session_create(
+             agent_spec=agent_spec,
+             runner_workspace=runner_workspace,
+         )
+-    body = _build_session_create_body(
+-        str(agent_id),
+-        conversation_id,
+-        args.get("title"),
+-        args.get("message"),
+-        model=args.get("model"),
+-        reasoning_effort=args.get("reasoning_effort"),
+-    )
++    try:
++        body = _build_session_create_body(
++            str(agent_id),
++            conversation_id,
++            args.get("title"),
++            args.get("message"),
++            model=args.get("model"),
++            reasoning_effort=args.get("reasoning_effort"),
++        )
++    except ValueError as exc:
++        return json.dumps({"error": f"invalid reasoning_effort: {exc}"})
+     try:
+         resp = await server_client.post("/v1/sessions", json=body, timeout=30.0)
+     except Exception as exc:  # noqa: BLE001
+diff --git a/omnigent/server/routes/_sessions/helpers.py b/omnigent/server/routes/_sessions/helpers.py
+index 3721c2d4c..f7872cf00 100644
+--- a/omnigent/server/routes/_sessions/helpers.py
++++ b/omnigent/server/routes/_sessions/helpers.py
+@@ -9638,6 +9638,43 @@ async def _remove_session_worktree_best_effort(
+         )
+ 
+ 
++def _resolve_agent_spec(
++    *,
++    agent: Agent,
++    agent_cache: AgentCache | None,
++) -> AgentSpec | None:
++    """
++    Load an already-registered agent's trusted root spec.
++
++    The server-loaded bundle is the only trusted source for launch wiring
++    (native permission flags, labels) derived at session create. This is
++    the name trioctl's installer probe imports; it is also the loader
++    :func:`_resolve_subagent_spec` builds on.
++
++    :param agent: The registered agent row, e.g. ``ag_abc123``.
++    :param agent_cache: Cache for loading the parsed bundle. ``None``
++        disables resolution (returns ``None``).
++    :returns: The agent's root :class:`AgentSpec`, or ``None`` when the
++        cache is absent or the bundle fails to load.
++    """
++    if agent_cache is None:
++        return None
++    try:
++        return agent_cache.load(
++            agent.id, agent.bundle_location, expand_env=agent.session_id is None
++        ).spec
++    except Exception:  # noqa: BLE001
++        # A bundle that fails to load here must not break session
++        # creation; the session still works, just without the
++        # derived labels / launch args.
++        _logger.warning(
++            "Could not load bundle for agent %s to derive launch config",
++            agent.id,
++            exc_info=True,
++        )
++        return None
++
++
+ def _resolve_subagent_spec(
+     *,
+     agent: Agent,
+@@ -9663,24 +9700,10 @@ def _resolve_subagent_spec(
+     :returns: The matching child :class:`AgentSpec`, or ``None`` when the
+         cache is absent, the bundle fails to load, or no sub-agent matches.
+     """
+-    if agent_cache is None:
+-        return None
+     from omnigent.runtime.workflow import _find_spec_by_name
+ 
+-    try:
+-        parent_spec = agent_cache.load(
+-            agent.id, agent.bundle_location, expand_env=agent.session_id is None
+-        ).spec
+-    except Exception:  # noqa: BLE001
+-        # A bundle that fails to load here must not break session
+-        # creation; the session still works, just without the
+-        # derived labels / launch args.
+-        _logger.warning(
+-            "Could not load bundle for agent %s to resolve sub-agent %r spec",
+-            agent.id,
+-            sub_agent_name,
+-            exc_info=True,
+-        )
++    parent_spec = _resolve_agent_spec(agent=agent, agent_cache=agent_cache)
++    if parent_spec is None:
+         return None
+     return _find_spec_by_name(parent_spec, sub_agent_name)
+ 
+@@ -11728,6 +11751,7 @@ __all__ = [
+     "_require_filesystem_attachment_harness",
+     "_require_host_conn_for_worktree",
+     "_require_permission_mode_forward",
++    "_resolve_agent_spec",
+     "_resolve_harness",
+     "_resolve_llm_model",
+     "_resolve_skill_meta_text_via_runner",
+diff --git a/omnigent/server/routes/sessions/__init__.py b/omnigent/server/routes/sessions/__init__.py
+index bf3ac1ebf..ed268a7b3 100644
+--- a/omnigent/server/routes/sessions/__init__.py
++++ b/omnigent/server/routes/sessions/__init__.py
+@@ -507,6 +507,7 @@ from omnigent.server.routes._sessions.helpers import (
+     _require_external_status_forward as _require_external_status_forward,
+     _require_host_conn_for_worktree as _require_host_conn_for_worktree,
+     _require_permission_mode_forward as _require_permission_mode_forward,
++    _resolve_agent_spec as _resolve_agent_spec,
+     _resolve_llm_model as _resolve_llm_model,
+     _resolve_skill_meta_text_via_runner as _resolve_skill_meta_text_via_runner,
+     _resolve_subagent_spec as _resolve_subagent_spec,
+diff --git a/tests/tools/builtins/test_child_reasoning_effort.py b/tests/tools/builtins/test_child_reasoning_effort.py
+new file mode 100644
+index 000000000..8db9ab1b1
+--- /dev/null
++++ b/tests/tools/builtins/test_child_reasoning_effort.py
+@@ -0,0 +1,140 @@
++"""``reasoning_effort`` for ``sys_session_create`` child sessions.
++
++Covers the Trio compatibility contract: the orchestrator's
++``sys_session_create`` carries a validated ``reasoning_effort`` into the
++``POST /v1/sessions`` body, rejects an unknown level before any request is
++sent, and the server's create-time validation accepts exactly the same
++vocabulary. Also pins the registered-agent spec loader the trio installer
++probes (``_resolve_agent_spec``).
++"""
++
++from __future__ import annotations
++
++import json
++from types import SimpleNamespace
++from typing import Any
++
++import httpx
++import pytest
++
++from omnigent.errors import OmnigentError
++from omnigent.runner.tool_dispatch import execute_tool
++from omnigent.server.routes._session_create_validation import validate_session_model_metadata
++from omnigent.tools.builtins.spawn import SysSessionCreateTool
++
++
++def _server(posts: list[dict[str, Any]]) -> httpx.AsyncClient:
++    async def _handler(request: httpx.Request) -> httpx.Response:
++        if request.method == "POST" and request.url.path == "/v1/sessions":
++            posts.append(json.loads(request.content))
++            return httpx.Response(
++                201,
++                json={"id": "conv_child", "agent_id": "ag_x", "agent_name": "w", "status": "idle"},
++            )
++        return httpx.Response(404, json={"error": str(request.url)})
++
++    return httpx.AsyncClient(transport=httpx.MockTransport(_handler), base_url="http://server")
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("effort", ["high", "xhigh", "max"])
++async def test_session_create_forwards_reasoning_effort(effort: str) -> None:
++    posts: list[dict[str, Any]] = []
++    async with _server(posts) as client:
++        output = await execute_tool(
++            tool_name="sys_session_create",
++            arguments=json.dumps({"agent_id": "ag_x", "message": "go", "reasoning_effort": effort}),
++            server_client=client,
++            conversation_id="conv_caller",
++        )
++
++    assert len(posts) == 1
++    assert posts[0]["reasoning_effort"] == effort
++    assert posts[0]["parent_session_id"] == "conv_caller"
++    assert json.loads(output)["conversation_id"] == "conv_child"
++
++
++@pytest.mark.asyncio
++async def test_session_create_omits_reasoning_effort_when_unset() -> None:
++    posts: list[dict[str, Any]] = []
++    async with _server(posts) as client:
++        await execute_tool(
++            tool_name="sys_session_create",
++            arguments=json.dumps({"agent_id": "ag_x"}),
++            server_client=client,
++            conversation_id="conv_caller",
++        )
++
++    assert len(posts) == 1
++    assert "reasoning_effort" not in posts[0]
++
++
++@pytest.mark.asyncio
++async def test_session_create_rejects_invalid_reasoning_effort_without_posting() -> None:
++    posts: list[dict[str, Any]] = []
++    async with _server(posts) as client:
++        output = await execute_tool(
++            tool_name="sys_session_create",
++            arguments=json.dumps({"agent_id": "ag_x", "reasoning_effort": "turbo"}),
++            server_client=client,
++            conversation_id="conv_caller",
++        )
++
++    assert posts == []
++    assert "invalid reasoning_effort" in json.loads(output)["error"]
++
++
++@pytest.mark.asyncio
++async def test_session_create_config_path_refuses_reasoning_effort(tmp_path: Any) -> None:
++    posts: list[dict[str, Any]] = []
++    async with _server(posts) as client:
++        output = await execute_tool(
++            tool_name="sys_session_create",
++            arguments=json.dumps({"config_path": "helper.yaml", "reasoning_effort": "high"}),
++            server_client=client,
++            conversation_id="conv_caller",
++            runner_workspace=tmp_path,
++        )
++
++    assert posts == []
++    assert "reasoning_effort" in json.loads(output)["error"]
++
++
++def test_session_create_schema_advertises_reasoning_effort() -> None:
++    props = SysSessionCreateTool().get_schema()["function"]["parameters"]["properties"]
++    assert "reasoning_effort" in props
++    assert "high" in props["reasoning_effort"]["enum"]
++
++
++def test_server_create_validation_applies_effort_to_child_session() -> None:
++    # ``POST /v1/sessions`` runs this validator and persists its result as the
++    # child's ``reasoning_effort``.
++    assert validate_session_model_metadata(model_override=None, reasoning_effort="high") == (
++        None,
++        "high",
++    )
++    with pytest.raises(OmnigentError, match="invalid reasoning_effort"):
++        validate_session_model_metadata(model_override=None, reasoning_effort="turbo")
++
++
++def test_resolve_agent_spec_loads_registered_agent_root_spec() -> None:
++    from omnigent.server.routes._sessions.helpers import _resolve_agent_spec
++
++    spec = object()
++    loads: list[tuple[str, str | None, bool]] = []
++
++    class _Cache:
++        def load(self, agent_id: str, bundle: str | None, *, expand_env: bool) -> Any:
++            loads.append((agent_id, bundle, expand_env))
++            return SimpleNamespace(spec=spec)
++
++    agent = SimpleNamespace(id="ag_x", bundle_location="loc", session_id=None)
++    assert _resolve_agent_spec(agent=agent, agent_cache=_Cache()) is spec  # type: ignore[arg-type]
++    assert loads == [("ag_x", "loc", True)]
++    assert _resolve_agent_spec(agent=agent, agent_cache=None) is None  # type: ignore[arg-type]
++
++
++def test_resolve_agent_spec_is_importable_from_sessions_package() -> None:
++    from omnigent.server.routes.sessions import _resolve_agent_spec
++
++    assert callable(_resolve_agent_spec)

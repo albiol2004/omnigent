@@ -1,0 +1,41 @@
+$ git rev-parse HEAD v0.17.0
+5ad14e711271bf72ee8e4d2bdd15b70ccad611a5
+12b5f67d2529b43eab7366a7288fb89f7587e48b
+
+(all pytest runs use TMPDIR=/var/tmp/pytest-of-coder)
+
+$ GIT_INDEX_FILE=$I git read-tree v0.17.0 && GIT_INDEX_FILE=$I git apply --check --cached patches/child-reasoning-effort.v0.17.0.patch   # pristine v0.17.0
+exit=0
+
+$ git apply --check patches/child-reasoning-effort.v0.17.0.patch   # port tip (HEAD)
+exit=0
+
+$ ... git apply --check --cached <OLD v0.16.0 patch>   # pristine v0.17.0, for the record
+error: patch failed: omnigent/server/routes/_sessions/helpers.py:11528
+error: omnigent/server/routes/_sessions/helpers.py: patch does not apply
+error: patch failed: omnigent/server/routes/sessions/__init__.py:507
+error: omnigent/server/routes/sessions/__init__.py: patch does not apply
+exit=1
+
+$ git apply --check <OLD v0.16.0 patch>   # port tip
+error: patch failed: omnigent/server/routes/_sessions/helpers.py:11528
+error: omnigent/server/routes/_sessions/helpers.py: patch does not apply
+error: patch failed: omnigent/server/routes/sessions/__init__.py:507
+error: omnigent/server/routes/sessions/__init__.py: patch does not apply
+exit=1
+
+## Targeted check (hunks 3/3 of the old patch's __all__ and import-list context were re-anchored: upstream dropped _reset_runner_resources_after_switch(_impl) there)
+$ P=patches/child-reasoning-effort.v0.17.0.patch; I="$(mktemp -u /var/tmp/pytest-of-coder/idx.XXXXXX)"; GIT_INDEX_FILE="$I" git read-tree v0.17.0 && GIT_INDEX_FILE="$I" git apply --check --cached "$P" && git apply --check "$P" && git apply "$P" && ( uv sync --frozen --extra all --group dev -q && TMPDIR=/var/tmp/pytest-of-coder uv run --frozen pytest -q -p no:cacheprovider tests/tools/builtins/test_child_reasoning_effort.py tests/tools/builtins/test_sys_session.py tests/runtime/test_reasoning_effort_validation.py; rc=$?; git apply -R "$P"; rm -f "$I"; exit $rc )
+Running 60 items in this shard
+............................................................             [100%]
+========================= Top tests by peak-RSS delta ==========================
+60 passed in 61.80s (0:01:01)
+rc=0
+final exit=0
+
+NOTE: tests/runtime/test_reasoning_effort_validation.py exists on v0.17.0 (kept in the command).
+NOTE: on the tip, sessions/__init__.py also carries a fork alias '_resolve_agent_spec = _resolve_subagent_spec' after the import; it shadows the patch's import there (harmless, tests pass).
+
+$ git status --short (after check; patch not left applied)
+?? docs/v17-evidence/patch-check.txt
+?? patches/child-reasoning-effort.v0.17.0.patch

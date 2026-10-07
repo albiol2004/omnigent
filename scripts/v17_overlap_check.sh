@@ -4,7 +4,7 @@
 # For each upstream PR commit, takes every non-trivial '+' line the commit added
 # that is still present in the same file at tag v0.17.0, and counts how many are
 # absent from that file at HEAD. A line absent from its file but found elsewhere
-# in the HEAD tree (git grep -F, docs/v17-evidence excluded) is "moved".
+# in the HEAD tree (git grep -F, docs/v17-evidence and docs/v17-report.md excluded) is "moved".
 # Prints a markdown table, then every absent (not moved) line and every moved line. Always exits 0.
 set -u
 cd "$(git rev-parse --show-toplevel)" || exit 0
@@ -51,7 +51,7 @@ def added_by_file(commit):
 
 
 def moved_to(line):
-    rc, out = git("grep", "-F", "-l", "-e", line, "HEAD", "--", ".", ":(exclude)docs/v17-evidence")
+    rc, out = git("grep", "-F", "-l", "-e", line, "HEAD", "--", ".", ":(exclude)docs/v17-evidence", ":(exclude)docs/v17-report.md")
     if rc != 0:
         return None
     paths = sorted(p.split(":", 1)[1] for p in out.splitlines() if ":" in p)

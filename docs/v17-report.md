@@ -144,9 +144,11 @@ report for the 9-char sha.
   `tests/test_cursor_native_permissions.py::test_supervise_transcript_yolo_waits_through_stale_pending_burst`
   (parametrised `prompt`/`transcript`/`backoff`) and `::test_supervise_transcript_yolo_never_types_when_no_prompt_on_screen`
   — both in the `cursor-native` group, which has 0 failures (§3). Note: `docs/v17-evidence/dispositions/v17-port-close.md`.
-  Dropping them also removes the fork knobs `OMNIGENT_CURSOR_YOLO_STALE_SURFACES_CARD`,
-  `OMNIGENT_CURSOR_YOLO_ACCEPT_MAX_ATTEMPTS` and `OMNIGENT_CURSOR_YOLO_ACCEPT_STALE_CEILING_S`;
-  upstream #8516's time-based retry replaces them, so setting any of these env vars no longer has any effect.
+  Dropping them also removes the fork env knobs `OMNIGENT_CURSOR_YOLO_ACCEPT_RETRY_S`,
+  `OMNIGENT_CURSOR_YOLO_ACCEPT_ATTEMPTS` and `OMNIGENT_CURSOR_YOLO_STALE_SURFACES_CARD`
+  (`omnigent/harnesses/cursor_native/permissions.py` on `v16/trio-v0.16.0-fixes`, lines 381, 382 and 402),
+  and the hard-coded 60 s constant `_YOLO_ACCEPT_STALE_CEILING_S` (line 392; it never had an env var);
+  upstream #8516's time-based retry replaces them, so setting any of these three env vars no longer has any effect.
 - `39e45d8d4` (re-export `_resolve_agent_spec` from the sessions package): `_resolve_agent_spec`
   does not exist in `server/routes/_sessions/helpers.py` on v0.17.0 (`git grep -n "_resolve_agent_spec"
   v0.17.0 -- omnigent/server/routes/_sessions` has no definition; the function is `_resolve_subagent_spec`),
@@ -455,4 +457,5 @@ after the upgrade exist only in the failed DB copy kept as `chat.db.v0.17.failed
 ## 9. Post-ship fixes
 
 - `7c04ae6a5` fix(cursor-native): a completion-receipt re-post repeats the turn's failed/cancelled outcome (forwarder `_ReceiptState.posted_outcome`).
-- `fix/v17-followups` (follow-up commit on top of `7c04ae6a5`): the server keeps a failed/cancelled cursor child turn when a pre-upgrade bare-idle re-post names the same `(epoch, turn_seq)`, and a repeated terminal post for a turn is a no-op for the parent `returned` event and the runner forward; fence-close linearization test tolerates zero admitted writers.
+- `503a80a41` (on top of `7c04ae6a5`): the server keeps a failed/cancelled cursor child turn when a pre-upgrade bare-idle re-post names the same `(epoch, turn_seq)`, and a repeated terminal post for a turn is a no-op for the parent `returned` event and the runner forward; fence-close linearization test tolerates zero admitted writers.
+- this repair commit (on top of `503a80a41`): an edit-only caller that is neither the runner nor an owner no longer has its `turn_end` used for the turn-terminal marker or the repeat dedup (it is not stored as a receipt either), so a later authorised bare idle for that turn still completes; §1.3 now names the real v16 yolo knobs (`OMNIGENT_CURSOR_YOLO_ACCEPT_RETRY_S`, `OMNIGENT_CURSOR_YOLO_ACCEPT_ATTEMPTS`, `OMNIGENT_CURSOR_YOLO_STALE_SURFACES_CARD`).

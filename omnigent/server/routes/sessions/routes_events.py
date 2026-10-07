@@ -1840,6 +1840,21 @@ def register_events_routes(
                 status = effective_status
                 body.data["status"] = status
             raw_turn_end = body.data.pop("turn_end", None)
+            # Only a caller allowed to store the receipt (the runner or an
+            # owner) may name the turn: an edit-only caller's ``turn_end`` is
+            # neither stored nor used for the terminal marker or its dedup.
+            receipt_bearing = raw_turn_end is not None and _input_fence.is_opted_in(conv.labels)
+            receipt_caller_ok = False
+            if receipt_bearing:
+                receipt_caller_ok = _has_runner_created_by_authority(request, conv)
+                if not receipt_caller_ok:
+                    try:
+                        await _require_access(
+                            user_id, session_id, LEVEL_OWNER, permission_store, conversation_store
+                        )
+                        receipt_caller_ok = True
+                    except OmnigentError:
+                        receipt_caller_ok = False
             # The turn a receipt-bearing terminal post belongs to, and the
             # outcome already delivered for it. A cursor receipt re-post names
             # its turn by ``(epoch, turn_seq)``; a forwarder that predates the
@@ -1851,6 +1866,7 @@ def register_events_routes(
                 conv.parent_conversation_id is not None
                 and status in {"idle", "failed"}
                 and _input_fence.is_opted_in(conv.labels)
+                and receipt_caller_ok
             ):
                 terminal_turn_key = _input_fence.receipt_turn_key(raw_turn_end)
                 if terminal_turn_key is not None:
@@ -1865,16 +1881,7 @@ def register_events_routes(
                 if recorded_turn_outcome == "failed":
                     status = "failed"
                     body.data["status"] = status
-            if raw_turn_end is not None and _input_fence.is_opted_in(conv.labels):
-                receipt_caller_ok = _has_runner_created_by_authority(request, conv)
-                if not receipt_caller_ok:
-                    try:
-                        await _require_access(
-                            user_id, session_id, LEVEL_OWNER, permission_store, conversation_store
-                        )
-                        receipt_caller_ok = True
-                    except OmnigentError:
-                        receipt_caller_ok = False
+            if receipt_bearing:
                 await _input_fence.persist_turn_receipt(
                     session_id=session_id,
                     raw_receipt=raw_turn_end,

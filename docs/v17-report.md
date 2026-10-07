@@ -178,8 +178,8 @@ Only #8516 has lines not verbatim at the tip, all in `omnigent/harnesses/cursor_
   moved into that variable. The inline `if not retrying_items and pending_turn_end is not None:` became
   `idle_due = not retrying_items and pending_turn_end is not None` (forwarder.py:1900), and the reflowed
   `read_turn_outcome` / `write_posted_count` executor calls and `status="failed" if outcome == "failed" else "idle"`
-  (now `post_status = "failed" if outcome == "failed" else "idle"`, forwarder.py:1944) still run, post
-  `turn_outcome=outcome` (forwarder.py:1950/1957) and write the posted count (forwarder.py:1962) for every stop marker.
+  (now `post_status = "failed" if outcome == "failed" else "idle"`, forwarder.py:1947) still run, post
+  `turn_outcome=outcome` (forwarder.py:1953/1960) and write the posted count (forwarder.py:1965) for every stop marker.
 - **1 moved line** — `"type": "external_session_status",` is now inside `json={"type": "external_session_status", "data": data}`;
   the same line exists in `omnigent/harnesses/claude_native/forwarder.py`, which is what the checker
   reported as the move target.
@@ -244,6 +244,13 @@ Both runs used `TMPDIR=/var/tmp/pytest-of-coder` (header line `tmpdir:` of each 
 The per-slice runs additionally proved these same ids on a detached pristine v0.17.0 worktree
 (`v17-port-close.md`: `15 failed, 50 passed`; `v17-port-stop.md`: `7 failed, 7 passed, 51 deselected`;
 `v17-port-binding-plugin.md`: `tests/host/test_connect.py` `6 failed, 256 passed`).
+
+**Lead re-run at the final tip** (`250f4c3e5`, after the review's ruff/pyrefly fixes; appended to
+`docs/v17-evidence/after-port.txt`): same group totals except claude-native `3 failed, 1546 passed`. The one id not in
+the baseline, `tests/harnesses/claude_native/test_claude_native_status_file.py::test_poller_publishes_when_only_the_reason_changes`,
+is a timing-dependent upstream failure: `status_file.py` and its test are unchanged from v0.17.0, and the same file on a
+pristine v0.17.0 worktree failed it too (`2 failed, 19 passed`). The failing subset of that file varies between runs on
+both trees, so it is listed as pre-existing, not a regression.
 
 ## 4. Behaviour checks → tests (GOAL DoD 4)
 

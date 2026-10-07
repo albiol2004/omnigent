@@ -6519,6 +6519,9 @@ def create_runner_app(
                     return not_confirmed
             return Response(status_code=204)
 
+        if body_type == "input_fence":
+            return await _handle_cursor_native_input_fence(conversation_id, body)
+
         if body_type == "stop_session":
             resource_registry.note_terminal_control_request(conversation_id, "stop_session")
             _cancel_claude_prompt_waiter(conversation_id)
@@ -7037,6 +7040,7 @@ def create_runner_app(
     _handle_codex_native_plan_mode_change = _native_controls.handle_codex_native_plan_mode_change
     _handle_codex_native_settings_update = _native_controls.handle_codex_native_settings_update
     _handle_cursor_native_compact = _native_controls.handle_cursor_native_compact
+    _handle_cursor_native_input_fence = _native_controls.handle_cursor_native_input_fence
     _handle_cursor_native_model_change = _native_controls.handle_cursor_native_model_change
     _handle_devin_native_compact = _native_controls.handle_devin_native_compact
     _handle_devin_native_effort_change = _native_controls.handle_devin_native_effort_change

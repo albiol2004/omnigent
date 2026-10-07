@@ -101,6 +101,7 @@ from omnigent.server.routes._auth_helpers import (
     require_user as _require_user,
 )
 from omnigent.server.routes._errors import session_not_found as _session_not_found
+from omnigent.server.routes._sessions import input_fence as _input_fence
 from omnigent.server.routes._sessions.common import (
     _ALLOWED_EVENT_TYPES,
     _APPROVAL_TYPE,
@@ -726,6 +727,7 @@ def register_events_routes(
                                     session_id,
                                     event,
                                     in_flight=in_flight if event.type == "message" else None,
+                                    admission=in_flight,
                                 )
                             )
                         continue
@@ -741,6 +743,7 @@ def register_events_routes(
                 session_id,
                 body,
                 in_flight=in_flight if body.type == "message" else None,
+                admission=in_flight,
             )
 
     router.include_router(event_router)
@@ -790,6 +793,7 @@ def register_events_routes(
         session_id: str,
         body: SessionEventInput,
         in_flight: contextlib.ExitStack | None = None,
+        admission: contextlib.ExitStack | None = None,
     ) -> dict[str, bool | str]:
         """
         Submit a session event (input message, tool output,
@@ -881,6 +885,10 @@ def register_events_routes(
         :raises OmnigentError: 404 if no session exists.
         """
         user_id, conv = await _authorized_conversation(request, session_id)
+        if admission is not None:
+            # Fence-capable sessions refuse input while fenced; admitted input
+            # is counted so a closing fence can wait for it to drain.
+            await _input_fence.admit_input(session_id, body.type, conv.labels, admission)
         if in_flight is not None:
             # Marked only after authorization, so an unauthorized caller
             # cannot flip a session to "running" even transiently.
@@ -975,6 +983,7 @@ def register_events_routes(
             _EXTERNAL_DEVIN_SUBAGENT_START_TYPE,
             _EXTERNAL_CODEX_COLLABORATION_MODE_CHANGE_TYPE,
             _EXTERNAL_CODEX_APPROVAL_MODE_CHANGE_TYPE,
+            _input_fence.INPUT_FENCE_TYPE,
         ):
             try:
                 parse_item_data(body.type, {"type": body.type, **body.data})
@@ -1033,6 +1042,18 @@ def register_events_routes(
             raise OmnigentError(
                 "This side chat ended when its runner restarted and can't be continued.",
                 code=ErrorCode.CONFLICT,
+            )
+        if body.type == _input_fence.INPUT_FENCE_TYPE:
+            await _require_access(
+                user_id, session_id, LEVEL_OWNER, permission_store, conversation_store
+            )
+            return await _input_fence.handle_input_fence(
+                session_id=session_id,
+                user_id=user_id,
+                labels=conv.labels,
+                data=dict(body.data or {}),
+                conversation_store=conversation_store,
+                runner_client=await _get_runner_client(session_id, runner_router),
             )
         if body.type == _RETRY_SESSION_TYPE:
             return await _retry_session_single_flight(
@@ -1793,6 +1814,23 @@ def register_events_routes(
             if effective_status != status:
                 status = effective_status
                 body.data["status"] = status
+            raw_turn_end = body.data.pop("turn_end", None)
+            if raw_turn_end is not None and _input_fence.is_opted_in(conv.labels):
+                receipt_caller_ok = _has_runner_created_by_authority(request, conv)
+                if not receipt_caller_ok:
+                    try:
+                        await _require_access(
+                            user_id, session_id, LEVEL_OWNER, permission_store, conversation_store
+                        )
+                        receipt_caller_ok = True
+                    except OmnigentError:
+                        receipt_caller_ok = False
+                await _input_fence.persist_turn_receipt(
+                    session_id=session_id,
+                    raw_receipt=raw_turn_end,
+                    caller_authorized=receipt_caller_ok,
+                    conversation_store=conversation_store,
+                )
             # Terminal edges carry the harness's own persisted text: the
             # child's result on ``idle``, and on ``failed`` — when the
             # forwarder attached no detail — its error report (claude-native's

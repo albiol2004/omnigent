@@ -659,6 +659,7 @@ class _PiNativeLaunchConfig:
     fork_carry_history: bool = False
     model_override: str | None = None
     reasoning_effort: str | None = None
+    completion_receipts: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1194,8 +1195,15 @@ async def _pi_native_launch_config(
     fork_source_id: str | None = None
     fork_source_external_id: str | None = None
     fork_carry_history = False
+    completion_receipts = False
     labels = snapshot.get("labels")
     if isinstance(labels, dict):
+        from omnigent.harnesses.cursor_native.status import (
+            COMPLETION_RECEIPTS_LABEL,
+            COMPLETION_RECEIPTS_VERSION,
+        )
+
+        completion_receipts = labels.get(COMPLETION_RECEIPTS_LABEL) == COMPLETION_RECEIPTS_VERSION
         _fsi = labels.get(FORK_SOURCE_LABEL_KEY)
         if isinstance(_fsi, str) and _fsi:
             fork_source_id = _fsi
@@ -1226,6 +1234,7 @@ async def _pi_native_launch_config(
         reasoning_effort=reasoning_effort
         if isinstance(reasoning_effort, str) and reasoning_effort
         else None,
+        completion_receipts=completion_receipts,
     )
 
 
@@ -2895,17 +2904,23 @@ async def _auto_create_cursor_terminal(
     await _cancel_auto_forwarder_task(session_id)
     from omnigent.harnesses.cursor_native.bridge import (
         approve_mcp_server_for_workspace,
+        arm_completion_receipts,
         bridge_dir_for_session_id,
+        prepare_completion_receipts,
         write_fork_preamble,
         write_hooks_config,
         write_mcp_config,
     )
     from omnigent.harnesses.cursor_native.forwarder import (
         clear_cursor_bridge_state,
+        clear_receipt_forwarder_state,
         preseed_resume_state,
     )
     from omnigent.harnesses.cursor_native.main import is_valid_cursor_chat_id
-    from omnigent.harnesses.cursor_native.status import clear_cursor_status_state
+    from omnigent.harnesses.cursor_native.status import (
+        ReceiptEpochClearError,
+        clear_cursor_status_state,
+    )
     from omnigent.harnesses.cursor_native.usage import clear_cursor_usage_state
 
     bridge_dir = bridge_dir_for_session_id(session_id)
@@ -2969,6 +2984,27 @@ async def _auto_create_cursor_terminal(
                 extra={"session_id": session_id},
             )
             resume_chat_id = None
+    # Completion receipts (opt-in): each launch is a new terminal epoch, and the
+    # transcript ACK state restarts from this launch's forward cursor.
+    clear_receipt_forwarder_state(bridge_dir)
+    # Drops the prior epoch and checks the project hooks.json before
+    # write_hooks_config below rewrites it (a malformed file would be dropped).
+    # A prior epoch that cannot be removed would leave this launch armed under
+    # the old capability (even when held or not opted in), so abort before the
+    # terminal starts.
+    try:
+        receipt_precheck = prepare_completion_receipts(
+            bridge_dir, Path(workspace), opted_in=launch_config.completion_receipts
+        )
+    except ReceiptEpochClearError:
+        _logger.error(
+            "cursor-native: not starting the terminal; the prior completion-receipt "
+            "epoch could not be removed (session=%s).",
+            session_id,
+            exc_info=True,
+            extra={"session_id": session_id},
+        )
+        raise
     # A fork bound to cursor carries history as a text preamble: cursor's
     # conversation is server-backed, so there's no local store to seed for
     # ``--resume`` (a fresh fork has no prior chat anyway → ``not preseeded``).
@@ -2996,6 +3032,25 @@ async def _auto_create_cursor_terminal(
     # Register the cursor ``stop`` hook that captures per-turn token usage into
     # the bridge dir for the usage forwarder below (see cursor_native_usage).
     write_hooks_config(Path(workspace), bridge_dir)
+    # Armed on the hooks files the TUI will load: only this launch's own project
+    # stop hook may remain. Anything else (a foreign or shared-scope stop hook,
+    # an unreadable/malformed config, workspace == HOME) leaves this launch
+    # without receipts, so the fence answers capability_unsupported.
+    receipt_hold = arm_completion_receipts(
+        bridge_dir,
+        Path(workspace),
+        launch_epoch_ms,
+        opted_in=launch_config.completion_receipts,
+        precheck=receipt_precheck,
+    )
+    if launch_config.completion_receipts and receipt_hold is not None:
+        _logger.warning(
+            "cursor-native: completion receipts disabled for this launch (%s); "
+            "input_fence will report capability_unsupported (session=%s).",
+            receipt_hold,
+            session_id,
+            extra={"session_id": session_id},
+        )
     cursor_command = resolve_cursor_executable()
     cursor_args = list(launch_config.terminal_launch_args or [])
     if "--approve-mcps" not in cursor_args:

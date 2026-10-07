@@ -778,6 +778,12 @@ get_agent_cache = _runtime_get_agent_cache
 get_caps = _runtime_get_caps
 _get_user_id = _auth_get_user_id
 
+# trioctl's session-contract probe still imports this 0.12 name. Upstream
+# renamed the helper to _resolve_subagent_spec; keep a thin alias so doctor
+# PASSes. Prefer updating trioctl to the new name in a later trio-agent-loop
+# change rather than growing more aliases here.
+_resolve_agent_spec = _resolve_subagent_spec
+
 # ── Module-level constants (rule 34) ──────────────────────────────
 
 

@@ -47,8 +47,7 @@ from tests.server.helpers import create_test_agent
 from tests.server.integration.test_sessions_permissions import (  # noqa: F401 - fixtures
     _create_session_as,
     auth_app,
-    auth_client,
-)
+)  # ``auth_client`` now lives in tests/server/conftest.py and picks this ``auth_app`` up.
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -994,7 +993,9 @@ async def test_shared_user_hook_from_another_session_cannot_close_a_running_turn
     assert (binding["bound"], binding["reason"]) == (False, "turn_end_foreign"), binding
     bridge_a = Path(rec["bridge_dir"])
     ends = [
-        json.loads(line) for line in (bridge_a / status.TURN_END_FILE).read_text().splitlines()
+        json.loads(line)
+        for line in (bridge_a / status.TURN_END_FILE).read_text().splitlines()
+        if line.strip()
     ]
     foreign = [e for e in ends if e.get("conversation_check") == "mismatch"]
     own = [e for e in ends if e.get("conversation_check") == "match"]

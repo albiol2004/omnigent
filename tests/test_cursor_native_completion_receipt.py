@@ -66,9 +66,12 @@ def test_default_session_writes_legacy_marker_and_no_receipt_files(
     _inject(bridge_dir, "hello")
     _hook(bridge_dir, monkeypatch, {"generation_id": "g1", "status": "completed"})
 
-    lines = (bridge_dir / status.TURN_END_FILE).read_text().splitlines()
+    # v0.17.0 markers lead with a blank separator line and retain the hook status.
+    lines = [
+        line for line in (bridge_dir / status.TURN_END_FILE).read_text().splitlines() if line
+    ]
     assert len(lines) == 1
-    assert set(json.loads(lines[0])) == {"ts", "generation_id"}
+    assert set(json.loads(lines[0])) == {"ts", "generation_id", "status"}
     assert not (bridge_dir / status.INJECT_FILE).exists()
     assert not (bridge_dir / "receipt.lock").exists()
     assert status.build_turn_end_receipt(bridge_dir) is None
@@ -201,7 +204,7 @@ def test_reordered_marker_timestamps_do_not_change_sequence(tmp_path: Path) -> N
     status.record_injection(bridge_dir, "b", kind="message")
     status.record_turn_end(bridge_dir, {})
     path = bridge_dir / status.TURN_END_FILE
-    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    lines = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     lines[0]["ts"], lines[1]["ts"] = lines[1]["ts"] + 100, lines[0]["ts"]
     path.write_text("".join(json.dumps(line) + "\n" for line in lines))
     receipt = status.build_turn_end_receipt(bridge_dir)
@@ -329,11 +332,19 @@ def test_fence_close_linearizes_against_concurrent_injections(tmp_path: Path) ->
 class _StatusRecorder:
     def __init__(self) -> None:
         self.posts: list[dict | None] = []
+        self.outcomes: list[str | None] = []
 
     async def __call__(
-        self, client: object, *, session_id: str, status: str, turn_end: dict | None = None
+        self,
+        client: object,
+        *,
+        session_id: str,
+        status: str,
+        turn_outcome: str | None = None,
+        turn_end: dict | None = None,
     ) -> None:
         assert status == "idle"
+        self.outcomes.append(turn_outcome)
         self.posts.append(turn_end)
 
 

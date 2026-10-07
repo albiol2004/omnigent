@@ -331,6 +331,7 @@ class _StatusRecorder:
     def __init__(self) -> None:
         self.posts: list[dict | None] = []
         self.outcomes: list[str | None] = []
+        self.statuses: list[str] = []
 
     async def __call__(
         self,
@@ -341,7 +342,8 @@ class _StatusRecorder:
         turn_outcome: str | None = None,
         turn_end: dict | None = None,
     ) -> None:
-        assert status == "idle"
+        assert status in {"idle", "failed"}
+        self.statuses.append(status)
         self.outcomes.append(turn_outcome)
         self.posts.append(turn_end)
 
@@ -469,6 +471,101 @@ async def test_delayed_final_append_flips_ack_and_reposts(
     assert (first["turn_seq"], last["turn_seq"]) == (1, 1)
     assert last["rev"] > first["rev"]
     assert last["transcript"]["acked_through_rowid"] == 3
+
+
+def _append_late_blob_to(writer) -> None:
+    writer.execute(
+        "INSERT INTO blobs(id, data) VALUES(?, ?)",
+        ("a2", json.dumps(_assistant([{"type": "text", "text": "final"}])).encode()),
+    )
+    writer.commit()
+
+
+async def _repost_after_first_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hook_status: str
+) -> _StatusRecorder:
+    """Run a receipt turn closed with *hook_status*, then force a receipt re-post."""
+    bridge_dir, store, writer = _opted_in_store(tmp_path)
+    # Replace the completed marker ``_opted_in_store`` wrote with *hook_status*.
+    (bridge_dir / status.TURN_END_FILE).unlink()
+    status.record_turn_end(bridge_dir, {"status": hook_status})
+    recorder = await _run_forwarder(
+        monkeypatch,
+        bridge_dir,
+        store,
+        between=(lambda r: len(r.posts) >= 1, lambda: _append_late_blob_to(writer)),
+        until=lambda r: len(r.posts) >= 2,
+    )
+    writer.close()
+    return recorder
+
+
+@pytest.mark.asyncio
+async def test_receipt_repost_keeps_the_failed_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A re-post must not turn the turn's failed first post into a bare idle."""
+    from omnigent.server.subagent_activity import native_subagent_terminal_status
+
+    recorder = await _repost_after_first_post(tmp_path, monkeypatch, "error")
+    first, repost = recorder.posts[0], recorder.posts[1]
+    assert first is not None and repost is not None
+    assert repost["rev"] > first["rev"], "the second post must be a receipt re-post"
+    assert recorder.outcomes[:2] == ["failed", "failed"]
+    assert recorder.statuses[:2] == ["failed", "failed"]
+    # The server derives the child's published terminal status from the post.
+    assert (
+        native_subagent_terminal_status(
+            recorder.statuses[1], harness="cursor-native", turn_outcome=recorder.outcomes[1]
+        )
+        == "failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_receipt_repost_keeps_the_cancelled_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = await _repost_after_first_post(tmp_path, monkeypatch, "aborted")
+    assert recorder.outcomes[:2] == ["cancelled", "cancelled"]
+    assert recorder.statuses[:2] == ["idle", "idle"]
+
+
+@pytest.mark.asyncio
+async def test_receipt_repost_after_completed_turn_is_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = await _repost_after_first_post(tmp_path, monkeypatch, "completed")
+    # Unchanged: a completed turn's re-post stays a bare idle (read as completed).
+    assert recorder.outcomes[:2] == ["completed", None]
+    assert recorder.statuses[:2] == ["idle", "idle"]
+
+
+@pytest.mark.asyncio
+async def test_receipt_repost_outcome_survives_a_forwarder_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first post's outcome is persisted with the receipt state."""
+    bridge_dir, store, writer = _opted_in_store(tmp_path)
+    (bridge_dir / status.TURN_END_FILE).unlink()
+    status.record_turn_end(bridge_dir, {"status": "error"})
+    # The state is written just after the post, so wait for it rather than the post.
+    await _run_forwarder(
+        monkeypatch,
+        bridge_dir,
+        store,
+        until=lambda r: (
+            bool(r.posts)
+            and (fwd._read_receipt_state(bridge_dir) or fwd._ReceiptState()).posted_key is not None
+        ),
+    )
+    persisted = fwd._read_receipt_state(bridge_dir)
+    assert persisted is not None and persisted.posted_outcome == "failed"
+    _append_late_blob_to(writer)
+    recorder = await _run_forwarder(monkeypatch, bridge_dir, store, until=lambda r: bool(r.posts))
+    writer.close()
+    assert recorder.outcomes[0] == "failed"
+    assert recorder.statuses[0] == "failed"
 
 
 @pytest.mark.asyncio

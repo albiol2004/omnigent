@@ -1189,6 +1189,8 @@ class _ReceiptState:
     :param posted_key: ``[epoch, turn_seq]`` of the last posted receipt.
     :param posted_rev: ``rev`` of the last posted receipt.
     :param posted_digest: Content digest of the last posted receipt (sans rev).
+    :param posted_outcome: Turn outcome the turn's first terminal post carried
+        (``None`` when it carried none); a receipt re-post repeats it.
     :param base_rowid: Forward cursor when this epoch bound the store; rows at
         or below it belong to a prior terminal and are outside the epoch.
     """
@@ -1200,6 +1202,7 @@ class _ReceiptState:
     posted_key: list[int] | None = None
     posted_rev: int = 0
     posted_digest: str | None = None
+    posted_outcome: str | None = None
 
 
 def _read_receipt_state(bridge_dir: Path) -> _ReceiptState | None:
@@ -1221,6 +1224,9 @@ def _read_receipt_state(bridge_dir: Path) -> _ReceiptState | None:
         posted_digest=data.get("posted_digest")
         if isinstance(data.get("posted_digest"), str)
         else None,
+        posted_outcome=data.get("posted_outcome")
+        if isinstance(data.get("posted_outcome"), str)
+        else None,
     )
 
 
@@ -1236,6 +1242,7 @@ def _write_receipt_state(bridge_dir: Path, state: _ReceiptState) -> None:
                 "posted_key": state.posted_key,
                 "posted_rev": state.posted_rev,
                 "posted_digest": state.posted_digest,
+                "posted_outcome": state.posted_outcome,
             }
         ),
         encoding="utf-8",
@@ -1289,6 +1296,7 @@ def _bind_receipt_state(
         state.posted_key = persisted.posted_key
         state.posted_rev = persisted.posted_rev
         state.posted_digest = persisted.posted_digest
+        state.posted_outcome = persisted.posted_outcome
     return state
 
 
@@ -1940,6 +1948,14 @@ async def forward_cursor_store_to_session(
                     posted_update: tuple[list[int], int, str] | None = None
                     if receipt is not None:
                         key = cast(list[int], [receipt["epoch"], receipt["turn_seq"]])
+                        if receipt_update_due:
+                            # A re-post refreshes the receipt only; it must repeat the
+                            # outcome the turn's first terminal post carried, or the
+                            # server reads a bare idle as ``completed`` and a failed
+                            # turn flips to idle. A completed first post keeps its
+                            # bare-idle re-post, which the server reads the same way.
+                            if posted.posted_outcome != "completed":
+                                outcome = posted.posted_outcome
                         digest = _receipt_digest(receipt)
                         rev = posted.posted_rev + 1 if posted.posted_key == key else 1
                         receipt = {**receipt, "rev": rev}
@@ -1970,6 +1986,7 @@ async def forward_cursor_store_to_session(
                         outcome_parse_failures = 0
                     if posted_update is not None:
                         posted.posted_key, posted.posted_rev, posted.posted_digest = posted_update
+                        posted.posted_outcome = outcome
                         receipt_state = posted
                         await asyncio.to_thread(_write_receipt_state, bridge_dir, posted)
                 if fd_exhausted_since is not None:

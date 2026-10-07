@@ -986,6 +986,8 @@ def test_prune_orphaned_bridge_dirs_keeps_live_and_unmarked_bridges(
     assert not dead_dir.exists()
     assert live_dir.exists()
     assert unmarked_dir.exists()
+
+
 def test_kill_session_issues_kill_session_on_target(
     bridge_dir: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -6982,10 +6982,7 @@ async def test_session_close_routes_native_wrappers_to_stop_session(
                 200,
                 json={"id": "conv_caller", "root_conversation_id": "conv_root"},
             )
-        if (
-            request.method == "POST"
-            and request.url.path == "/v1/sessions/conv_target/events"
-        ):
+        if request.method == "POST" and request.url.path == "/v1/sessions/conv_target/events":
             stop_events.append(("conv_target", json.loads(request.content)))
             return httpx.Response(204)
         if request.method == "PATCH" and request.url.path == "/v1/sessions/conv_target":
@@ -7195,10 +7192,7 @@ async def test_session_close_accepts_child_with_unparsable_title() -> None:
                 200,
                 json={"id": "conv_caller", "root_conversation_id": "conv_root"},
             )
-        if (
-            request.method == "POST"
-            and request.url.path == "/v1/sessions/conv_target/events"
-        ):
+        if request.method == "POST" and request.url.path == "/v1/sessions/conv_target/events":
             write_order.append("stop")
             stop_events.append(("conv_target", json.loads(request.content)))
             return httpx.Response(204)

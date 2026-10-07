@@ -1129,6 +1129,7 @@ async def test_codex_model_catalog_writeback_uses_session_provider(
         assert launch_resolver.call_count == 2
         launch_resolver.assert_called_with(model=None, spec=spec)
 
+
 @pytest.mark.asyncio
 async def test_codex_native_model_options_follow_labeled_foreign_bridge(
     monkeypatch: pytest.MonkeyPatch,
@@ -1181,9 +1182,7 @@ async def test_codex_native_model_options_follow_labeled_foreign_bridge(
         transport="ws://127.0.0.1:43210",
         client_name="omnigent-codex-native-runner",
     )
-    fake_client.model_list_responses = [
-        {"result": {"data": expected_models, "nextCursor": None}}
-    ]
+    fake_client.model_list_responses = [{"result": {"data": expected_models, "nextCursor": None}}]
 
     def _fake_client_for_transport(
         transport: str,
@@ -1233,9 +1232,7 @@ async def test_codex_native_model_options_follow_labeled_foreign_bridge(
         return codex_native_spec
 
     app = create_runner_app(
-        process_manager=_FakeProcessManager(
-            _ScriptedHarnessClient([])
-        ),  # type: ignore[arg-type]
+        process_manager=_FakeProcessManager(_ScriptedHarnessClient([])),  # type: ignore[arg-type]
         spec_resolver=_resolver,
         server_client=_LabeledServerClient(),  # type: ignore[arg-type]
     )
@@ -1249,9 +1246,7 @@ async def test_codex_native_model_options_follow_labeled_foreign_bridge(
             },
         )
         assert create_resp.status_code == 201, create_resp.text
-        model_resp = await client.get(
-            f"/v1/sessions/{child_id}/codex-model-options"
-        )
+        model_resp = await client.get(f"/v1/sessions/{child_id}/codex-model-options")
         mutation_resp = await client.post(
             f"/v1/sessions/{child_id}/events",
             json={"type": "model_change", "model": "gpt-5.4"},
@@ -2243,8 +2238,7 @@ async def test_events_stop_session_on_codex_native_hard_stops_without_marker(
     # Hard stop must not use the app-server turn/interrupt path. That path
     # is interrupt-only; stop kills tmux and tears down the app-server.
     assert fake_client.requests == [], (
-        f"codex-native stop_session must not call turn/interrupt; "
-        f"got {fake_client.requests!r}."
+        f"codex-native stop_session must not call turn/interrupt; got {fake_client.requests!r}."
     )
     assert codex_native_bridge.read_mcp_startup(bridge_dir) == {
         "storage-console": {"status": "cancelled", "error": None}

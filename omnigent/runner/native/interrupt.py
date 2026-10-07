@@ -732,9 +732,7 @@ class NativeInterruptRunner:
                 status_code=503,
                 content={
                     "error": "codex_native_stop_failed",
-                    "detail": self._client_safe_error_detail(
-                        exc, context="codex-native stop"
-                    ),
+                    "detail": self._client_safe_error_detail(exc, context="codex-native stop"),
                 },
             )
         await self._teardown_session_terminals(conv_id)

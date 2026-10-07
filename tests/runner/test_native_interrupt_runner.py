@@ -618,9 +618,7 @@ async def test_codex_stop_kills_tears_down_and_goes_idle(
     from omnigent.runner.native import interrupt as interrupt_mod
 
     calls: list[tuple[str, Any]] = []
-    monkeypatch.setattr(
-        codex_bridge, "bridge_dir_for_bridge_id", lambda conv: f"dir/{conv}"
-    )
+    monkeypatch.setattr(codex_bridge, "bridge_dir_for_bridge_id", lambda conv: f"dir/{conv}")
     monkeypatch.setattr(
         codex_bridge,
         "kill_session",
@@ -648,9 +646,7 @@ async def test_codex_stop_kills_tears_down_and_goes_idle(
         ("teardown", "conv_cx"),
         ("teardown_app_server", "conv_cx"),
     ]
-    assert ("conv_cx", {"type": "session.status", "status": "idle"}) in captured[
-        "published"
-    ]
+    assert ("conv_cx", {"type": "session.status", "status": "idle"}) in captured["published"]
     assert captured["wakes"] == [("conv_cx", "cancelled", "[System: sub-agent stopped]")]
 
 

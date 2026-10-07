@@ -6422,9 +6422,7 @@ async def _session_close_via_rest(
         CURSOR_NATIVE_WRAPPER_VALUE,
     }
     event_type = (
-        "stop_session"
-        if _session_wrapper_label(target_snap) in _stop_wrappers
-        else "interrupt"
+        "stop_session" if _session_wrapper_label(target_snap) in _stop_wrappers else "interrupt"
     )
     with contextlib.suppress(Exception):
         await server_client.post(

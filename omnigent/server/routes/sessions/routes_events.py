@@ -1840,6 +1840,31 @@ def register_events_routes(
                 status = effective_status
                 body.data["status"] = status
             raw_turn_end = body.data.pop("turn_end", None)
+            # The turn a receipt-bearing terminal post belongs to, and the
+            # outcome already delivered for it. A cursor receipt re-post names
+            # its turn by ``(epoch, turn_seq)``; a forwarder that predates the
+            # ``posted_outcome`` fix re-posts a failed/cancelled turn as a bare
+            # idle, which must not turn it into ``completed``.
+            terminal_turn_key: tuple[int, int] | None = None
+            recorded_turn_outcome: str | None = None
+            if (
+                conv.parent_conversation_id is not None
+                and status in {"idle", "failed"}
+                and _input_fence.is_opted_in(conv.labels)
+            ):
+                terminal_turn_key = _input_fence.receipt_turn_key(raw_turn_end)
+                if terminal_turn_key is not None:
+                    recorded_turn_outcome = _input_fence.recorded_turn_terminal(
+                        conv.labels, terminal_turn_key
+                    )
+            if (
+                recorded_turn_outcome in {"failed", "cancelled"}
+                and body.data.get("turn_outcome") is None
+            ):
+                body.data["turn_outcome"] = recorded_turn_outcome
+                if recorded_turn_outcome == "failed":
+                    status = "failed"
+                    body.data["status"] = status
             if raw_turn_end is not None and _input_fence.is_opted_in(conv.labels):
                 receipt_caller_ok = _has_runner_created_by_authority(request, conv)
                 if not receipt_caller_ok:
@@ -1912,6 +1937,7 @@ def register_events_routes(
                 background_tasks=bg_tasks,
                 blocked_on=blocked_on,
             )
+            delivered_outcome: str | None = None
             if (
                 conv.parent_conversation_id is not None
                 and status in {"idle", "failed"}
@@ -1929,6 +1955,12 @@ def register_events_routes(
                     turn_outcome=data.get("turn_outcome"),
                     turn_completed=data.get("turn_completed"),
                 )
+                if outcome is not None and outcome == recorded_turn_outcome:
+                    # A repeat of a terminal edge this turn already delivered
+                    # (e.g. a receipt re-post): no second returned event and no
+                    # second runner forward.
+                    return {"queued": False}
+                delivered_outcome = outcome
                 if outcome is not None:
                     await record_subagent_activity(
                         session_id,
@@ -1998,6 +2030,12 @@ def register_events_routes(
                     session_id,
                     status,
                     runner_result,
+                )
+            if terminal_turn_key is not None and delivered_outcome is not None:
+                # Only after every side effect succeeded, so a retried post
+                # (the forward above raised) still runs them.
+                await _input_fence.record_turn_terminal(
+                    session_id, terminal_turn_key, delivered_outcome, conversation_store
                 )
             return {"queued": False}
         if body.type == _EXTERNAL_COMPACTION_STATUS_TYPE:

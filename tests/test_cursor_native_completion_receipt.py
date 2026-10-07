@@ -67,9 +67,7 @@ def test_default_session_writes_legacy_marker_and_no_receipt_files(
     _hook(bridge_dir, monkeypatch, {"generation_id": "g1", "status": "completed"})
 
     # v0.17.0 markers lead with a blank separator line and retain the hook status.
-    lines = [
-        line for line in (bridge_dir / status.TURN_END_FILE).read_text().splitlines() if line
-    ]
+    lines = [line for line in (bridge_dir / status.TURN_END_FILE).read_text().splitlines() if line]
     assert len(lines) == 1
     assert set(json.loads(lines[0])) == {"ts", "generation_id", "status"}
     assert not (bridge_dir / status.INJECT_FILE).exists()

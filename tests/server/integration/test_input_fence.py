@@ -7,7 +7,6 @@ so admission, persistence, verification, and the pane fence are all real code.
 
 # The permission suite's fixtures are imported for reuse, and pytest injects
 # them by parameter name, which ruff reads as a redefinition.
-# ruff: noqa: F811
 
 from __future__ import annotations
 

@@ -1900,7 +1900,7 @@ async def forward_cursor_store_to_session(
                 idle_due = not retrying_items and pending_turn_end is not None
                 receipt_update_due = False
                 if receipt is not None and not retrying_items and not idle_due:
-                    key = [receipt["epoch"], receipt["turn_seq"]]
+                    key = cast(list[int], [receipt["epoch"], receipt["turn_seq"]])
                     posted = receipt_state or _read_receipt_state(bridge_dir) or _ReceiptState()
                     # Re-post a finished turn's receipt only while every injection
                     # has ended (the pane is idle) and something about it changed,
@@ -1908,11 +1908,12 @@ async def forward_cursor_store_to_session(
                     receipt_update_due = (
                         posted.posted_key == key
                         and posted.posted_digest != _receipt_digest(receipt)
-                        and receipt["turn_end_count"] >= receipt["inject_count"]
+                        and cast(int, receipt["turn_end_count"])
+                        >= cast(int, receipt["inject_count"])
                     )
                 if idle_due or receipt_update_due:
                     outcome: str | None = None
-                    if idle_due:
+                    if idle_due and pending_turn_end is not None:
                         try:
                             outcome = await asyncio.to_thread(
                                 cursor_native_status.read_turn_outcome,
@@ -1936,11 +1937,13 @@ async def forward_cursor_store_to_session(
                         else:
                             outcome_parse_failures = 0
                     posted = receipt_state or _read_receipt_state(bridge_dir) or _ReceiptState()
+                    posted_update: tuple[list[int], int, str] | None = None
                     if receipt is not None:
-                        key = [receipt["epoch"], receipt["turn_seq"]]
+                        key = cast(list[int], [receipt["epoch"], receipt["turn_seq"]])
                         digest = _receipt_digest(receipt)
                         rev = posted.posted_rev + 1 if posted.posted_key == key else 1
                         receipt = {**receipt, "rev": rev}
+                        posted_update = (key, rev, digest)
                     post_status = "failed" if outcome == "failed" else "idle"
                     if receipt is None:
                         await _post_external_session_status(
@@ -1957,7 +1960,7 @@ async def forward_cursor_store_to_session(
                             turn_outcome=outcome,
                             turn_end=receipt,
                         )
-                    if idle_due:
+                    if idle_due and pending_turn_end is not None:
                         await asyncio.to_thread(
                             cursor_native_status.write_posted_count,
                             bridge_dir,
@@ -1965,10 +1968,8 @@ async def forward_cursor_store_to_session(
                         )
                         pending_turn_end = None
                         outcome_parse_failures = 0
-                    if receipt is not None:
-                        posted.posted_key = key
-                        posted.posted_rev = rev
-                        posted.posted_digest = digest
+                    if posted_update is not None:
+                        posted.posted_key, posted.posted_rev, posted.posted_digest = posted_update
                         receipt_state = posted
                         await asyncio.to_thread(_write_receipt_state, bridge_dir, posted)
                 if fd_exhausted_since is not None:

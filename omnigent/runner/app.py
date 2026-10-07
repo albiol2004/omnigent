@@ -3522,10 +3522,7 @@ def create_runner_app(
             )
             return None
         if state.session_id != conv_id:
-            if (
-                action == "model options"
-                and labels.get(CODEX_NATIVE_BRIDGE_ID_LABEL_KEY)
-            ):
+            if action == "model options" and labels.get(CODEX_NATIVE_BRIDGE_ID_LABEL_KEY):
                 # Read-only discovery follows a labeled live app-server through
                 # fork/resume rotation; mutations remain owner-bound below.
                 return state

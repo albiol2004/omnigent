@@ -6310,9 +6310,7 @@ async def _close_tree_scope_error(
     return None
 
 
-def _close_tombstone_label(
-    target_snap: _JsonObject, target_id: str
-) -> tuple[str, str]:
+def _close_tombstone_label(target_snap: _JsonObject, target_id: str) -> tuple[str, str]:
     """
     Derive the ``(agent, title)`` used to tombstone a close target.
 
@@ -6351,9 +6349,7 @@ def _close_tombstone_label(
     # Strip any legacy closed marker from the raw title before reusing
     # it; fall back to the conversation id when the title is missing or
     # reduces to empty so the tombstone stays unique and well-formed.
-    raw_title = title_without_closed_marker(
-        _optional_string(target_snap.get("title"))
-    )
+    raw_title = title_without_closed_marker(_optional_string(target_snap.get("title")))
     title = raw_title or target_id
     return agent, title
 

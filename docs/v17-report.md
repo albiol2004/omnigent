@@ -18,6 +18,10 @@ commits are the 43 + 12 + 3.
 
 All pytest runs in this report used `TMPDIR=/var/tmp/pytest-of-coder`: the driver's TMPDIR is long
 and tmux socket paths under it exceed the 108-byte AF_UNIX limit (same quirk as v16 §3).
+Related environment artifact: upstream
+`tests/harnesses/claude_native/test_claude_native_bridge.py::test_http_ingress_advertises_absolute_socket_path`
+fails whenever pytest's `tmp_path` is no deeper than the cwd; it fails on pristine v0.17.0 too, so it
+is not a regression of this port.
 
 ## 1. Disposition table (all 66 v16 commits, original order)
 
@@ -140,6 +144,9 @@ report for the 9-char sha.
   `tests/test_cursor_native_permissions.py::test_supervise_transcript_yolo_waits_through_stale_pending_burst`
   (parametrised `prompt`/`transcript`/`backoff`) and `::test_supervise_transcript_yolo_never_types_when_no_prompt_on_screen`
   — both in the `cursor-native` group, which has 0 failures (§3). Note: `docs/v17-evidence/dispositions/v17-port-close.md`.
+  Dropping them also removes the fork knobs `OMNIGENT_CURSOR_YOLO_STALE_SURFACES_CARD`,
+  `OMNIGENT_CURSOR_YOLO_ACCEPT_MAX_ATTEMPTS` and `OMNIGENT_CURSOR_YOLO_ACCEPT_STALE_CEILING_S`;
+  upstream #8516's time-based retry replaces them, so setting any of these env vars no longer has any effect.
 - `39e45d8d4` (re-export `_resolve_agent_spec` from the sessions package): `_resolve_agent_spec`
   does not exist in `server/routes/_sessions/helpers.py` on v0.17.0 (`git grep -n "_resolve_agent_spec"
   v0.17.0 -- omnigent/server/routes/_sessions` has no definition; the function is `_resolve_subagent_spec`),
@@ -444,3 +451,8 @@ omnigent --version                                                      # 0.16.0
 Do **not** try to roll back by only switching the branch: v0.16.0 code refuses a DB stamped
 `mm1a2b3c4d5e` ("schema is newer than this version of Omnigent"), and artifacts/DB rows written
 after the upgrade exist only in the failed DB copy kept as `chat.db.v0.17.failed`.
+
+## 9. Post-ship fixes
+
+- `7c04ae6a5` fix(cursor-native): a completion-receipt re-post repeats the turn's failed/cancelled outcome (forwarder `_ReceiptState.posted_outcome`).
+- `fix/v17-followups` (follow-up commit on top of `7c04ae6a5`): the server keeps a failed/cancelled cursor child turn when a pre-upgrade bare-idle re-post names the same `(epoch, turn_seq)`, and a repeated terminal post for a turn is a no-op for the parent `returned` event and the runner forward; fence-close linearization test tolerates zero admitted writers.

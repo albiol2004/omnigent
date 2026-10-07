@@ -36,6 +36,7 @@ COMPLETION_RECEIPTS_VERSION = "v1"
 TURN_RECEIPT_LABEL = "omnigent.cursor_native.turn_receipt"
 TURN_RECEIPT_DETAIL_LABEL = "omnigent.cursor_native.turn_receipt.detail"
 TURN_RECEIPT_BINDING_LABEL = "omnigent.cursor_native.turn_receipt.binding"
+TURN_TERMINAL_LABEL = "omnigent.cursor_native.turn_terminal"
 INPUT_FENCE_LABEL = "omnigent.input_fence"
 INPUT_FENCE_EXPECT_LABEL = "omnigent.input_fence.expect"
 INPUT_FENCE_TYPE = "input_fence"
@@ -58,6 +59,7 @@ SERVER_RESERVED_LABELS = frozenset(
         TURN_RECEIPT_LABEL,
         TURN_RECEIPT_DETAIL_LABEL,
         TURN_RECEIPT_BINDING_LABEL,
+        TURN_TERMINAL_LABEL,
         INPUT_FENCE_LABEL,
         INPUT_FENCE_EXPECT_LABEL,
     }
@@ -599,6 +601,54 @@ async def persist_turn_receipt(
             },
         )
     return True
+
+
+def receipt_turn_key(raw_receipt: object) -> tuple[int, int] | None:
+    """The ``(epoch, turn_seq)`` a posted ``turn_end`` receipt names, else ``None``.
+
+    Read from the raw wire value (not the stored receipt) so a re-post whose
+    receipt revision the store rejects still identifies its turn.
+    """
+    if not isinstance(raw_receipt, dict):
+        return None
+    epoch, turn_seq = raw_receipt.get("epoch"), raw_receipt.get("turn_seq")
+    for value in (epoch, turn_seq):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return None
+    return int(epoch), int(turn_seq)  # type: ignore[arg-type]
+
+
+def recorded_turn_terminal(labels: dict[str, str] | None, turn_key: tuple[int, int]) -> str | None:
+    """The terminal outcome already delivered for *turn_key*, else ``None``.
+
+    Only the latest turn is kept, so a different turn (a new ``turn_seq`` or a
+    new epoch) reads as nothing recorded and completes normally.
+    """
+    stored = _parse_json_label(labels, TURN_TERMINAL_LABEL)
+    if stored is None or (stored.get("e"), stored.get("s")) != turn_key:
+        return None
+    outcome = stored.get("o")
+    return outcome if outcome in ("completed", "failed", "cancelled") else None
+
+
+async def record_turn_terminal(
+    session_id: str,
+    turn_key: tuple[int, int],
+    outcome: str,
+    conversation_store: Any,
+) -> None:
+    """Remember that *turn_key*'s terminal *outcome* was fully delivered.
+
+    Never raises: a lost marker only costs a repeated (idempotent) delivery.
+    """
+    try:
+        await asyncio.to_thread(
+            conversation_store.set_labels,
+            session_id,
+            {TURN_TERMINAL_LABEL: _label_json({"e": turn_key[0], "s": turn_key[1], "o": outcome})},
+        )
+    except Exception:  # noqa: BLE001 — bookkeeping must not fail the status edge
+        _logger.warning("turn terminal marker not stored; session=%s", session_id, exc_info=True)
 
 
 def reset_for_tests() -> None:

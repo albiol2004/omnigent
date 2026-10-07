@@ -317,7 +317,10 @@ def test_fence_close_linearizes_against_concurrent_injections(tmp_path: Path) ->
     assert code == 200
     assert result["inject_count"] == len(admitted)
     assert len(admitted) + len(refused) == 200
-    records = (bridge_dir / status.INJECT_FILE).read_text().splitlines()
+    # When the close beats every writer nothing is admitted and the log file
+    # is never created: that is zero records, not an error.
+    inject_log = bridge_dir / status.INJECT_FILE
+    records = inject_log.read_text().splitlines() if inject_log.exists() else []
     assert len(records) == len(admitted)
     assert [json.loads(r)["seq"] for r in records] == list(range(1, len(admitted) + 1))
 

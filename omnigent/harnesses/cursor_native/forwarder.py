@@ -1636,13 +1636,22 @@ async def forward_cursor_store_to_session(
                         digest = _receipt_digest(receipt)
                         rev = posted.posted_rev + 1 if posted.posted_key == key else 1
                         receipt = {**receipt, "rev": rev}
-                    await _post_external_session_status(
-                        client,
-                        session_id=session_id,
-                        status="failed" if outcome == "failed" else "idle",
-                        turn_outcome=outcome,
-                        turn_end=receipt,
-                    )
+                    post_status = "failed" if outcome == "failed" else "idle"
+                    if receipt is None:
+                        await _post_external_session_status(
+                            client,
+                            session_id=session_id,
+                            status=post_status,
+                            turn_outcome=outcome,
+                        )
+                    else:
+                        await _post_external_session_status(
+                            client,
+                            session_id=session_id,
+                            status=post_status,
+                            turn_outcome=outcome,
+                            turn_end=receipt,
+                        )
                     if idle_due:
                         await asyncio.to_thread(
                             cursor_native_status.write_posted_count,

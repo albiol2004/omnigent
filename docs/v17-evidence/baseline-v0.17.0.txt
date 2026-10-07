@@ -1,0 +1,61 @@
+rev: 12b5f67d2529b43eab7366a7288fb89f7587e48b
+tmpdir: /var/tmp/pytest-of-coder
+== dispatch ==
+files: tests/runner/test_runner_dispatch.py
+280 passed, 1 skipped in 32.88s
+== interrupt ==
+files: tests/runner/test_native_interrupt_runner.py
+21 passed in 0.94s
+== runner-native ==
+files: tests/runner/test_app_sessions_native_events_lifecycle.py tests/runner/test_app_sessions_native_events_options.py tests/runner/test_app_sessions_native_session_change_heal.py tests/runner/test_app_sessions_native_supervision.py tests/runner/test_app_sessions_native_terminal_routing.py tests/runner/test_app_sessions_native_terminals_autocreate.py tests/runner/test_app_sessions_native_terminals_runtime.py tests/runner/test_app_sessions_native_wake_forwarders.py tests/runner/test_app_sessions_native_workflow_init.py tests/runner/test_app_sessions_native_workflow_messages.py tests/runner/test_app_cursor_native_model.py tests/runner/test_app_cursor_native_resume.py
+16 failed, 495 passed in 594.75s (0:09:54)
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_claude_native_model_options_serves_probe_rows_after_pending
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_claude_native_model_options_use_session_launch_catalog[False]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_codex_native_settings_change_uses_thread_settings_update[effort_change]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_codex_native_settings_change_uses_thread_settings_update[model_change]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_codex_native_settings_change_uses_thread_settings_update[plan_mode_change]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_codex_side_chat_leaves_parent_turn_running[idle]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_codex_side_chat_leaves_parent_turn_running[missing_turn]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_codex_side_chat_leaves_parent_turn_running[newer_turn]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_codex_side_chat_leaves_parent_turn_running[rpc_failure]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_codex_side_chat_leaves_parent_turn_running[running]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_on_codex_native_uses_turn_interrupt_without_marker
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_on_codex_native_with_turn_and_mcp_stops_both
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_on_codex_native_cancels_mcp_startup_without_active_turn[interrupt]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_on_codex_native_cancels_mcp_startup_without_active_turn[stop_session]
+FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_session_on_codex_native_uses_turn_interrupt_without_marker
+FAILED tests/runner/test_app_sessions_native_events_options.py::test_events_compact_on_codex_native_returns_503_when_no_terminal
+== sys-session ==
+files: tests/tools/builtins/test_sys_session.py
+44 passed in 49.50s
+== terminals ==
+files: tests/terminals
+98 passed, 2 skipped in 31.77s
+== claude-native ==
+files: tests/harnesses/claude_native
+2 failed, 1546 passed, 6 warnings in 184.42s (0:03:04)
+FAILED tests/harnesses/claude_native/test_claude_native_status_file.py::test_poller_publishes_edges_only
+FAILED tests/harnesses/claude_native/test_claude_native_status_file.py::test_unknown_status_clears_dedup_so_next_read_publishes
+== codex-native ==
+files: tests/harnesses/codex_native
+1454 passed, 2 warnings in 44.16s
+== cursor-native ==
+files: tests/test_cursor_native.py tests/test_cursor_native_bridge.py tests/test_cursor_native_forwarder.py tests/test_cursor_native_permissions.py tests/test_cursor_native_status.py tests/test_cursor_native_usage.py tests/inner/test_cursor_native_executor.py
+266 passed in 12.64s
+== inner-proc ==
+files: tests/inner/test_proc_and_platform.py
+39 passed, 8 skipped in 0.39s
+== host ==
+files: tests/host/test_connect.py
+6 failed, 256 passed, 73 warnings in 38.53s
+FAILED tests/host/test_connect.py::test_handle_model_options_claude_sdk_rides_the_probe_when_endpoints_list_nothing
+FAILED tests/host/test_connect.py::test_handle_model_options_serves_claude_sdk_endpoint_listing
+FAILED tests/host/test_connect.py::test_handle_model_options_serves_codex_probe_rows_and_caches
+FAILED tests/host/test_connect.py::test_handle_model_options_serves_the_claude_catalog
+FAILED tests/host/test_connect.py::test_model_options_frame_replies_off_the_receive_loop
+FAILED tests/host/test_connect.py::test_run_host_process_announces_session_log_dir_on_start
+== sessions-routes ==
+ABSENT tests/server/integration/test_input_fence.py
+files: tests/server/integration/test_sessions_compact.py tests/server/integration/test_routes_sessions_aliases.py tests/server/integration/test_routes_sessions_title.py
+19 passed in 10.14s
+SUITE_DONE

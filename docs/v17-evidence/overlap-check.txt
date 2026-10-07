@@ -1,0 +1,26 @@
+rev: 5ad14e711271bf72ee8e4d2bdd15b70ccad611a5
+| PR | commit | lines checked | absent at tip | moved |
+|---|---|---|---|---|
+| #9048 | 021d19951 | 221 | 0 | 0 |
+| #9008 | 06a055ac1 | 970 | 0 | 0 |
+| #9005 | f651b5d6a | 1207 | 0 | 0 |
+| #8672 | 8bb13323f | 16 | 0 | 0 |
+| #8572 | 61d96f74b | 22 | 0 | 0 |
+| #8745 | 56272dfd7 | 83 | 0 | 0 |
+| #8761 | ee3ca7cca | 713 | 0 | 0 |
+| #8516 | a16334f78 | 587 | 6 | 1 |
+| #8523 | 7cbad8613 | 406 | 0 | 0 |
+| #9025 | 106e2260b | 1380 | 0 | 0 |
+| #9020 | 6f9f8f838 | 503 | 0 | 0 |
+| #8297 | 5f0781228 | 329 | 0 | 0 |
+
+absent lines (not moved): 6
+#8516 a16334f78 omnigent/harnesses/cursor_native/forwarder.py: "data": {"status": status, "turn_outcome": turn_outcome},
+#8516 a16334f78 omnigent/harnesses/cursor_native/forwarder.py: client: httpx.AsyncClient, *, session_id: str, status: str, turn_outcome: str
+#8516 a16334f78 omnigent/harnesses/cursor_native/forwarder.py: cursor_native_status.read_turn_outcome, bridge_dir, pending_turn_end
+#8516 a16334f78 omnigent/harnesses/cursor_native/forwarder.py: cursor_native_status.write_posted_count, bridge_dir, pending_turn_end
+#8516 a16334f78 omnigent/harnesses/cursor_native/forwarder.py: if not retrying_items and pending_turn_end is not None:
+#8516 a16334f78 omnigent/harnesses/cursor_native/forwarder.py: status="failed" if outcome == "failed" else "idle",
+
+moved lines: 1
+#8516 a16334f78 omnigent/harnesses/cursor_native/forwarder.py: "type": "external_session_status",  -> moved: omnigent/harnesses/claude_native/forwarder.py

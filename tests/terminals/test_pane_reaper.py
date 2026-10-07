@@ -21,6 +21,7 @@ from omnigent.terminals.pane_reaper import (
     PANE_OUTPUT_BUSY_WINDOW_S,
     NativePaneReaper,
     PaneRef,
+    _pane_is_busy_after_harness,
     resolve_native_pane_idle_timeout_s,
 )
 from omnigent.terminals.registry import TerminalRegistry
@@ -295,3 +296,159 @@ async def test_runner_busy_check_counts_a_viewer_only_on_recent_input(
     assert await reaper._is_busy(pane)
     instance._last_client_interaction_at = time.monotonic() - PANE_OUTPUT_BUSY_WINDOW_S - 1.0
     assert not await reaper._is_busy(pane)
+
+
+# ── Busy predicate (_pane_is_busy_after_harness) ───────────────────────────
+#
+# The busy logic was extracted from the 10k-line runner app so it can be tested
+# in isolation with a fake process manager + fake tmux probes. The core fix:
+# once the harness subprocess is gone (release() only pops the PM entry, it
+# does NOT close the native tmux pane), a stale "running" status and the TUI's
+# redraw-driven window_activity must NOT pin the leaked pane — only a human who
+# recently drove the pane (CLI keypress / web-bridge event) should spare it.
+
+
+class _FakePM:
+    """Minimal HarnessProcessManager double: just has_session + has_active_turn."""
+
+    def __init__(self, *, has_session: bool = True, has_active_turn: bool = False) -> None:
+        self._has_session = has_session
+        self._has_active_turn = has_active_turn
+
+    def has_session(self, conversation_id: str) -> bool:
+        return self._has_session
+
+    def has_active_turn(self, conversation_id: str) -> bool:
+        return self._has_active_turn
+
+
+def _tmux_fakes(
+    *, input_at: float | None = None, activity_at: float | None = None
+) -> tuple[Callable[[str, str], float | None], Callable[[str, str], float | None]]:
+    """Return (last_client_input_at, window_activity_at) sync fakes with canned answers."""
+
+    def last_client_input(socket: str, pane: str) -> float | None:
+        return input_at
+
+    def window_activity(socket: str, pane: str) -> float | None:
+        return activity_at
+
+    return last_client_input, window_activity
+
+
+async def _busy(
+    *,
+    process_manager: _FakePM | None,
+    now: float,
+    active_turns: set[str] | None = None,
+    native_pane_status: dict[str, str] | None = None,
+    input_at: float | None = None,
+    activity_at: float | None = None,
+    web_interaction: bool = False,
+) -> bool:
+    last_client_input, window_activity = _tmux_fakes(input_at=input_at, activity_at=activity_at)
+    return await _pane_is_busy_after_harness(
+        conv_id="conv_a",
+        socket_path=Path("/tmp/x.sock"),
+        active_turns=active_turns if active_turns is not None else set(),
+        process_manager=process_manager,
+        native_pane_status=native_pane_status if native_pane_status is not None else {},
+        tmux_last_client_input_at=last_client_input,
+        client_interaction_within=lambda _window: web_interaction,
+        tmux_window_activity_at=window_activity,
+        now=now,
+    )
+
+
+async def test_busy_orphaned_stale_running_fresh_activity_no_input_is_reapable() -> None:
+    """Orphaned pane (harness gone) with stale "running" + fresh activity but
+    no recent human input must NOT be busy — the TUI redraw must not pin it."""
+    busy = await _busy(
+        process_manager=_FakePM(has_session=False, has_active_turn=False),
+        native_pane_status={"conv_a": "running"},  # stale
+        activity_at=1000.0,  # fresh relative to now=1001 (< 120s)
+        now=1001.0,
+    )
+    assert busy is False
+
+
+async def test_busy_live_harness_running_is_busy() -> None:
+    """Live harness subprocess reporting "running" stays busy (autonomous turn)."""
+    busy = await _busy(
+        process_manager=_FakePM(has_session=True, has_active_turn=False),
+        native_pane_status={"conv_a": "running"},
+        now=1000.0,
+    )
+    assert busy is True
+
+
+async def test_busy_orphaned_with_recent_cli_input_is_busy() -> None:
+    """Orphaned pane a human just typed into (CLI keypress) is spared."""
+    busy = await _busy(
+        process_manager=_FakePM(has_session=False, has_active_turn=False),
+        native_pane_status={"conv_a": "running"},  # stale but irrelevant
+        input_at=1000.0,
+        now=1001.0,
+    )
+    assert busy is True
+
+
+async def test_busy_orphaned_with_recent_web_interaction_is_busy() -> None:
+    """Orphaned pane with a recent web-bridge interaction is spared."""
+    busy = await _busy(
+        process_manager=_FakePM(has_session=False, has_active_turn=False),
+        web_interaction=True,
+        now=1001.0,
+    )
+    assert busy is True
+
+
+async def test_busy_orphaned_with_only_stale_input_is_reapable() -> None:
+    """An attached viewer whose last input is outside the window does not spare."""
+    busy = await _busy(
+        process_manager=_FakePM(has_session=False, has_active_turn=False),
+        input_at=800.0,  # 200s ago > 120s window
+        now=1000.0,
+    )
+    assert busy is False
+
+
+async def test_busy_in_flight_turn_busy_without_session_entry() -> None:
+    """An in-flight turn is busy even when the PM has no session entry."""
+    busy = await _busy(
+        process_manager=_FakePM(has_session=False, has_active_turn=True),  # PM turn in flight
+        now=1000.0,
+    )
+    assert busy is True
+
+
+async def test_busy_local_active_turn_busy_without_pm() -> None:
+    """A locally-tracked in-flight turn (no PM at all) is busy."""
+    busy = await _busy(process_manager=None, active_turns={"conv_a"}, now=1000.0)
+    assert busy is True
+
+
+async def test_busy_no_pm_keeps_running_signal() -> None:
+    """Without a PM (tests/runners), the original "running" signal still applies."""
+    busy = await _busy(process_manager=None, native_pane_status={"conv_a": "running"}, now=1000.0)
+    assert busy is True
+
+
+async def test_busy_no_pm_window_activity_keeps_pane() -> None:
+    """Without a PM, fresh window_activity still spares a producing terminal."""
+    busy = await _busy(process_manager=None, activity_at=999.0, now=1000.0)  # 1s ago < 120s
+    assert busy is True
+
+
+async def test_busy_no_pm_stale_window_activity_is_reapable() -> None:
+    """Without a PM, window_activity older than the busy window is reapable."""
+    busy = await _busy(process_manager=None, activity_at=800.0, now=1000.0)  # 200s > 120s
+    assert busy is False
+
+
+async def test_busy_live_harness_no_signals_is_reapable() -> None:
+    """Live harness, no running status, no input, no recent activity → reapable."""
+    busy = await _busy(
+        process_manager=_FakePM(has_session=True, has_active_turn=False), now=1000.0
+    )
+    assert busy is False

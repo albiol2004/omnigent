@@ -4658,6 +4658,17 @@ async def _launch_codex_native_tui(
         if terminal_registry is not None
         else None
     )
+    # Advertise the tmux socket+target so the codex-native harness stop can
+    # hard-kill this same pane (tmux kill-session), wiring the web UI's
+    # "Stop session" affordance to the running TUI. Mirrors cursor-native.
+    if registry_instance is not None and registry_instance.running:
+        from omnigent.harnesses.codex_native.bridge import write_tmux_target
+
+        write_tmux_target(
+            bridge_dir,
+            socket_path=registry_instance.socket_path,
+            tmux_target=registry_instance.tmux_target,
+        )
     # ``terminal_instance`` arms discovery's exit-detection race
     # (:func:`_wait_for_codex_thread_or_terminal_exit`), which fails a launch
     # the instant its TUI exits instead of waiting out the full thread-start

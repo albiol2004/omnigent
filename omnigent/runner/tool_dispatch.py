@@ -49,7 +49,11 @@ if TYPE_CHECKING:
 
 import httpx
 
-from omnigent._wrapper_labels import CLAUDE_NATIVE_WRAPPER_VALUE
+from omnigent._wrapper_labels import (
+    CLAUDE_NATIVE_WRAPPER_VALUE,
+    CODEX_NATIVE_WRAPPER_VALUE,
+    CURSOR_NATIVE_WRAPPER_VALUE,
+)
 from omnigent.debug_logging import runner_primary_session_id
 from omnigent.harness_aliases import (
     canonicalize_harness,
@@ -6408,12 +6412,18 @@ async def _session_close_via_rest(
     # instead of rejecting with session_not_a_sub_agent. Top-level and
     # out-of-tree targets were already refused by _close_tree_scope_error.
     agent, title = _close_tombstone_label(target_snap, target_id)
-    # Stop only after close is allowed. Prefer Claude's hard stop when the
-    # snapshot identifies that wrapper; unlabeled snapshots use interrupt.
-    # A failed stop must not prevent the close tombstone.
+    # Stop only after close is allowed. Prefer a runner-side hard stop when the
+    # snapshot identifies a native wrapper that owns one (claude/codex/cursor);
+    # unlabeled snapshots and other harnesses use interrupt. A failed stop must
+    # not prevent the close tombstone.
+    _stop_wrappers = {
+        CLAUDE_NATIVE_WRAPPER_VALUE,
+        CODEX_NATIVE_WRAPPER_VALUE,
+        CURSOR_NATIVE_WRAPPER_VALUE,
+    }
     event_type = (
         "stop_session"
-        if _session_wrapper_label(target_snap) == CLAUDE_NATIVE_WRAPPER_VALUE
+        if _session_wrapper_label(target_snap) in _stop_wrappers
         else "interrupt"
     )
     with contextlib.suppress(Exception):

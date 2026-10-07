@@ -997,6 +997,11 @@ async def test_auto_create_codex_terminal_recovers_without_restarting_healthy_se
     class _FakeResourceRegistry:
         """Returns a terminal resource view without launching tmux."""
 
+        # No live terminal registry: advertise is best-effort and the
+        # getattr guard in orchestration handles a missing attribute,
+        # but set it explicitly to mirror the claude fake above.
+        terminal_registry = None
+
         async def launch_auxiliary_terminal(
             self,
             *,

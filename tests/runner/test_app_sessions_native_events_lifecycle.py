@@ -115,6 +115,41 @@ class _RecordingCodexAppServerClient:
         self.closed = True
 
 
+def _stub_codex_auto_create(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch Codex auto-create to return a view without launching tmux.
+
+    POST /v1/sessions auto-creates a Codex terminal: it calls
+    ``clear_bridge_state`` then ``launch_auxiliary_terminal``. These tests
+    seed bridge state by hand and pass no ``terminal_registry``, so launch
+    raises ``RuntimeError: Terminal registry not configured`` and the
+    failed auto-create leaves no bridge state -- the later settings/interrupt
+    RPC then returns 503 / ``connected is False``. This stub mirrors the
+    compact 503 stub: session create still returns 201 with a
+    ``SessionResourceView``, but no tmux pane is launched and the seeded
+    bridge state is left intact. The endpoint under test stays real.
+    """
+
+    async def _stub_auto_create_codex_terminal(
+        session_id: str,
+        resource_registry: Any,
+        publish_event: Any,
+        **_kwargs: Any,
+    ) -> SessionResourceView:
+        """Return a view without launching tmux or clearing bridge state."""
+        del resource_registry, publish_event, _kwargs
+        return SessionResourceView(
+            id="terminal_codex_main",
+            type="terminal",
+            session_id=session_id,
+            name="Codex",
+        )
+
+    monkeypatch.setattr(
+        "omnigent.runner.native.orchestration._auto_create_codex_terminal",
+        _stub_auto_create_codex_terminal,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "event_payload,expected_params",
@@ -174,6 +209,11 @@ async def test_events_codex_native_settings_change_uses_thread_settings_update(
             active_turn_id=None,
         ),
     )
+
+    # Auto-create on POST /v1/sessions would clear this seeded bridge state
+    # then fail to launch (no terminal registry here), leaving no bridge for
+    # the settings RPC. Stub it so create returns 201 without touching state.
+    _stub_codex_auto_create(monkeypatch)
 
     fake_client = _RecordingCodexAppServerClient(
         transport="ws://127.0.0.1:43210",
@@ -1119,6 +1159,12 @@ async def test_codex_native_model_options_follow_labeled_foreign_bridge(
         ),
     )
 
+    # Auto-create on POST /v1/sessions would clear the child's own bridge
+    # then fail to launch (no terminal registry here). The labeled parent
+    # bridge above is what the child reads, so keep create returning 201
+    # without launching tmux; the parent bridge stays live for discovery.
+    _stub_codex_auto_create(monkeypatch)
+
     expected_models = [
         {
             "id": "gpt-5.5",
@@ -1886,6 +1932,11 @@ async def test_events_interrupt_on_codex_native_uses_turn_interrupt_without_mark
         ),
     )
 
+    # Auto-create on POST /v1/sessions would clear this seeded bridge state
+    # then fail to launch (no terminal registry here), leaving no bridge for
+    # the interrupt RPC. Stub it so create returns 201 without touching state.
+    _stub_codex_auto_create(monkeypatch)
+
     fake_client = _RecordingCodexAppServerClient(
         transport="ws://127.0.0.1:43210",
         client_name="omnigent-codex-native-runner",
@@ -2080,31 +2131,37 @@ async def test_events_interrupt_codex_side_chat_leaves_parent_turn_running(
 
 
 @pytest.mark.asyncio
-async def test_events_stop_session_on_codex_native_uses_turn_interrupt_without_marker(
+async def test_events_stop_session_on_codex_native_hard_stops_without_marker(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """
-    POST ``/events`` ``stop_session`` on codex-native interrupts the active turn.
+    POST ``/events`` ``stop_session`` on codex-native hard-stops the TUI.
 
-    Regression guard for the cancel-floor work: ``stop_session`` only
-    special-cased claude-native, so codex-native fell into
-    ``_cancel_inprocess_turn``, which flags the session interrupted and (on the
-    next turn or a live-task race) synthesizes the ``[System: interrupted]``
-    marker Codex never emits. codex-native must reach the same app-server
-    ``turn/interrupt`` path as the interrupt branch.
-
-    Pins (sister to ``...interrupt_on_codex_native...``):
-    1. ``turn/interrupt`` is sent with the recorded thread/turn ids.
+    ``stop_session`` used to route Codex through ``turn/interrupt`` (soft
+    cancel) and, before that, through ``_cancel_inprocess_turn`` (which
+    flagged the session and synthesized ``[System: interrupted]``). Stop
+    now kills the tmux pane and tears down the app-server. Pins:
+    1. HTTP 204 — stop completed (missing tmux.json is best-effort).
     2. NO ``[System: interrupted]`` marker is persisted to AP.
-    3. The session is NOT added to ``_interrupted_sessions``; no marker leaks
-       into ``_session_histories``.
+    3. The session is NOT added to ``_interrupted_sessions``.
+    4. The app-server ``turn/interrupt`` path is NOT used for stop.
     """
     from omnigent.harnesses.codex_native import app_server as codex_native_app_server
     from omnigent.runner.app import _session_histories_ref
 
     conv_id = "fa87fda193a47e99e6a2599e44032807"
     monkeypatch.setattr(codex_native_bridge, "_BRIDGE_ROOT", tmp_path / "codex-bridge")
+    # Abort auto-create so it cannot wipe the seeded bridge dir.
+    from omnigent.runner import app as runner_app_module
+    from omnigent.runner.native import orchestration as native_orch
+
+    async def _fail_launch_config(**kwargs: object) -> None:
+        del kwargs
+        raise RuntimeError("launch config disabled in test")
+
+    monkeypatch.setattr(native_orch, "_codex_native_launch_config", _fail_launch_config)
+    monkeypatch.setattr(runner_app_module, "_codex_native_launch_config", _fail_launch_config)
     bridge_dir = codex_native_bridge.bridge_dir_for_bridge_id(conv_id)
     codex_native_bridge.write_bridge_state(
         bridge_dir,
@@ -2116,6 +2173,9 @@ async def test_events_stop_session_on_codex_native_uses_turn_interrupt_without_m
             active_turn_id="turn_codex_stop",
         ),
     )
+    # Seed a pending MCP server so stop's cancel_pending_mcp_startup is
+    # observable without routing through turn/interrupt.
+    codex_native_bridge.update_mcp_server_startup(bridge_dir, "storage-console", "starting")
 
     fake_client = _RecordingCodexAppServerClient(
         transport="ws://127.0.0.1:43211",
@@ -2180,23 +2240,15 @@ async def test_events_stop_session_on_codex_native_uses_turn_interrupt_without_m
         f"codex-native stop_session must return 204; got {stop_resp.status_code}: {stop_resp.text}"
     )
 
-    # 1) The runner reached Codex app-server's structured interrupt path. If
-    # this is empty, stop_session regressed to the in-process cancel floor or
-    # the old terminal-key path.
-    assert fake_client.connected
-    assert fake_client.closed
-    assert fake_client.requests == [
-        (
-            "turn/interrupt",
-            {
-                "threadId": "thread_codex_stop",
-                "turnId": "turn_codex_stop",
-            },
-        )
-    ], (
-        f"codex-native stop_session must call turn/interrupt with the active "
-        f"thread/turn ids; got {fake_client.requests!r}."
+    # Hard stop must not use the app-server turn/interrupt path. That path
+    # is interrupt-only; stop kills tmux and tears down the app-server.
+    assert fake_client.requests == [], (
+        f"codex-native stop_session must not call turn/interrupt; "
+        f"got {fake_client.requests!r}."
     )
+    assert codex_native_bridge.read_mcp_startup(bridge_dir) == {
+        "storage-console": {"status": "cancelled", "error": None}
+    }
 
     # 2) NO marker persisted — the in-process floor would have synthesized one.
     marker_texts = [
@@ -2226,7 +2278,7 @@ async def test_events_stop_session_on_codex_native_uses_turn_interrupt_without_m
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("event_type", ["interrupt", "stop_session"])
+@pytest.mark.parametrize("event_type", ["interrupt"])
 async def test_events_stop_on_codex_native_cancels_mcp_startup_without_active_turn(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2257,6 +2309,9 @@ async def test_events_stop_on_codex_native_cancels_mcp_startup_without_active_tu
         del kwargs
         raise RuntimeError("launch config disabled in test")
 
+    from omnigent.runner.native import orchestration as native_orch
+
+    monkeypatch.setattr(native_orch, "_codex_native_launch_config", _fail_launch_config)
     monkeypatch.setattr(runner_app_module, "_codex_native_launch_config", _fail_launch_config)
     bridge_dir = codex_native_bridge.bridge_dir_for_bridge_id(conv_id)
     codex_native_bridge.write_bridge_state(
@@ -2386,6 +2441,9 @@ async def test_events_interrupt_on_codex_native_with_turn_and_mcp_stops_both(
         del kwargs
         raise RuntimeError("launch config disabled in test")
 
+    from omnigent.runner.native import orchestration as native_orch
+
+    monkeypatch.setattr(native_orch, "_codex_native_launch_config", _fail_launch_config)
     monkeypatch.setattr(runner_app_module, "_codex_native_launch_config", _fail_launch_config)
     bridge_dir = codex_native_bridge.bridge_dir_for_bridge_id(conv_id)
     codex_native_bridge.write_bridge_state(
@@ -2496,6 +2554,9 @@ async def test_events_interrupt_on_codex_native_without_turn_or_mcp_is_noop(
         del kwargs
         raise RuntimeError("launch config disabled in test")
 
+    from omnigent.runner.native import orchestration as native_orch
+
+    monkeypatch.setattr(native_orch, "_codex_native_launch_config", _fail_launch_config)
     monkeypatch.setattr(runner_app_module, "_codex_native_launch_config", _fail_launch_config)
     bridge_dir = codex_native_bridge.bridge_dir_for_bridge_id(conv_id)
     codex_native_bridge.write_bridge_state(

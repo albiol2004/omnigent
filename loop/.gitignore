@@ -1,0 +1,19 @@
+# Trio loop runtime files (added by trio-native)
+.dispatch/
+.driver.json
+.driver.pid
+.session.json
+.sessions/
+driver.log
+.lock
+.repairs
+.native.json
+.native-launch.json
+.native-runs/
+.native-result.json
+.trio-core.json
+.native-ol.json
+.native-ops.lock
+.queue.lock
+.native-tmp-*
+.*.tmp

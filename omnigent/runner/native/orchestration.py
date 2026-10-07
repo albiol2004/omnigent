@@ -2892,10 +2892,11 @@ async def _auto_create_cursor_terminal(
     from omnigent.harnesses.cursor_native.main import resolve_cursor_executable
     from omnigent.inner.datamodel import OSEnvSpec, TerminalEnvSpec
 
-    # Stamp the launch time before the TUI starts. cursor creates the chat's
-    # on-disk store lazily on the first message, so its ``meta.json``
-    # ``createdAtMs`` is always >= this — which lets the forwarder discover
-    # *this* session's chat by recency under ``~/.cursor/chats/<md5(cwd)>``.
+    # Stamp the launch time before the TUI starts. The TUI creates its chat
+    # store at startup, so its ``meta.json`` ``createdAtMs`` is >= this. A fresh
+    # launch normally pins its chat id up front (``create-chat`` below), so the
+    # forwarder never has to guess; the recency window only feeds the
+    # discovery fallback (and the claim tie-break / pinned-store grace).
     launch_epoch_ms = int(time.time() * 1000)
     # Tear down any forwarder left from a prior terminal for this session before
     # re-creating, so the old and new tasks can't both mirror (double-posting),
@@ -2907,23 +2908,40 @@ async def _auto_create_cursor_terminal(
         arm_completion_receipts,
         bridge_dir_for_session_id,
         check_cursor_launch_admission,
+        check_plugin_route_launch,
+        launch_plugin_dirs,
+        live_foreign_config_bridges,
+        plugin_dir_mode_enabled,
         prepare_completion_receipts,
+        read_bridge_owner,
+        remove_stale_workspace_mcp_server,
         user_mcp_has_omnigent_server,
+        write_bridge_owner,
+        write_cursor_plugin,
         write_fork_preamble,
         write_hooks_config,
         write_mcp_config,
+        write_plugin_stop_armer,
     )
     from omnigent.harnesses.cursor_native.forwarder import (
         clear_cursor_bridge_state,
         clear_receipt_forwarder_state,
+        preseed_new_chat_state,
         preseed_resume_state,
     )
-    from omnigent.harnesses.cursor_native.main import is_valid_cursor_chat_id
+    from omnigent.harnesses.cursor_native.main import (
+        create_cursor_chat,
+        is_valid_cursor_chat_id,
+        launch_args_select_chat,
+    )
     from omnigent.harnesses.cursor_native.status import (
         ReceiptEpochClearError,
         clear_cursor_status_state,
     )
-    from omnigent.harnesses.cursor_native.usage import clear_cursor_usage_state
+    from omnigent.harnesses.cursor_native.usage import (
+        SESSION_BRIDGE_ENV_VAR,
+        clear_cursor_usage_state,
+    )
 
     bridge_dir = bridge_dir_for_session_id(session_id)
 
@@ -2941,6 +2959,16 @@ async def _auto_create_cursor_terminal(
     # config (from its git root) is the user ~/.cursor one: no own tools, and it
     # would load a leftover ``omnigent`` server. Surfaced as a failed launch.
     check_cursor_launch_admission(Path(workspace))
+    # Per-launch config route (opt-in): refuse, also before any write, a launch
+    # whose cursor-agent would ignore ``--plugin-dir`` (enableUserLocalPlugins
+    # off), and pick a plugin name the user's own ``--plugin-dir`` does not take.
+    plugin_name = (
+        check_plugin_route_launch(
+            resolve_cursor_executable(), list(launch_config.terminal_launch_args or [])
+        )
+        if plugin_dir_mode_enabled()
+        else None
+    )
     # Validate the persisted chat id ONCE, up front. It feeds two untrusted
     # sinks below — the cursor store path in preseed_resume_state (filesystem)
     # and the ``--resume`` argv in _cursor_native_resume_args — so a malformed
@@ -2990,6 +3018,36 @@ async def _auto_create_cursor_terminal(
                 extra={"session_id": session_id},
             )
             resume_chat_id = None
+    # Fresh launch: mint this session's chat id BEFORE the TUI starts and launch
+    # with ``--resume <id>``, pinning the forwarder to that exact store. Without
+    # the pin the forwarder must guess by launch recency, and two sessions
+    # started milliseconds apart in one workspace (one ``md5(cwd)`` chats dir)
+    # bound each other's chats (live 2026-09-27). Skipped when the passthrough
+    # args already pick the chat or its cwd; on any create-chat failure we fall
+    # back to discovery, whose ownership checks refuse ambiguous candidates.
+    fresh_chat_id: str | None = None
+    if not preseeded and not launch_args_select_chat(launch_config.terminal_launch_args or []):
+        fresh_chat_id = await asyncio.to_thread(
+            create_cursor_chat, resolve_cursor_executable(), workspace
+        )
+        if fresh_chat_id is not None:
+            pinned_store = preseed_new_chat_state(
+                bridge_dir, workspace, fresh_chat_id, launch_epoch_ms
+            )
+            _logger.info(
+                "cursor-native: pinned fresh chat %s (store %s) (session=%s).",
+                fresh_chat_id,
+                pinned_store,
+                session_id,
+                extra={"session_id": session_id},
+            )
+        else:
+            _logger.warning(
+                "cursor-native: could not mint a chat id with `create-chat`; falling "
+                "back to chat-store discovery for this launch (session=%s).",
+                session_id,
+                extra={"session_id": session_id},
+            )
     # Completion receipts (opt-in): each launch is a new terminal epoch, and the
     # transcript ACK state restarts from this launch's forward cursor.
     clear_receipt_forwarder_state(bridge_dir)
@@ -3034,40 +3092,141 @@ async def _auto_create_cursor_terminal(
                 exc_info=True,
                 extra={"session_id": session_id},
             )
-    # Skipped when the project mcp.json is the user one (workspace == HOME): a
-    # server bound to this bridge there would attach every Cursor on the machine
-    # to this session. Cursor has no per-session MCP config, so no tools here.
-    mcp_config = write_mcp_config(Path(workspace), bridge_dir)
-    if mcp_config is None:
-        _logger.warning(
-            "cursor-native: workspace %s shares the user ~/.cursor/mcp.json; not "
-            "registering this session's Omnigent MCP server, so the Cursor TUI has no "
-            "Omnigent tools (launch from a project directory to get them) (session=%s).",
-            workspace,
-            session_id,
-            extra={"session_id": session_id},
+    # Per-launch config route (opt-in, OMNIGENT_CURSOR_PLUGIN_DIR=1): this
+    # session's MCP server and usage stop hook live in a private plugin under its
+    # bridge dir, loaded with ``--plugin-dir``; the project mcp.json is not
+    # written and the project hooks.json only gets a constant no-op stop entry
+    # (cursor-agent dispatches ``stop`` to plugins only when one exists), so
+    # same-workspace sessions no longer overwrite each other.
+    plugin_dir: Path | None = None
+    mcp_config: Path | None = None
+    write_bridge_owner(bridge_dir, session_id)
+    if plugin_name is not None:
+        plugin_dir = await asyncio.to_thread(
+            write_cursor_plugin, bridge_dir, workspace=Path(workspace), name=plugin_name
         )
-        if user_mcp_has_omnigent_server():
+        if plugin_name != "omnigent":
             _logger.warning(
-                "cursor-native: the user ~/.cursor/mcp.json already declares an "
-                "'omnigent' MCP server that is not bound to this session; this Cursor "
-                "will load it. Remove it unless another tool owns it (session=%s).",
+                "cursor-native: the launch args already pass a --plugin-dir named "
+                "'omnigent'; this session's plugin is %s, so its MCP server id is "
+                "plugin-%s-omnigent (session=%s).",
+                plugin_dir,
+                plugin_name,
                 session_id,
                 extra={"session_id": session_id},
             )
-    # Register the cursor ``stop`` hook that captures per-turn token usage into
-    # the bridge dir for the usage forwarder below (see cursor_native_usage).
-    # Skipped when the project hooks.json is the user one (workspace == HOME):
-    # there it would fire for every Cursor session on the machine.
-    if write_hooks_config(Path(workspace), bridge_dir) is None:
-        _logger.warning(
-            "cursor-native: workspace %s shares the user ~/.cursor/hooks.json; not "
-            "registering the usage stop hook, so this session reports no token usage "
-            "and no turn-end idle (session=%s).",
-            workspace,
-            session_id,
-            extra={"session_id": session_id},
+        await asyncio.to_thread(
+            remove_stale_workspace_mcp_server, Path(workspace), own_bridge=bridge_dir
         )
+        if (
+            await asyncio.to_thread(
+                write_plugin_stop_armer, Path(workspace), own_bridge=bridge_dir
+            )
+            is None
+        ):
+            _logger.warning(
+                "cursor-native: workspace %s shares the user ~/.cursor/hooks.json; not "
+                "adding the plugin stop armer, so this session reports no token usage "
+                "and no turn-end idle unless the user hooks declare a stop hook "
+                "(session=%s).",
+                workspace,
+                session_id,
+                extra={"session_id": session_id},
+            )
+        # A LIVE project-route sibling's server/hook stays in the project files
+        # and is loaded by this session too (it clears once that ends). Its stop
+        # hook skips this session's turns and its MCP server refuses this session
+        # (both key on SESSION_BRIDGE_ENV_VAR in the terminal env below), but its
+        # stop hook still holds receipts; say so, once.
+        siblings_by_bridge: dict[Path, list[str]] = {}
+        for config_name, siblings in (
+            await asyncio.to_thread(
+                live_foreign_config_bridges, Path(workspace), bridge_dir, launch_grace=True
+            )
+        ).items():
+            for sibling in siblings:
+                siblings_by_bridge.setdefault(sibling, []).append(config_name)
+        for sibling, config_names in siblings_by_bridge.items():
+            sibling_session = read_bridge_owner(sibling) or "<unknown>"
+            _logger.warning(
+                "cursor-native: mixed hooks/MCP routes in workspace %s: LIVE project-route "
+                "session %s (bridge %s) still owns .cursor/%s. This plugin-route session "
+                "%s loads that config too until %s ends. Its 'omnigent' MCP server refuses "
+                "this session (bridge mismatch) and its stop hook ignores this session's "
+                "turns%s",
+                workspace,
+                sibling_session,
+                sibling,
+                " and .cursor/".join(config_names),
+                session_id,
+                sibling_session,
+                (
+                    "; that foreign stop hook holds this session's completion receipts "
+                    "(if opted in) until it relaunches after the sibling ends."
+                    if "hooks.json" in config_names
+                    else "."
+                ),
+                extra={"session_id": session_id},
+            )
+    else:
+        # ``.cursor/hooks.json`` / ``mcp.json`` hold ONE bridge dir per workspace:
+        # a same-workspace launch re-points both at itself and the sibling's stop
+        # hook (usage / idle / receipts) and MCP tools silently follow. Not refused
+        # (non-isolated Trio runs share a workspace), but make it loud.
+        for config_name, siblings in (
+            await asyncio.to_thread(live_foreign_config_bridges, Path(workspace), bridge_dir)
+        ).items():
+            for sibling in siblings:
+                _logger.warning(
+                    "cursor-native: workspace %s .cursor/%s is bound to LIVE session %s "
+                    "(bridge %s); this launch (session=%s, bridge %s) overwrites it, so that "
+                    "session's %s now route here. Use a separate worktree per concurrent "
+                    "session to avoid this.",
+                    workspace,
+                    config_name,
+                    read_bridge_owner(sibling) or "<unknown>",
+                    sibling,
+                    session_id,
+                    bridge_dir,
+                    "stop hooks (usage, turn-end idle, receipts)"
+                    if config_name == "hooks.json"
+                    else "Omnigent MCP tools",
+                    extra={"session_id": session_id},
+                )
+        # Skipped when the project mcp.json is the user one (workspace == HOME): a
+        # server bound to this bridge there would attach every Cursor on the machine
+        # to this session. Cursor has no per-session MCP config, so no tools here.
+        mcp_config = write_mcp_config(Path(workspace), bridge_dir)
+        if mcp_config is None:
+            _logger.warning(
+                "cursor-native: workspace %s shares the user ~/.cursor/mcp.json; not "
+                "registering this session's Omnigent MCP server, so the Cursor TUI has no "
+                "Omnigent tools (launch from a project directory to get them) (session=%s).",
+                workspace,
+                session_id,
+                extra={"session_id": session_id},
+            )
+            if user_mcp_has_omnigent_server():
+                _logger.warning(
+                    "cursor-native: the user ~/.cursor/mcp.json already declares an "
+                    "'omnigent' MCP server that is not bound to this session; this Cursor "
+                    "will load it. Remove it unless another tool owns it (session=%s).",
+                    session_id,
+                    extra={"session_id": session_id},
+                )
+        # Register the cursor ``stop`` hook that captures per-turn token usage into
+        # the bridge dir for the usage forwarder below (see cursor_native_usage).
+        # Skipped when the project hooks.json is the user one (workspace == HOME):
+        # there it would fire for every Cursor session on the machine.
+        if write_hooks_config(Path(workspace), bridge_dir) is None:
+            _logger.warning(
+                "cursor-native: workspace %s shares the user ~/.cursor/hooks.json; not "
+                "registering the usage stop hook, so this session reports no token usage "
+                "and no turn-end idle (session=%s).",
+                workspace,
+                session_id,
+                extra={"session_id": session_id},
+            )
     # Armed on the hooks files the TUI will load: only this launch's own project
     # stop hook may remain. Anything else (a foreign or shared-scope stop hook,
     # an unreadable/malformed config, workspace == HOME) leaves this launch
@@ -3078,6 +3237,10 @@ async def _auto_create_cursor_terminal(
         launch_epoch_ms,
         opted_in=launch_config.completion_receipts,
         precheck=receipt_precheck,
+        plugin_dir=plugin_dir,
+        extra_plugin_dirs=launch_plugin_dirs(
+            launch_config.terminal_launch_args or [], Path(workspace)
+        ),
     )
     if launch_config.completion_receipts and receipt_hold is not None:
         _logger.warning(
@@ -3089,12 +3252,17 @@ async def _auto_create_cursor_terminal(
         )
     cursor_command = resolve_cursor_executable()
     cursor_args = list(launch_config.terminal_launch_args or [])
+    if plugin_dir is not None:
+        # Repeatable flag: a user's own ``--plugin-dir`` passthrough still loads.
+        cursor_args = ["--plugin-dir", str(plugin_dir), *cursor_args]
     if "--approve-mcps" not in cursor_args:
         cursor_args.append("--approve-mcps")
     # On cold resume, pass ``--resume <chatId>`` to cursor-agent so the TUI
     # reloads the prior conversation. The id was validated above; ``None`` on a
     # brand-new session, so no ``--resume`` is injected and cursor starts fresh.
-    cursor_args.extend(_cursor_native_resume_args(resume_chat_id, cursor_args))
+    # A fresh launch pinned above reuses the same ``--resume <id>`` argv: cursor
+    # opens the (still empty) minted chat as a new conversation.
+    cursor_args.extend(_cursor_native_resume_args(resume_chat_id or fresh_chat_id, cursor_args))
     # Launch cursor-agent with ``--model <model>``. Precedence mirrors the
     # codex-native path above: the persisted ``/model`` override
     # (``model_override``) wins, falling back to the spec's pinned model
@@ -3124,7 +3292,9 @@ async def _auto_create_cursor_terminal(
             ),
             command=cursor_command,
             args=cursor_args,
-            env={},
+            # Plugin route only: names this session's bridge to its hook
+            # commands (see SESSION_BRIDGE_ENV_VAR); the project route is unchanged.
+            env=({SESSION_BRIDGE_ENV_VAR: str(bridge_dir)} if plugin_dir is not None else {}),
             scrollback=100_000,
             tmux_allow_passthrough=True,
             tmux_start_on_attach=False,
@@ -7708,10 +7878,13 @@ def _native_terminal_start_error_payload(
         extra=extra,
     )
     from omnigent.harnesses.claude_native.bridge import ClaudeNativeHookInterpreterMismatchError
-    from omnigent.harnesses.cursor_native.bridge import CursorSharedWorkspaceError
+    from omnigent.harnesses.cursor_native.bridge import (
+        CursorPluginRouteError,
+        CursorSharedWorkspaceError,
+    )
     from omnigent.terminals.registry import TerminalExitedDuringLaunch
 
-    if isinstance(exc, CursorSharedWorkspaceError):
+    if isinstance(exc, (CursorSharedWorkspaceError, CursorPluginRouteError)):
         message = exc.user_message()
     elif runtime_name == "Codex" and isinstance(exc, TerminalExitedDuringLaunch):
         message = _codex_terminal_exit_summary(exc.instance, before_thread=False)

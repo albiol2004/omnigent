@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import functools
 import hashlib
 import json
 import logging
@@ -51,8 +52,14 @@ from omnigent.harnesses.cursor_native.bridge import capture_cursor_pane, send_cu
 
 # Reuse the forwarder's store discovery and WAL-aware blob reader so the
 # transcript-based detector binds to the SAME cursor chat the forwarder mirrors
-# (one chat per workspace) and reads the live ``-wal`` state correctly.
-from omnigent.harnesses.cursor_native.forwarder import _discover_store, _read_blob_rows
+# (it follows the forwarder's bound store, see ``bound_store_path``) and reads
+# the live ``-wal`` state correctly.
+from omnigent.harnesses.cursor_native.forwarder import (
+    _discover_store,
+    _pane_held_stores,
+    _read_blob_rows,
+    bound_store_path,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -859,9 +866,19 @@ async def supervise_cursor_transcript_elicitations(
     async with open_server_client(base_url, headers=headers, auth=auth, timeout=timeout) as client:
         while True:
             try:
-                if store_path is None or not store_path.exists():
+                # Follow the transcript forwarder's binding (a pinned fresh
+                # chat, a cold-resume preseed, or its discovered store) every
+                # poll, so both tailers always watch the SAME chat; discover on
+                # our own only while the forwarder has bound nothing yet.
+                bound = await asyncio.to_thread(bound_store_path, bridge_dir)
+                if bound is not None:
+                    store_path = bound if bound.exists() else None
+                elif store_path is None or not store_path.exists():
+                    held = await asyncio.to_thread(_pane_held_stores, bridge_dir)
                     store_path = await asyncio.to_thread(
-                        _discover_store, workspace, launch_epoch_ms
+                        functools.partial(
+                            _discover_store, workspace, launch_epoch_ms, held_stores=held
+                        )
                     )
                 pending_calls = (
                     await asyncio.to_thread(read_cursor_pending_tool_calls, store_path)

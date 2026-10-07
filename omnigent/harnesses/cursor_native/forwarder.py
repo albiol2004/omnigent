@@ -19,6 +19,17 @@ that store, extract new user/assistant messages, and POST them as
 ``external_conversation_item`` events — which also seeds the session title from
 the first user message (the same hook claude/codex rely on).
 
+Binding a session to ITS chat: several sessions can share one cwd, and each
+gets its own chat in the same ``md5(cwd)`` dir, so launch recency is not
+ownership (two sessions launched 83 ms apart once mirrored each other's chats).
+Fresh launches are therefore pinned — the runner mints the chat id with
+``cursor-agent create-chat`` and launches ``--resume <id>``
+(:func:`preseed_new_chat_state`); cold resumes are pre-seeded likewise
+(:func:`preseed_resume_state`). Only when no pin exists does
+:func:`_discover_store` run, and it binds a chat only when this session's own
+pane holds it open (``/proc/<pane_pid>/fd``) or, when that is unobservable,
+when exactly one candidate exists — never "the newest".
+
 The web-facing ``running``/``idle`` *spinner* edges are intentionally NOT posted
 here: the runner's PTY-activity watcher owns those ``session.status`` edges for
 cursor-native (see ``_publish_turn_status`` in :mod:`omnigent.runner.app`),
@@ -36,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import errno
+import functools
 import hashlib
 import json
 import logging
@@ -43,14 +55,20 @@ import os
 import re
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
 import httpx
 
+from omnigent import native_tmux_kill
 from omnigent.harnesses.cursor_native import status as cursor_native_status
-from omnigent.harnesses.cursor_native.bridge import FORK_HISTORY_CLOSE_TAG, FORK_HISTORY_OPEN_TAG
+from omnigent.harnesses.cursor_native.bridge import (
+    FORK_HISTORY_CLOSE_TAG,
+    FORK_HISTORY_OPEN_TAG,
+    read_tmux_info,
+)
 from omnigent.inner.native_attachments import ATTACHMENT_MARKER_STRIP_PATTERN
 from omnigent.native._native_post_delivery import post_may_have_been_delivered
 
@@ -95,6 +113,14 @@ _SUPERVISOR_HEALTHY_UPTIME_S = 60.0
 #: the small skew between the runner stamping ``launch_epoch_ms`` and cursor
 #: writing the chat's ``meta.json`` once the first message lands.
 _DISCOVERY_SKEW_MS = 10_000
+
+#: How long after launch the forwarder waits for a *pinned* chat store (a fresh
+#: launch whose chat id was minted up front with ``cursor-agent create-chat`` and
+#: passed to the TUI as ``--resume <id>``; see :func:`preseed_new_chat_state`)
+#: before it gives up on the pin and falls back to discovery. The TUI opens the
+#: pinned store within ~1 s of starting, so this only fires when cursor ignored
+#: the id (a CLI drift) — then discovery's ownership checks take over.
+_PINNED_STORE_GRACE_MS = 60_000
 
 _STATE_FILE = "cursor_forwarder.json"
 
@@ -167,12 +193,17 @@ class _ForwardState:
     :param heartbeat_ms: Wall-clock ms of the last persist. A sibling reads this
         to tell a live owner from a dead session's leftover claim (see
         :func:`_chat_claimed_by_other`). Stamped by :func:`_write_state`.
+    :param pinned: ``True`` when ``store_path`` was fixed at launch from a chat id
+        minted up front (:func:`preseed_new_chat_state`) and may not exist on
+        disk yet. The forwarder then waits for that exact store instead of
+        discovering one by recency.
     """
 
     store_path: str | None = None
     last_rowid: int = 0
     launch_epoch_ms: int = 0
     heartbeat_ms: int = 0
+    pinned: bool = False
 
 
 @dataclass
@@ -208,6 +239,7 @@ def _read_state(bridge_dir: Path) -> _ForwardState:
         last_rowid=last_rowid if isinstance(last_rowid, int) else 0,
         launch_epoch_ms=launch_epoch_ms if isinstance(launch_epoch_ms, int) else 0,
         heartbeat_ms=heartbeat_ms if isinstance(heartbeat_ms, int) else 0,
+        pinned=data.get("pinned") is True,
     )
 
 
@@ -232,6 +264,7 @@ def _write_state(bridge_dir: Path, state: _ForwardState) -> bool:
                     # the chat claim; a peer treats a claim older than
                     # ``_CLAIM_FRESH_MS`` as a dead session it may take over.
                     "heartbeat_ms": int(time.time() * 1000),
+                    "pinned": state.pinned,
                 }
             ),
             encoding="utf-8",
@@ -260,9 +293,14 @@ def clear_cursor_bridge_state(bridge_dir: Path) -> None:
 def _chat_claimed_by_other(bridge_dir: Path, store_path: Path, my_launch_ms: int) -> bool:
     """Whether another LIVE session is already mirroring *store_path*.
 
-    cursor keeps one chat per working directory, so two cursor-native sessions
-    launched in the same cwd discover the SAME store — without this guard both
-    would mirror it into two separate conversations (the duplicate-session bug).
+    Sessions in one cwd share one ``md5(cwd)`` chats dir (each with its own
+    chat), and a resumed or discovered store can still be named by two bridge
+    dirs — without this guard both would mirror it into two separate
+    conversations (the duplicate-session bug). It only protects a chat whose
+    real owner binds FIRST; it does not stop a session from binding a sibling's
+    chat that nobody has claimed yet — deterministic pinning
+    (:func:`preseed_new_chat_state`) and pane ownership in
+    :func:`_discover_store` cover that.
     A sibling bridge dir under the same root claims the chat when its persisted
     state names the same store with a heartbeat fresher than ``_CLAIM_FRESH_MS``.
     Ties resolve toward the EARLIER-launched session (then the lexicographically
@@ -379,6 +417,63 @@ def preseed_resume_state(
     return True
 
 
+def chat_store_path(workspace: str, chat_id: str) -> Path:
+    """Return where cursor keeps *chat_id*'s store for a TUI run in *workspace*."""
+    return _cursor_chats_root() / _workspace_hash(workspace) / chat_id / "store.db"
+
+
+def preseed_new_chat_state(
+    bridge_dir: Path,
+    workspace: str,
+    chat_id: str,
+    launch_epoch_ms: int,
+) -> Path:
+    """Pin a FRESH launch to the chat id minted for it before the TUI starts.
+
+    The runner mints a chat id with ``cursor-agent create-chat`` and launches the
+    TUI with ``--resume <id>``. ``create-chat`` only returns the id — it writes
+    nothing under ``~/.cursor/chats`` — and the TUI creates
+    ``<md5(cwd)>/<id>/store.db`` when it starts (verified live against
+    2026.09.26-dd393fe). So unlike :func:`preseed_resume_state` the store may
+    not exist yet: the state is written ``pinned`` with ``last_rowid=0`` and the
+    forwarder waits for that exact store instead of discovering one by recency.
+
+    This is what makes same-workspace launches deterministic: two sessions
+    started milliseconds apart in one cwd share one ``md5(cwd)`` chats dir, and
+    recency discovery could hand each the other's chat. With a pinned id there
+    is nothing to guess.
+
+    :param bridge_dir: Per-session bridge directory.
+    :param workspace: Realpath-normalised workspace (the TUI's cwd).
+    :param chat_id: The minted, validated cursor chat id.
+    :param launch_epoch_ms: Wall-clock ms of this terminal launch.
+    :returns: The pinned store path.
+    """
+    store_path = chat_store_path(workspace, chat_id)
+    _write_state(
+        bridge_dir,
+        _ForwardState(
+            store_path=str(store_path),
+            last_rowid=0,
+            launch_epoch_ms=launch_epoch_ms,
+            pinned=True,
+        ),
+    )
+    return store_path
+
+
+def bound_store_path(bridge_dir: Path) -> Path | None:
+    """Return the store this session's forwarder is bound (or pinned) to, if any.
+
+    Sibling tailers of the same chat (the tool-approval detector) follow this
+    instead of running their own discovery, so they can never pick a different
+    chat than the one the forwarder mirrors. The path may not exist yet for a
+    freshly pinned launch.
+    """
+    store_path = _read_state(bridge_dir).store_path
+    return Path(store_path) if store_path else None
+
+
 def _cursor_chats_root() -> Path:
     """Return ``~/.cursor/chats`` for the process's HOME (shared with the TUI)."""
     return Path.home() / ".cursor" / "chats"
@@ -389,75 +484,245 @@ def _workspace_hash(workspace: str) -> str:
     return hashlib.md5(workspace.encode("utf-8")).hexdigest()
 
 
-def _chat_created_ms(chat_dir: Path) -> int:
-    """Return ``meta.json``'s ``createdAtMs`` for *chat_dir* (0 if unreadable)."""
+def _chat_meta(chat_dir: Path) -> dict[str, object]:
+    """Return *chat_dir*'s parsed ``meta.json`` (``{}`` if missing/unreadable)."""
     try:
         meta = json.loads((chat_dir / "meta.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return 0
-    created = meta.get("createdAtMs")
-    return created if isinstance(created, int) else 0
+        return {}
+    return meta if isinstance(meta, dict) else {}
 
 
-def _discover_store(workspace: str, launch_epoch_ms: int) -> Path | None:
-    """Locate this session's cursor chat store under ``~/.cursor/chats``.
+def _meta_cwd_real(meta: dict[str, object]) -> str | None:
+    """Return the realpath of ``meta.json``'s ``cwd``, or ``None`` if absent/invalid."""
+    cwd = meta.get("cwd")
+    if not isinstance(cwd, str) or not cwd:
+        return None
+    return os.path.realpath(cwd)
+
+
+#: Reads the chat stores this session's own TUI holds open: ``bridge_dir`` →
+#: realpaths of ``.../<chat>/store.db`` open in the pane process tree, or
+#: ``None`` when ownership cannot be observed (no pane pid yet, no ``/proc``).
+PaneStoreReader = Callable[[Path], frozenset[str] | None]
+
+# (socket_path, tmux_target) → pane pid, so discovery polls don't spawn a
+# ``tmux list-panes`` every 0.7 s. A re-created terminal gets a new socket.
+_PANE_PID_CACHE: dict[tuple[str, str], int] = {}
+
+
+def _pane_pid(bridge_dir: Path) -> int | None:
+    """Return the pid of this session's cursor TUI pane, or ``None``."""
+    pid = native_tmux_kill.recorded_tmux_pid(bridge_dir)
+    if pid is not None:
+        return pid
+    info = read_tmux_info(bridge_dir)
+    if info is None:
+        return None
+    key = (info["socket_path"], info["tmux_target"])
+    cached = _PANE_PID_CACHE.get(key)
+    if cached is not None and Path(f"/proc/{cached}").exists():
+        return cached
+    pid = native_tmux_kill.tmux_pane_pid(*key)
+    if pid is not None:
+        _PANE_PID_CACHE[key] = pid
+    return pid
+
+
+def _process_tree(root_pid: int, proc: Path) -> set[int]:
+    """Return *root_pid* plus all its descendants, from ``/proc/*/stat``."""
+    children: dict[int, list[int]] = {}
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+            # ``pid (comm) state ppid ...`` — comm may contain spaces/parens.
+            ppid = int(stat[stat.rindex(")") + 1 :].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        children.setdefault(ppid, []).append(int(entry.name))
+    tree = {root_pid}
+    stack = [root_pid]
+    while stack:
+        for child in children.get(stack.pop(), ()):
+            if child not in tree:
+                tree.add(child)
+                stack.append(child)
+    return tree
+
+
+def _pane_held_stores(bridge_dir: Path, *, proc: Path = Path("/proc")) -> frozenset[str] | None:
+    """Return the cursor chat stores held open by this session's pane processes.
+
+    The cursor TUI opens its chat's ``store.db`` (plus ``-wal``/``-shm``) at
+    startup and keeps it open (verified live: ``/proc/<pane_pid>/fd`` →
+    ``~/.cursor/chats/<md5(cwd)>/<id>/store.db``), so the fd table is ground
+    truth for which chat THIS session's terminal is on — no timing involved.
+
+    :param bridge_dir: This session's bridge dir (``tmux.json`` → pane pid).
+    :param proc: ``/proc`` root (tests point this at a fake tree).
+    :returns: Realpaths of held ``store.db`` files (possibly empty while the TUI
+        is still starting), or ``None`` when ownership cannot be observed.
+    """
+    if not proc.is_dir():
+        return None
+    pid = _pane_pid(bridge_dir)
+    if pid is None or not (proc / str(pid)).is_dir():
+        return None
+    held: set[str] = set()
+    for member in _process_tree(pid, proc):
+        fd_dir = proc / str(member) / "fd"
+        try:
+            fds = list(fd_dir.iterdir())
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if target.endswith("/store.db"):
+                held.add(os.path.realpath(target))
+    return frozenset(held)
+
+
+def _discover_store(
+    workspace: str,
+    launch_epoch_ms: int,
+    *,
+    held_stores: frozenset[str] | None = None,
+) -> Path | None:
+    """Locate this session's cursor chat store under ``~/.cursor/chats`` (fallback).
+
+    Fresh launches are normally pinned to a pre-minted chat id and never get
+    here (see :func:`preseed_new_chat_state`); this is the safety net when that
+    pin was unavailable.
 
     cursor names each workspace's chat dir ``md5(<cwd>)`` and each chat
-    ``<chat-id>`` with a ``meta.json`` carrying ``createdAtMs``. The TUI creates
-    the dir lazily on the first message, so we pick the newest chat created at or
-    after this session's launch under the exact ``md5(workspace)`` dir. If that
-    dir has nothing (a path-hash mismatch), we fall back to other workspace dirs
-    but bind ONLY when exactly one chat across them qualifies — never guessing
-    among multiple, so a concurrent session or unrelated workspace can't be
-    mirrored by mistake.
+    ``<chat-id>`` with a ``meta.json`` carrying ``createdAtMs`` and ``cwd``.
+    Several sessions can run in ONE cwd — each with its own chat in the same
+    ``md5(cwd)`` dir — so "the newest chat since launch" is NOT ownership: a
+    sibling launched milliseconds earlier creates a chat inside our window
+    before ours exists (the 2026-09-27 cross-wire). Candidates are chats created
+    at/after launch minus a small skew under the exact ``md5(workspace)`` dir;
+    if that dir has none, chats elsewhere whose ``meta.json`` ``cwd``
+    realpath-equals this workspace (a genuine path-hash mismatch, e.g. a
+    symlinked workspace path). A chat whose ``cwd`` is a different directory —
+    or, outside the exact dir, is missing/unreadable — is never a candidate.
+
+    Binding rule:
+
+    - With ``held_stores`` (this session's pane processes' open stores, see
+      :func:`_pane_held_stores`): bind the one candidate our own TUI holds
+      open; if none (ours not open yet) return ``None`` — never a sibling's.
+    - Without it (ownership unobservable): bind only a UNIQUE candidate; two or
+      more are ambiguous and return ``None``. The newest is never taken.
+
+    ``None`` means "not yet"; the caller keeps polling.
 
     :param workspace: The session's working directory, exactly as passed to the
         cursor TUI.
     :param launch_epoch_ms: Wall-clock ms when this terminal launched; only
         chats created at/after this (minus a small skew) are candidates.
-    :returns: The newest matching ``store.db`` path, or ``None`` if none yet.
+    :param held_stores: Realpaths of stores this session's pane holds open, or
+        ``None`` when unknown.
+    :returns: The matching ``store.db`` path, or ``None`` if none (yet).
     """
+    candidates = _discovery_candidates(workspace, launch_epoch_ms)
+    if held_stores is not None:
+        owned = [c for c in candidates if os.path.realpath(c) in held_stores]
+        if len(owned) == 1:
+            return owned[0]
+        if candidates:
+            _logger.debug(
+                "cursor-native discovery: %d candidate chat(s) for %r, %d held open by "
+                "this session's pane; not binding yet",
+                len(candidates),
+                workspace,
+                len(owned),
+            )
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    if candidates:
+        _logger.debug(
+            "cursor-native discovery: %d candidate chats for %r and no pane ownership "
+            "evidence; ambiguous, not binding",
+            len(candidates),
+            workspace,
+        )
+    return None
+
+
+def _discovery_candidates(workspace: str, launch_epoch_ms: int) -> list[Path]:
+    """Return qualifying chat stores for *workspace*, newest first (see ``_discover_store``)."""
     root = _cursor_chats_root()
     floor_ms = launch_epoch_ms - _DISCOVERY_SKEW_MS
+    workspace_real = os.path.realpath(workspace)
     exact_dir = root / _workspace_hash(workspace)
-    # The reliable case: the workspace is realpath-normalized on both the launch
-    # and forwarder sides, so cursor's own ``md5(cwd)`` dir == ``exact_dir``.
-    best, _best_created = _scan_hash_dir(exact_dir, floor_ms, None, -1)
-    if best is not None:
-        return best
-    # Fallback ONLY for a path-hash mismatch: scan the other workspace dirs, but
-    # bind only when EXACTLY ONE chat across them qualifies. With two candidates
-    # we can't tell which session owns which (concurrent sessions, or an
-    # unrelated workspace), so we return None and retry rather than risk
-    # mirroring the wrong conversation — silent cross-talk is worse than a brief
-    # delay.
+    # Primary case: the workspace is realpath-normalized on both the launch and
+    # forwarder sides, so cursor's own ``md5(cwd)`` dir == ``exact_dir``.
+    exact = _scan_hash_dir(exact_dir, floor_ms, workspace_real)
+    if exact:
+        return exact
+    # Fallback ONLY for a path-hash mismatch, and ONLY for chats that prove they
+    # belong to this workspace via ``meta.json`` ``cwd``.
     if not root.is_dir():
-        return None
-    matches: list[Path] = []
+        return []
+    matches: list[tuple[int, Path]] = []
     for hash_dir in sorted(root.iterdir()):
         if hash_dir == exact_dir or not hash_dir.is_dir():
             continue
         for chat_dir in hash_dir.iterdir():
             store = chat_dir / "store.db"
-            if store.is_file() and _chat_created_ms(chat_dir) >= floor_ms:
-                matches.append(store)
-    return matches[0] if len(matches) == 1 else None
+            if not store.is_file():
+                continue
+            meta = _chat_meta(chat_dir)
+            if _meta_cwd_real(meta) != workspace_real:
+                continue
+            created = meta.get("createdAtMs")
+            if isinstance(created, int) and created >= floor_ms:
+                matches.append((created, store))
+    matches.sort(key=lambda m: m[0], reverse=True)
+    return [store for _created, store in matches]
 
 
-def _scan_hash_dir(
-    hash_dir: Path, floor_ms: int, best: Path | None, best_created: int
-) -> tuple[Path | None, int]:
-    """Update ``(best, best_created)`` with the newest qualifying chat in *hash_dir*."""
+def _scan_hash_dir(hash_dir: Path, floor_ms: int, workspace_real: str) -> list[Path]:
+    """Return qualifying chat stores in *hash_dir*, newest ``createdAtMs`` first.
+
+    Chats under the exact ``md5(workspace)`` dir are trusted by their location,
+    so a ``meta.json`` without ``cwd`` still qualifies (older cursor builds). A
+    chat whose ``cwd`` names a *different* realpath contradicts that location
+    (should be impossible — cursor keys the dir by ``md5(cwd)``); it is skipped
+    rather than trusted, and logged at debug level. Several qualifying chats are
+    normal when sessions share a cwd; :func:`_discover_store` decides which (if
+    any) is ours.
+    """
+    found: list[tuple[int, Path]] = []
     if not hash_dir.is_dir():
-        return best, best_created
+        return []
     for chat_dir in hash_dir.iterdir():
         store = chat_dir / "store.db"
         if not store.is_file():
             continue
-        created = _chat_created_ms(chat_dir)
-        if created >= floor_ms and created > best_created:
-            best, best_created = store, created
-    return best, best_created
+        meta = _chat_meta(chat_dir)
+        cwd_real = _meta_cwd_real(meta)
+        if cwd_real is not None and cwd_real != workspace_real:
+            _logger.debug(
+                "cursor-native discovery: skipping chat %s — meta cwd %r does not "
+                "match workspace %r",
+                chat_dir,
+                cwd_real,
+                workspace_real,
+            )
+            continue
+        created = meta.get("createdAtMs")
+        created = created if isinstance(created, int) else 0
+        if created >= floor_ms:
+            found.append((created, store))
+    found.sort(key=lambda f: f[0], reverse=True)
+    return [store for _created, store in found]
 
 
 def _content_text(content: object) -> str:
@@ -1223,12 +1488,15 @@ async def forward_cursor_store_to_session(
     launch_epoch_ms: int,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
     auth: httpx.Auth | None = None,
+    pane_store_reader: PaneStoreReader | None = None,
 ) -> None:
     """Tail the cursor chat store and mirror new messages into the AP session.
 
-    Discovers this session's store (newest chat under ``md5(workspace)`` created
-    at/after ``launch_epoch_ms``), then polls it, posting each new user/assistant
-    message as an ``external_conversation_item``. The high-water rowid is
+    Binds this session's store — the pinned/pre-seeded one from the bridge state
+    when the runner fixed it at launch (fresh ``create-chat`` pin or cold
+    resume), otherwise by discovery (see :func:`_discover_store`) — then polls
+    it, posting each new user/assistant message as an
+    ``external_conversation_item``. The high-water rowid is
     persisted to ``bridge_dir`` so a supervisor restart resumes without
     re-posting; if discovery resolves a *different* store than the persisted one
     (a cold resume relaunched a fresh chat), the cursor resets to that store.
@@ -1251,8 +1519,12 @@ async def forward_cursor_store_to_session(
     :param launch_epoch_ms: Wall-clock ms when this terminal launched.
     :param poll_interval_s: Seconds between store polls.
     :param auth: Optional refresh-capable httpx Auth for remote deployments.
+    :param pane_store_reader: Reads the stores this session's pane holds open
+        (ownership evidence for the discovery fallback); defaults to
+        :func:`_pane_held_stores`. Injectable for tests.
     :returns: Never normally returns; cancel the task to stop it.
     """
+    read_pane_stores = pane_store_reader or _pane_held_stores
     persisted = _read_state(bridge_dir)
     store_path: Path | None = None
     last_rowid = 0
@@ -1312,7 +1584,29 @@ async def forward_cursor_store_to_session(
                     # launch-recency filter would miss a store created before this
                     # launch. For a normal fresh start the persisted path is absent
                     # (bridge state was cleared) and we fall through to discovery.
-                    if persisted.store_path and Path(persisted.store_path).exists():
+                    pinned_waiting = (
+                        persisted.pinned
+                        and persisted.store_path is not None
+                        and not Path(persisted.store_path).exists()
+                    )
+                    if pinned_waiting and (
+                        int(time.time() * 1000) - launch_epoch_ms > _PINNED_STORE_GRACE_MS
+                    ):
+                        _logger.warning(
+                            "cursor-native: pinned chat store %s never appeared within "
+                            "%d ms of launch; falling back to discovery (session=%s)",
+                            persisted.store_path,
+                            _PINNED_STORE_GRACE_MS,
+                            session_id,
+                        )
+                        persisted = _ForwardState()
+                        pinned_waiting = False
+                    if pinned_waiting:
+                        # A fresh launch pinned to a pre-minted chat id: wait for
+                        # the TUI to open exactly that store. Never discover —
+                        # recency discovery is what cross-wired same-cwd sessions.
+                        pass
+                    elif persisted.store_path and Path(persisted.store_path).exists():
                         store_path = Path(persisted.store_path)
                         last_rowid = persisted.last_rowid
                         _write_state(
@@ -1331,9 +1625,20 @@ async def forward_cursor_store_to_session(
                             )
                             chat_id_patched = True
                     else:
-                        resolved = await asyncio.to_thread(
-                            _discover_store, workspace, launch_epoch_ms
-                        )
+                        held = await asyncio.to_thread(read_pane_stores, bridge_dir)
+                        if held is None:
+                            resolved = await asyncio.to_thread(
+                                _discover_store, workspace, launch_epoch_ms
+                            )
+                        else:
+                            resolved = await asyncio.to_thread(
+                                functools.partial(
+                                    _discover_store,
+                                    workspace,
+                                    launch_epoch_ms,
+                                    held_stores=held,
+                                )
+                            )
                         if resolved is not None and not await asyncio.to_thread(
                             _chat_claimed_by_other, bridge_dir, resolved, launch_epoch_ms
                         ):
@@ -1366,11 +1671,11 @@ async def forward_cursor_store_to_session(
                                 )
                                 chat_id_patched = True
                 if store_path is not None and store_path.exists():
-                    # cursor keeps ONE chat per working dir, so two cursor-native
-                    # sessions launched in the same cwd discover the same store.
-                    # Yield to an earlier-launched live session rather than mirror
-                    # the same chat into a second conversation (the duplicate-
-                    # session bug); the released store is re-evaluated next poll.
+                    # Several sessions can share one cwd (one ``md5(cwd)`` chats
+                    # dir, one chat per session). If another live, earlier-
+                    # launched session already mirrors this exact store, yield
+                    # rather than mirror it into a second conversation (the
+                    # duplicate-session bug); re-evaluated next poll.
                     if await asyncio.to_thread(
                         _chat_claimed_by_other, bridge_dir, store_path, launch_epoch_ms
                     ):

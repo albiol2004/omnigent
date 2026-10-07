@@ -291,21 +291,76 @@ class TestReadNewItems:
 
 
 class TestDiscoverStore:
-    def _seed_chat(self, root: Path, workspace: str, chat_id: str, created_ms: int) -> Path:
+    _NO_CWD = object()
+
+    def _seed_chat(
+        self,
+        root: Path,
+        workspace: str,
+        chat_id: str,
+        created_ms: int,
+        cwd: object = _NO_CWD,
+    ) -> Path:
+        """Seed ``root/md5(workspace)/chat_id`` with a store and ``meta.json``.
+
+        ``cwd`` is written into ``meta.json`` when given (cursor records the
+        chat's working directory there); omitted by default to model older
+        builds / unreadable ownership.
+        """
         chat = root / hashlib.md5(workspace.encode()).hexdigest() / chat_id
         chat.mkdir(parents=True)
         (chat / "store.db").write_bytes(b"")
-        (chat / "meta.json").write_text(json.dumps({"createdAtMs": created_ms}))
+        meta: dict[str, object] = {"createdAtMs": created_ms}
+        if cwd is not self._NO_CWD:
+            meta["cwd"] = cwd
+        (chat / "meta.json").write_text(json.dumps(meta))
         return chat / "store.db"
 
-    def test_picks_newest_chat_at_or_after_launch(
+    def test_binds_unique_chat_at_or_after_launch(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
         ws = "/home/u/proj"
-        self._seed_chat(tmp_path, ws, "old", 1_000)
-        newest = self._seed_chat(tmp_path, ws, "new", 5_000)
-        assert fwd._discover_store(ws, launch_epoch_ms=4_000) == newest
+        self._seed_chat(tmp_path, ws, "old", 1_000)  # before launch - skew
+        mine = self._seed_chat(tmp_path, ws, "new", 25_000)
+        assert fwd._discover_store(ws, launch_epoch_ms=20_000) == mine
+
+    def test_two_chats_in_window_without_ownership_is_ambiguous(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same-cwd sessions each create a chat in one md5(cwd) dir: never take
+        the newest when ownership cannot be observed (the 2026-09-27 cross-wire
+        bound a sibling's chat exactly that way)."""
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = "/home/u/proj"
+        self._seed_chat(tmp_path, ws, "a", 5_000, cwd=ws)
+        self._seed_chat(tmp_path, ws, "b", 5_080, cwd=ws)
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000) is None
+
+    def test_held_store_selects_own_chat_among_many(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = "/home/u/proj"
+        a = self._seed_chat(tmp_path, ws, "a", 5_000, cwd=ws)
+        b = self._seed_chat(tmp_path, ws, "b", 5_080, cwd=ws)
+        held = frozenset({str(a.resolve())})
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000, held_stores=held) == a
+        held = frozenset({str(b.resolve())})
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000, held_stores=held) == b
+
+    def test_held_nothing_never_binds_the_only_sibling_chat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B polls while only A's chat exists: with ownership evidence showing B's
+        pane holds no store yet, the lone candidate is NOT B's."""
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = "/home/u/proj"
+        self._seed_chat(tmp_path, ws, "a", 5_000, cwd=ws)
+        assert fwd._discover_store(ws, launch_epoch_ms=4_080, held_stores=frozenset()) is None
+        # A store held open elsewhere (not a candidate) is not bound either.
+        other = frozenset({str(tmp_path / "elsewhere" / "store.db")})
+        assert fwd._discover_store(ws, launch_epoch_ms=4_080, held_stores=other) is None
 
     def test_excludes_chats_created_before_launch(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -316,25 +371,112 @@ class TestDiscoverStore:
         # launch is well after the only chat (beyond the skew) → no match
         assert fwd._discover_store(ws, launch_epoch_ms=1_000_000) is None
 
-    def test_falls_back_across_workspace_dirs(
+    def test_exact_dir_wins_over_same_cwd_chat_elsewhere(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
-        # The chat lives under a DIFFERENT hash than md5(queried workspace)
-        # (cursor normalized the path); with a SINGLE qualifying chat the
-        # fallback unambiguously binds it.
-        other = self._seed_chat(tmp_path, "/some/other/path", "c", 5_000)
-        assert fwd._discover_store("/queried/workspace", launch_epoch_ms=4_000) == other
+        ws = str(tmp_path / "ws")
+        exact = self._seed_chat(tmp_path, ws, "mine", 5_000, cwd=ws)
+        # A newer same-cwd chat under a different hash dir never beats the
+        # exact md5(workspace) dir.
+        self._seed_chat(tmp_path, ws + "/.", "alias", 6_000, cwd=ws)
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000) == exact
 
-    def test_ambiguous_fallback_returns_none(
+    def test_exact_dir_empty_foreign_cwd_chat_is_never_bound(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Live regression (2026-09-26): a headless builder in a sibling
+        worktree created its chat 3 s before this session launched (inside the
+        skew). It was the ONLY qualifying chat outside the (still empty) exact
+        dir, and the old uniqueness fallback bound it — mirroring a foreign
+        conversation. Uniqueness is not ownership."""
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = "/runs/S/worktrees/eval-bounds-c88e5c66"
+        foreign = "/runs/S/worktrees/dedupe-6bbf37c1"
+        launch = 1_790_440_123_630
+        self._seed_chat(tmp_path, foreign, "builder", 1_790_440_120_662, cwd=foreign)
+        assert fwd._discover_store(ws, launch_epoch_ms=launch) is None
+
+    def test_fallback_binds_same_cwd_chat_under_other_hash(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
-        # Two qualifying chats under different non-exact dirs → we can't tell
-        # which session owns which, so bind nothing (avoid silent cross-talk).
-        self._seed_chat(tmp_path, "/path/a", "c1", 5_000)
-        self._seed_chat(tmp_path, "/path/b", "c2", 6_000)
+        real = tmp_path / "real_ws"
+        real.mkdir()
+        link = tmp_path / "link_ws"
+        link.symlink_to(real)
+        # Session launched with the symlinked path; cursor keyed its chat by the
+        # resolved path (true path-hash mismatch). meta cwd realpath-matches.
+        other = self._seed_chat(tmp_path, str(real), "c", 5_000, cwd=str(real))
+        assert fwd._discover_store(str(link), launch_epoch_ms=4_000) == other
+
+    def test_fallback_two_same_cwd_candidates_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = str(tmp_path / "ws")
+        # Existing fallback rule kept: bind only a UNIQUE candidate; with two
+        # same-cwd chats outside the exact dir we cannot tell which is ours.
+        self._seed_chat(tmp_path, ws + "/.", "c1", 5_000, cwd=ws)
+        self._seed_chat(tmp_path, ws + "/./", "c2", 6_000, cwd=ws)
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000) is None
+
+    def test_fallback_ignores_foreign_chats_when_counting(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = str(tmp_path / "ws")
+        mine = self._seed_chat(tmp_path, ws + "/.", "mine", 5_000, cwd=ws)
+        # Concurrent foreign chats neither get bound nor make ours ambiguous.
+        self._seed_chat(tmp_path, "/path/a", "a", 5_500, cwd="/path/a")
+        self._seed_chat(tmp_path, "/path/b", "b", 6_000, cwd="/path/b")
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000) == mine
+
+    @pytest.mark.parametrize(
+        "meta_text",
+        [
+            None,  # meta.json missing entirely
+            "{not json",  # unreadable
+            json.dumps({"createdAtMs": 5_000}),  # no cwd key
+            json.dumps({"createdAtMs": 5_000, "cwd": ""}),  # empty cwd
+            json.dumps({"createdAtMs": 5_000, "cwd": 42}),  # non-string cwd
+        ],
+    )
+    def test_fallback_requires_readable_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, meta_text: str | None
+    ) -> None:
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        chat = tmp_path / "somehash" / "c"
+        chat.mkdir(parents=True)
+        (chat / "store.db").write_bytes(b"")
+        if meta_text is not None:
+            (chat / "meta.json").write_text(meta_text)
         assert fwd._discover_store("/queried/workspace", launch_epoch_ms=4_000) is None
+
+    def test_exact_dir_chat_before_floor_is_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = str(tmp_path / "ws")
+        launch = 1_000_000
+        # Just outside the skew floor (launch - _DISCOVERY_SKEW_MS - 1).
+        self._seed_chat(tmp_path, ws, "old", launch - fwd._DISCOVERY_SKEW_MS - 1, cwd=ws)
+        assert fwd._discover_store(ws, launch_epoch_ms=launch) is None
+        # ...while one exactly at the floor still qualifies.
+        at_floor = self._seed_chat(tmp_path, ws, "ok", launch - fwd._DISCOVERY_SKEW_MS, cwd=ws)
+        assert fwd._discover_store(ws, launch_epoch_ms=launch) == at_floor
+
+    def test_exact_dir_chat_with_foreign_cwd_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path)
+        ws = str(tmp_path / "ws")
+        # Defensive: a chat under md5(workspace) whose meta names another cwd
+        # is not trusted; a same-cwd (or cwd-less) sibling there still binds.
+        self._seed_chat(tmp_path, ws, "odd", 6_000, cwd="/elsewhere")
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000) is None
+        legacy = self._seed_chat(tmp_path, ws, "legacy", 5_000)
+        assert fwd._discover_store(ws, launch_epoch_ms=4_000) == legacy
 
 
 class TestStateRoundTrip:
@@ -362,9 +504,11 @@ class TestStateRoundTrip:
 class TestChatClaim:
     """``_chat_claimed_by_other`` keeps one cursor chat → one mirroring session.
 
-    cursor keeps one chat per working dir, so two cursor-native sessions in the
-    same cwd discover the same store; this guard stops both from mirroring it
-    into two conversations (the duplicate-session bug).
+    Sessions in one cwd share one ``md5(cwd)`` chats dir (a chat each); when two
+    bridge dirs still name the SAME store (a resume, a discovery race) this
+    guard stops both from mirroring it into two conversations (the
+    duplicate-session bug). It does not decide ownership of an unclaimed chat —
+    pinning and pane ownership in discovery do.
     """
 
     def test_yields_to_earlier_live_session(self, tmp_path: Path) -> None:
@@ -1399,3 +1543,269 @@ async def test_persist_native_compaction_item_no_store_skips_messages() -> None:
     assert body["type"] == "compaction"
     assert body["data"]["last_item_id"] == "item_abc"
     assert "compacted_messages" not in body["data"]
+
+
+class TestSameCwdConcurrentLaunches:
+    """Two sessions launched 80 ms apart in ONE workspace each mirror their own chat.
+
+    Live regression (2026-09-27): two cursor-native sessions started 83 ms apart
+    in the same worktree share one ``~/.cursor/chats/<md5(cwd)>/`` dir. Session
+    B's forwarder polled while only A's chat existed and bound it (newest chat in
+    the launch window); A's forwarder then took the newest unclaimed chat — B's.
+    Each broker transcript mirrored the OTHER session's conversation.
+    ``_chat_claimed_by_other`` never fired: it only protects a chat whose real
+    owner binds first.
+    """
+
+    _ID_A = "aaaaaaaa-0000-4000-8000-00000000000a"
+    _ID_B = "bbbbbbbb-0000-4000-8000-00000000000b"
+
+    @staticmethod
+    def _chat(root: Path, ws: str, chat_id: str, created_ms: int, text: str) -> Path:
+        chat = root / hashlib.md5(ws.encode()).hexdigest() / chat_id
+        chat.mkdir(parents=True, exist_ok=True)
+        writer = _make_store(
+            chat / "store.db", [(f"u-{chat_id}", _user(f"<user_query>\n{text}\n</user_query>"))]
+        )
+        writer.close()
+        (chat / "meta.json").write_text(json.dumps({"createdAtMs": created_ms, "cwd": ws}))
+        return chat / "store.db"
+
+    async def _run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        *,
+        first: str,
+        mode: str,
+    ) -> None:
+        import time as _time
+
+        chats = tmp_path / "chats"
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: chats)
+        ws_dir = tmp_path / "ws"
+        ws_dir.mkdir()
+        ws = str(ws_dir.resolve())
+        root = tmp_path / "cursor-native"
+        bridges = {"A": root / "bridge-a", "B": root / "bridge-b"}
+        for b in bridges.values():
+            b.mkdir(parents=True)
+        launch = {"A": int(_time.time() * 1000)}
+        launch["B"] = launch["A"] + 80
+        ids = {"A": self._ID_A, "B": self._ID_B}
+        sessions = {"A": "conv_A", "B": "conv_B"}
+
+        discover_calls: list[tuple[object, ...]] = []
+        real_discover = fwd._discover_store
+
+        def _recording_discover(*args: object, **kwargs: object) -> Path | None:
+            discover_calls.append(args)
+            return real_discover(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(fwd, "_discover_store", _recording_discover)
+
+        held: dict[str, set[str]] = {"bridge-a": set(), "bridge-b": set()}
+        extra_kwargs: dict[str, dict[str, object]] = {"A": {}, "B": {}}
+        if mode == "preseed":
+            for k in ("A", "B"):
+                fwd.preseed_new_chat_state(bridges[k], ws, ids[k], launch[k])
+        else:
+            for k in ("A", "B"):
+                extra_kwargs[k] = {
+                    "pane_store_reader": lambda bridge_dir: held.get(bridge_dir.name)
+                }
+
+        delivered: dict[str, list[str]] = {"conv_A": [], "conv_B": []}
+        patched: dict[str, str] = {}
+
+        async def _collect(client: object, *, session_id: str, item: fwd._MirrorItem) -> None:
+            delivered[session_id].append(item.item_data["content"][0]["text"])
+
+        async def _patch(client: object, *, session_id: str, chat_id: str) -> None:
+            patched[session_id] = chat_id
+
+        monkeypatch.setattr(fwd, "_post_conversation_item", _collect)
+        monkeypatch.setattr(fwd, "_patch_external_session_id", _patch)
+
+        def _start(k: str) -> asyncio.Task[None]:
+            return asyncio.create_task(
+                fwd.forward_cursor_store_to_session(
+                    base_url="http://test",
+                    headers={},
+                    session_id=sessions[k],
+                    bridge_dir=bridges[k],
+                    agent_name="cursor-native-ui",
+                    workspace=ws,
+                    launch_epoch_ms=launch[k],
+                    poll_interval_s=0.001,
+                    **extra_kwargs[k],  # type: ignore[arg-type]
+                )
+            )
+
+        # A's TUI starts first and opens its chat; nothing of B's exists yet.
+        store_a = self._chat(chats, ws, ids["A"], launch["A"] + 300, "from A")
+        held["bridge-a"] = {str(store_a)}
+        second = "B" if first == "A" else "A"
+        tasks = [_start(first)]
+        try:
+            await asyncio.sleep(0.05)
+            tasks.append(_start(second))
+            await asyncio.sleep(0.05)
+            # B must NOT have bound A's chat while its own did not exist yet.
+            assert fwd._read_state(bridges["B"]).store_path != str(store_a)
+            assert delivered["conv_B"] == []
+            # B's TUI now opens its own chat.
+            store_b = self._chat(chats, ws, ids["B"], launch["B"] + 310, "from B")
+            held["bridge-b"] = {str(store_b)}
+            for _ in range(3000):
+                if delivered["conv_A"] and delivered["conv_B"]:
+                    break
+                await asyncio.sleep(0.001)
+            else:
+                raise AssertionError(f"forwarders never mirrored both chats: {delivered}")
+        finally:
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        assert delivered == {"conv_A": ["from A"], "conv_B": ["from B"]}
+        assert patched == {"conv_A": ids["A"], "conv_B": ids["B"]}
+        assert fwd._read_state(bridges["A"]).store_path == str(store_a)
+        assert fwd._read_state(bridges["B"]).store_path == str(store_b)
+        if mode == "preseed":
+            # Pinned launches never guess by recency.
+            assert discover_calls == []
+
+    @pytest.mark.parametrize("first", ["A", "B"], ids=["a-polls-first", "b-polls-first"])
+    @pytest.mark.parametrize("mode", ["preseed", "pane"])
+    @pytest.mark.asyncio
+    async def test_each_session_binds_its_own_chat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: str, mode: str
+    ) -> None:
+        await self._run(monkeypatch, tmp_path, first=first, mode=mode)
+
+    @pytest.mark.asyncio
+    async def test_pinned_store_waits_instead_of_discovering(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Within the grace window a pinned launch never falls back to discovery."""
+        import time as _time
+
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path / "chats")
+        bridge = tmp_path / "cursor-native" / "sess"
+        bridge.mkdir(parents=True)
+        launch = int(_time.time() * 1000)
+        pinned = fwd.preseed_new_chat_state(bridge, "/ws", self._ID_A, launch)
+        state = fwd._read_state(bridge)
+        assert state.pinned is True and state.store_path == str(pinned)
+        assert state.last_rowid == 0
+        assert not pinned.exists()  # create-chat writes nothing; the TUI creates it
+        calls: list[object] = []
+        monkeypatch.setattr(fwd, "_discover_store", lambda *a, **k: calls.append(a))
+        task = asyncio.create_task(
+            fwd.forward_cursor_store_to_session(
+                base_url="http://test",
+                headers={},
+                session_id="conv_1",
+                bridge_dir=bridge,
+                agent_name="cursor-native-ui",
+                workspace="/ws",
+                launch_epoch_ms=launch,
+                poll_interval_s=0.001,
+            )
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert calls == []
+        assert fwd._read_state(bridge).store_path == str(pinned)
+
+    @pytest.mark.asyncio
+    async def test_pinned_store_falls_back_to_discovery_after_grace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If cursor never opens the pinned store, discovery takes over (logged)."""
+        monkeypatch.setattr(fwd, "_cursor_chats_root", lambda: tmp_path / "chats")
+        bridge = tmp_path / "cursor-native" / "sess"
+        bridge.mkdir(parents=True)
+        launch = 1_000  # far in the past: the grace window has long expired
+        fwd.preseed_new_chat_state(bridge, "/ws", self._ID_A, launch)
+        found = tmp_path / "other" / "store.db"
+        found.parent.mkdir(parents=True)
+        _make_store(found, [("u", _user("<user_query>\nhi\n</user_query>"))]).close()
+        calls: list[object] = []
+
+        def _discover(*a: object, **k: object) -> Path:
+            calls.append(a)
+            return found
+
+        monkeypatch.setattr(fwd, "_discover_store", _discover)
+        monkeypatch.setattr(fwd, "_post_conversation_item", _FakePoster(lambda _: None))
+        monkeypatch.setattr(fwd, "_patch_external_session_id", AsyncMock())
+        task = asyncio.create_task(
+            fwd.forward_cursor_store_to_session(
+                base_url="http://test",
+                headers={},
+                session_id="conv_1",
+                bridge_dir=bridge,
+                agent_name="cursor-native-ui",
+                workspace="/ws",
+                launch_epoch_ms=launch,
+                poll_interval_s=0.001,
+            )
+        )
+        for _ in range(2000):
+            if fwd._read_state(bridge).store_path == str(found):
+                break
+            await asyncio.sleep(0.001)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert calls
+        state = fwd._read_state(bridge)
+        assert state.store_path == str(found) and state.pinned is False
+
+
+class TestPaneHeldStores:
+    """``_pane_held_stores`` reads the pane process tree's open ``store.db`` fds."""
+
+    @staticmethod
+    def _proc(root: Path, pid: int, ppid: int, fds: dict[str, Path]) -> None:
+        d = root / str(pid)
+        (d / "fd").mkdir(parents=True)
+        (d / "stat").write_text(f"{pid} (node (x)) S {ppid} 1 1 0 -1\n")
+        for n, target in fds.items():
+            (d / "fd" / n).symlink_to(target)
+
+    def test_reads_store_held_by_pane_descendant(self, tmp_path: Path) -> None:
+        from omnigent.harnesses.cursor_native.bridge import write_tmux_target
+
+        proc = tmp_path / "proc"
+        store = tmp_path / "chats" / "h" / "id" / "store.db"
+        store.parent.mkdir(parents=True)
+        store.write_bytes(b"")
+        other = tmp_path / "chats" / "h" / "sibling" / "store.db"
+        other.parent.mkdir(parents=True)
+        other.write_bytes(b"")
+        self._proc(proc, 100, 1, {"3": tmp_path / "chats"})  # pane (wrapper)
+        self._proc(proc, 101, 100, {"40": store, "41": Path(str(store) + "-wal")})  # TUI
+        self._proc(proc, 200, 1, {"40": other})  # a sibling session's TUI
+        bridge = tmp_path / "bridge"
+        write_tmux_target(bridge, socket_path=tmp_path / "s.sock", tmux_target="t", pid=100)
+        assert fwd._pane_held_stores(bridge, proc=proc) == frozenset({str(store.resolve())})
+
+    def test_unknown_without_pane_pid_or_proc(self, tmp_path: Path) -> None:
+        bridge = tmp_path / "bridge"
+        bridge.mkdir()
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        assert fwd._pane_held_stores(bridge, proc=proc) is None  # no tmux.json
+        assert fwd._pane_held_stores(bridge, proc=tmp_path / "missing") is None
+
+    def test_empty_while_tui_has_no_store_open(self, tmp_path: Path) -> None:
+        from omnigent.harnesses.cursor_native.bridge import write_tmux_target
+
+        proc = tmp_path / "proc"
+        self._proc(proc, 100, 1, {})
+        bridge = tmp_path / "bridge"
+        write_tmux_target(bridge, socket_path=tmp_path / "s.sock", tmux_target="t", pid=100)
+        assert fwd._pane_held_stores(bridge, proc=proc) == frozenset()

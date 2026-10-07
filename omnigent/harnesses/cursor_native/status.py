@@ -80,10 +80,26 @@ class InputFencedError(RuntimeError):
         super().__init__("cursor session input is fenced; no new input is accepted")
 
 
+def ensure_private_dir(path: Path) -> None:
+    """Create *path* and any missing ancestors owner-only (0700); keep existing ones.
+
+    Hook-side writers (the usage/turn-end recorder can outlive a deleted bridge
+    dir) recreate it with the same mode the launch uses, not the umask default.
+    """
+    missing: list[Path] = []
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        missing.append(probe)
+        probe = probe.parent
+    for directory in reversed(missing):
+        with contextlib.suppress(FileExistsError):
+            directory.mkdir(mode=0o700)
+
+
 @contextlib.contextmanager
 def receipt_lock(bridge_dir: Path) -> Iterator[None]:
     """Hold the cross-process lock that orders injections, turn ends, and fencing."""
-    bridge_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(bridge_dir)
     with open(bridge_dir / _RECEIPT_LOCK_FILE, "a", encoding="utf-8") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
@@ -100,7 +116,7 @@ def _write_json_atomic(path: Path, data: object) -> None:
 
 def write_receipt_epoch(bridge_dir: Path, epoch: int) -> None:
     """Opt this terminal launch in to completion receipts under *epoch*."""
-    bridge_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(bridge_dir)
     with receipt_lock(bridge_dir):
         _write_json_atomic(bridge_dir / RECEIPT_EPOCH_FILE, {"v": 1, "epoch": epoch})
 
@@ -380,7 +396,7 @@ def record_turn_end(bridge_dir: Path, payload: object | None = None) -> None:
         hook_status = payload.get("status")
         if hook_status in ("completed", "aborted", "error"):
             line["status"] = hook_status
-    bridge_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(bridge_dir)
     epoch = read_receipt_epoch(bridge_dir)
     if epoch is None:
         # Not opted in to completion receipts: the legacy marker, unchanged.
@@ -519,7 +535,7 @@ def write_posted_count(bridge_dir: Path, posted: int) -> None:
     Persisted only AFTER a successful status POST so a failed flush is retried (the
     unreported turn-ends stay unreported until the post lands).
     """
-    bridge_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(bridge_dir)
     tmp = bridge_dir / (_STATE_FILE + ".tmp")
     tmp.write_text(json.dumps({"posted": posted}), encoding="utf-8")
     os.replace(tmp, bridge_dir / _STATE_FILE)

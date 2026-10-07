@@ -46,6 +46,7 @@ from omnigent.harnesses.codex_native.bridge import (
     write_bridge_state as write_codex_bridge_state,
 )
 from omnigent.harnesses.cursor_native import bridge as cursor_native_bridge
+from omnigent.harnesses.cursor_native import usage as cursor_native_usage
 from omnigent.harnesses.kiro_native import bridge as kiro_native_bridge
 from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
 from omnigent.inner.terminal import TerminalInstance
@@ -1731,6 +1732,11 @@ async def _run_auto_create_cursor_terminal(
         prepare_workspace(workspace)
     monkeypatch.setattr(cursor_native_bridge, "_BRIDGE_ROOT", tmp_path / "cursor-bridge")
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://127.0.0.1:8000")
+    if "OMNIGENT_CONFIG_HOME" not in os.environ:
+        # The plugin-route switch also reads the user config; keep the real one
+        # out (a missing config dir reads as empty; not created, so tree-state
+        # assertions over tmp_path are unaffected).
+        monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path / "config-isolated"))
     monkeypatch.setattr(
         "omnigent.harnesses.cursor_native.main.resolve_cursor_executable", lambda: "cursor-agent"
     )
@@ -1872,6 +1878,368 @@ async def test_auto_create_cursor_terminal_inherits_agent_os_env(
 
     assert captured["parent_os_env"] is agent_os_env
     assert captured["spec"].os_env.sandbox is agent_os_env.sandbox
+
+
+_PINNED_CHAT_ID = "3c2948ec-4186-4042-b096-e5f412b32954"
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_pins_fresh_chat_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh launch mints its chat id up front and resumes into it.
+
+    Same-workspace launches milliseconds apart share one ``md5(cwd)`` chats
+    dir; recency discovery cross-wired them (live 2026-09-27). The runner now
+    runs ``cursor-agent create-chat`` in the workspace, launches the TUI with
+    ``--resume <id>`` and pins the forwarder state to that exact store.
+    """
+    from omnigent.harnesses.cursor_native import forwarder as cursor_fwd
+
+    monkeypatch.setattr(cursor_fwd, "_cursor_chats_root", lambda: tmp_path / "chats")
+    minted: list[tuple[str, str]] = []
+
+    def _fake_create(command: str, workspace: str) -> str:
+        minted.append((command, workspace))
+        return _PINNED_CHAT_ID
+
+    monkeypatch.setattr("omnigent.harnesses.cursor_native.main.create_cursor_chat", _fake_create)
+    captured = await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=None,
+    )
+    args = captured["spec"].args
+    assert args[args.index("--resume") + 1] == _PINNED_CHAT_ID
+    workspace = os.path.realpath(tmp_path / "ws")
+    assert minted == [("cursor-agent", workspace)]
+    bridge_dir = cursor_native_bridge.bridge_dir_for_session_id("c42dbcb16fd3a87ee8f5d1fe4cabfdf8")
+    state = cursor_fwd._read_state(bridge_dir)
+    assert state.pinned is True
+    assert state.store_path == str(cursor_fwd.chat_store_path(workspace, _PINNED_CHAT_ID))
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_warns_on_live_same_workspace_sibling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A launch that overwrites a LIVE sibling's hooks/MCP slot says so, naming both.
+
+    ``.cursor/hooks.json`` / ``mcp.json`` hold one bridge dir per workspace, so
+    same-workspace sessions are last-writer-wins (live 2026-09-27: both TUIs'
+    stop hooks landed in one bridge dir). Not refused — only made loud.
+    """
+    import time as _time
+
+    sibling = tmp_path / "cursor-bridge" / "sibling"
+    sibling.mkdir(parents=True)
+    cursor_native_bridge.write_bridge_owner(sibling, "conv_sibling")
+    (sibling / "cursor_forwarder.json").write_text(
+        json.dumps({"heartbeat_ms": int(_time.time() * 1000)})
+    )
+
+    def _bind_to_sibling(workspace: Path) -> None:
+        (workspace / ".cursor").mkdir(exist_ok=True)
+        (workspace / ".cursor" / "hooks.json").write_text(
+            json.dumps(cursor_native_bridge.build_hooks_config(sibling))
+        )
+        (workspace / ".cursor" / "mcp.json").write_text(
+            json.dumps(cursor_native_bridge.build_mcp_config(sibling))
+        )
+
+    with caplog.at_level(logging.WARNING):
+        await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+            prepare_workspace=_bind_to_sibling,
+        )
+    collisions = [
+        r.getMessage() for r in caplog.records if "is bound to LIVE session" in r.message
+    ]
+    assert len(collisions) == 2, collisions
+    assert all("conv_sibling" in m and "c42dbcb16fd3a87ee8f5d1fe4cabfdf8" in m for m in collisions)
+    assert any(".cursor/hooks.json" in m for m in collisions)
+    assert any(".cursor/mcp.json" in m for m in collisions)
+
+
+def _plugin_route_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Enable the ``--plugin-dir`` route with a private HOME; returns HOME."""
+    home = tmp_path / "home"
+    (home / ".cursor").mkdir(parents=True)
+    (home / ".cursor" / "cli-config.json").write_text(json.dumps({"permissions": {"allow": []}}))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv(cursor_native_bridge.PLUGIN_DIR_ENV_VAR, "1")
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    monkeypatch.setattr(
+        "omnigent.harnesses.cursor_native.main.create_cursor_chat", lambda *_a, **_k: None
+    )
+    return home
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_plugin_route_passes_own_plugin_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``OMNIGENT_CURSOR_PLUGIN_DIR=1``: hooks + MCP ride a per-session plugin.
+
+    The project ``mcp.json`` is not written, the project ``hooks.json`` holds
+    only the constant no-op armer, and ``--plugin-dir`` names the session's own
+    plugin under its bridge dir. Completion receipts arm on the plugin hook.
+    """
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+    _plugin_route_env(tmp_path, monkeypatch)
+    labels = {
+        cursor_native_status.COMPLETION_RECEIPTS_LABEL: (
+            cursor_native_status.COMPLETION_RECEIPTS_VERSION
+        )
+    }
+    captured = await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=["--force"],
+        labels=labels,
+    )
+    bridge_dir = cursor_native_bridge.bridge_dir_for_session_id("c42dbcb16fd3a87ee8f5d1fe4cabfdf8")
+    plugin_dir = cursor_native_bridge.plugin_dir_for_bridge(bridge_dir)
+    args = captured["spec"].args
+    assert args[:2] == ["--plugin-dir", str(plugin_dir)]
+    assert "--force" in args and "--approve-mcps" in args
+    ws = tmp_path / "ws"
+    assert not (ws / ".cursor" / "mcp.json").exists()
+    hooks = json.loads((ws / ".cursor" / "hooks.json").read_text())
+    assert hooks["hooks"]["stop"] == [{"command": cursor_native_bridge.PLUGIN_STOP_ARMER_COMMAND}]
+    plugin_hooks = json.loads((plugin_dir / "hooks" / "hooks.json").read_text())
+    assert plugin_hooks == cursor_native_bridge.build_hooks_config(bridge_dir)
+    assert json.loads((plugin_dir / "mcp.json").read_text()) == (
+        cursor_native_bridge.build_mcp_config(bridge_dir)
+    )
+    assert cursor_native_status.read_receipt_epoch(bridge_dir) is not None
+    # Hooks learn which session's TUI fired them (a live project-route
+    # sibling's project hook then skips this session's turns).
+    assert captured["spec"].env == {cursor_native_usage.SESSION_BRIDGE_ENV_VAR: str(bridge_dir)}
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_plugin_route_off_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the flag the project-file route is unchanged: no ``--plugin-dir``."""
+    _plugin_route_env(tmp_path, monkeypatch)
+    monkeypatch.delenv(cursor_native_bridge.PLUGIN_DIR_ENV_VAR)
+    captured = await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=None,
+    )
+    assert "--plugin-dir" not in captured["spec"].args
+    assert (tmp_path / "ws" / ".cursor" / "mcp.json").is_file()
+    assert captured["spec"].env == {}
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_plugin_route_refuses_plugins_off_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--authless`` (enableUserLocalPlugins off) fails the launch before any write.
+
+    Otherwise the session would run with no Omnigent tools and completion
+    receipts armed on a plugin stop hook cursor-agent never loads.
+    """
+    _plugin_route_env(tmp_path, monkeypatch)
+    with pytest.raises(cursor_native_bridge.CursorPluginRouteError) as refused:
+        await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=["--authless"],
+        )
+    assert "enableUserLocalPlugins" in refused.value.user_message()
+    assert not (tmp_path / "cursor-bridge").exists()
+    assert not (tmp_path / "ws" / ".cursor").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["passthrough", "installed"])
+async def test_auto_create_cursor_terminal_other_plugin_stop_hook_holds_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    where: str,
+) -> None:
+    """r17 N12: a user plugin's stop hook (``followup_message``) holds receipts."""
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+    home = _plugin_route_env(tmp_path, monkeypatch)
+
+    def _write_plugin(root: Path) -> None:
+        (root / "hooks").mkdir(parents=True)
+        (root / "hooks" / "hooks.json").write_text(
+            json.dumps({"version": 1, "hooks": {"stop": [{"command": "./followup.sh"}]}})
+        )
+
+    if where == "passthrough":
+        # Passed relative to the workspace (the TUI's cwd).
+        args = ["--plugin-dir", "my-plugin"]
+        prepare = lambda ws: _write_plugin(ws / "my-plugin")  # noqa: E731
+    else:
+        args = []
+        _write_plugin(home / ".cursor" / "plugins" / "local" / "my-plugin")
+        prepare = None
+    labels = {
+        cursor_native_status.COMPLETION_RECEIPTS_LABEL: (
+            cursor_native_status.COMPLETION_RECEIPTS_VERSION
+        )
+    }
+    await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=args,
+        labels=labels,
+        prepare_workspace=prepare,
+    )
+    bridge_dir = cursor_native_bridge.bridge_dir_for_session_id("c42dbcb16fd3a87ee8f5d1fe4cabfdf8")
+    assert cursor_native_status.read_receipt_epoch(bridge_dir) is None
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_plugin_route_avoids_user_plugin_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A user ``--plugin-dir .../omnigent`` must not shadow Omnigent's own plugin."""
+    home = _plugin_route_env(tmp_path, monkeypatch)
+    user_plugin = tmp_path / "mine" / "omnigent"
+    captured = await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=["--plugin-dir", str(user_plugin)],
+    )
+    bridge_dir = cursor_native_bridge.bridge_dir_for_session_id("c42dbcb16fd3a87ee8f5d1fe4cabfdf8")
+    ours = cursor_native_bridge.plugin_dir_for_bridge(bridge_dir, "omnigent-session")
+    args = captured["spec"].args
+    assert args[:4] == ["--plugin-dir", str(ours), "--plugin-dir", str(user_plugin)]
+    assert (ours / "hooks" / "hooks.json").is_file()
+    allow = json.loads((home / ".cursor" / "cli-config.json").read_text())["permissions"]["allow"]
+    assert "Mcp(plugin-omnigent-session-omnigent:sys_os_read)" in allow
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_plugin_route_leaves_live_sibling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A LIVE project-route sibling keeps its slot; a dead one is cleared.
+
+    The plugin-route launch must not re-point the sibling's project files (that
+    is the old last-writer-wins bug); it warns that it loads them too.
+    """
+    import time as _time
+
+    _plugin_route_env(tmp_path, monkeypatch)
+    live = tmp_path / "cursor-bridge" / "live"
+    live.mkdir(parents=True)
+    cursor_native_bridge.write_bridge_owner(live, "conv_live")
+    (live / "cursor_forwarder.json").write_text(
+        json.dumps({"heartbeat_ms": int(_time.time() * 1000)})
+    )
+    dead = tmp_path / "cursor-bridge" / "dead"
+
+    def _bind(workspace: Path) -> None:
+        (workspace / ".cursor").mkdir(exist_ok=True)
+        live_hook = cursor_native_bridge.build_hooks_config(live)["hooks"]["stop"][0]  # type: ignore[index]
+        dead_hook = cursor_native_bridge.build_hooks_config(dead)["hooks"]["stop"][0]  # type: ignore[index]
+        (workspace / ".cursor" / "hooks.json").write_text(
+            json.dumps({"version": 1, "hooks": {"stop": [dead_hook, live_hook]}})
+        )
+        (workspace / ".cursor" / "mcp.json").write_text(
+            json.dumps(cursor_native_bridge.build_mcp_config(live))
+        )
+
+    with caplog.at_level(logging.WARNING):
+        await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+            prepare_workspace=_bind,
+        )
+    ws = tmp_path / "ws"
+    stop = json.loads((ws / ".cursor" / "hooks.json").read_text())["hooks"]["stop"]
+    assert str(dead) not in json.dumps(stop)
+    assert str(live) in stop[0]["command"]
+    assert stop[1] == {"command": cursor_native_bridge.PLUGIN_STOP_ARMER_COMMAND}
+    assert str(live) in (ws / ".cursor" / "mcp.json").read_text()
+    notes = [r.getMessage() for r in caplog.records if "project-route session" in r.message]
+    # One warning naming both sessions and both files.
+    assert len(notes) == 1
+    assert "conv_live" in notes[0] and "c42dbcb16fd3a87ee8f5d1fe4cabfdf8" in notes[0]
+    assert ".cursor/hooks.json" in notes[0] and ".cursor/mcp.json" in notes[0]
+
+
+@pytest.mark.parametrize(
+    "passthrough",
+    [["--resume", _PINNED_CHAT_ID], ["--continue"], ["--worktree=feat"]],
+    ids=["resume", "continue", "worktree"],
+)
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_skips_pin_when_args_pick_chat(
+    passthrough: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Passthrough args that choose the chat (or its cwd) are never overridden."""
+
+    def _unexpected(*_a: Any, **_k: Any) -> str:
+        raise AssertionError("create-chat must not run when args pick the chat")
+
+    monkeypatch.setattr("omnigent.harnesses.cursor_native.main.create_cursor_chat", _unexpected)
+    captured = await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=passthrough,
+    )
+    args = captured["spec"].args
+    assert args.count("--resume") == passthrough.count("--resume")
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_create_chat_failure_falls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No minted id → no ``--resume``, cleared state, and a logged fallback."""
+    from omnigent.harnesses.cursor_native import forwarder as cursor_fwd
+
+    monkeypatch.setattr(
+        "omnigent.harnesses.cursor_native.main.create_cursor_chat", lambda *_a, **_k: None
+    )
+    with caplog.at_level(logging.WARNING):
+        captured = await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+        )
+    assert "--resume" not in captured["spec"].args
+    bridge_dir = cursor_native_bridge.bridge_dir_for_session_id("c42dbcb16fd3a87ee8f5d1fe4cabfdf8")
+    assert cursor_fwd._read_state(bridge_dir).store_path is None
+    assert "falling back to chat-store discovery" in caplog.text
 
 
 @pytest.mark.parametrize(

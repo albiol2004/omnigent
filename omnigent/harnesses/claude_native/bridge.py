@@ -106,6 +106,11 @@ _INJECTION_LOCK_POLL_INTERVAL_S = 0.1
 _InjectionFunction = TypeVar("_InjectionFunction", bound=Callable[..., Any])
 
 BRIDGE_DIR_ENV_VAR = "HARNESS_CLAUDE_NATIVE_BRIDGE_DIR"
+#: The cursor plugin-route session marker
+#: (``omnigent.harnesses.cursor_native.usage.SESSION_BRIDGE_ENV_VAR``; not imported
+#: so ``serve-mcp`` boot stays light). cursor-agent does not pass its env to MCP
+#: servers, but it is the server's parent, so ``serve-mcp`` reads it there.
+CURSOR_SESSION_BRIDGE_ENV_VAR = "OMNIGENT_CURSOR_SESSION_BRIDGE_DIR"
 REQUEST_SESSION_ID_ENV_VAR = "HARNESS_CLAUDE_NATIVE_REQUEST_SESSION_ID"
 BRIDGE_ID_LABEL_KEY = "omnigent.claude_native.bridge_id"
 
@@ -6258,6 +6263,12 @@ def _serve_mcp(bridge_dir: Path) -> None:
     :param bridge_dir: Bridge directory path.
     :returns: None when stdin closes.
     """
+    parent_bridge = parent_session_bridge_conflict(bridge_dir)
+    if parent_bridge is not None:
+        # Before anything touches *bridge_dir*: its server.json belongs to the
+        # session that owns it.
+        _serve_refusal(_parent_bridge_refusal_message(bridge_dir, parent_bridge))
+        return
     os.environ[BRIDGE_DIR_ENV_VAR] = str(bridge_dir)
     config = _read_json_file(bridge_dir / _CONFIG_FILE)
     if not isinstance(config, dict):
@@ -6829,6 +6840,118 @@ def _notification_writer(
         _write_jsonrpc(payload, stdout_lock)
 
 
+def _read_parent_environ() -> dict[str, str] | None:
+    """The parent process's environment from ``/proc`` (``None`` where unreadable)."""
+    try:
+        raw = Path(f"/proc/{os.getppid()}/environ").read_bytes()
+    except OSError:
+        return None
+    env: dict[str, str] = {}
+    for item in raw.split(b"\0"):
+        key, sep, value = item.partition(b"=")
+        if sep:
+            env[key.decode("utf-8", "surrogateescape")] = value.decode("utf-8", "surrogateescape")
+    return env
+
+
+def parent_session_bridge_conflict(
+    bridge_dir: Path,
+    *,
+    read_parent_environ: Callable[[], Mapping[str, str] | None] = _read_parent_environ,
+) -> str | None:
+    """The other session's bridge dir when this server's parent belongs to one.
+
+    A plugin-route cursor session (``--plugin-dir``) runs with
+    :data:`CURSOR_SESSION_BRIDGE_ENV_VAR` set to its own bridge dir, and
+    cursor-agent (this server's parent) also loads the project ``mcp.json``,
+    which may still hold a LIVE project-route sibling's ``omnigent`` server for
+    *bridge_dir*. Serving there would let the plugin session act as the sibling
+    (send as it, drain its inbox), so ``serve-mcp`` refuses. Returns ``None``
+    (serve) when the parent is unreadable (non-Linux), names no bridge (the
+    project route) or names this one.
+    """
+    env = read_parent_environ()
+    if not env:
+        return None
+    owner = env.get(CURSOR_SESSION_BRIDGE_ENV_VAR, "")
+    if not owner or os.path.realpath(owner) == os.path.realpath(bridge_dir):
+        return None
+    return owner
+
+
+def _parent_bridge_refusal_message(bridge_dir: Path, parent_bridge: str) -> str:
+    return (
+        f"Omnigent MCP server for bridge {bridge_dir} refused: it was started by a "
+        f"Cursor session bound to bridge {parent_bridge} "
+        f"({CURSOR_SESSION_BRIDGE_ENV_VAR}), i.e. another session's project .cursor/mcp.json "
+        "entry. Its tools would act as that other session; this session's own Omnigent "
+        "tools come from its plugin server."
+    )
+
+
+def _serve_refusal(message: str) -> None:
+    """Answer every MCP request with *message* as an error until stdin closes.
+
+    Logs once (stderr, which cursor-agent keeps in its MCP log). Touches no
+    bridge file and serves no tool.
+    """
+    sys.stderr.write(f"omnigent serve-mcp: {message}\n")
+    sys.stderr.flush()
+    stdout_lock = threading.Lock()
+    framed = False
+    while True:
+        line, framed = _read_stdio_jsonrpc_line(framed)
+        if line is None:
+            return
+        try:
+            message_obj = json.loads(line) if line else None
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(message_obj, dict) or message_obj.get("id") is None:
+            continue
+        _write_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": message_obj["id"],
+                "error": {"code": _REFUSED_ERROR_CODE, "message": message},
+            },
+            stdout_lock,
+            framed=framed,
+        )
+
+
+#: JSON-RPC error code for a refused ``serve-mcp`` (implementation-defined range).
+_REFUSED_ERROR_CODE = -32001
+
+
+def _read_stdio_jsonrpc_line(framed: bool) -> tuple[str | None, bool]:
+    """Read one JSON-RPC message body from stdin (line or Content-Length framed).
+
+    :param framed: Whether Content-Length framing was seen before.
+    :returns: ``(text, framed)``; *text* is ``None`` at EOF and ``""`` for a
+        frame to skip.
+    """
+    raw_line = sys.stdin.buffer.readline()
+    if raw_line == b"":
+        return None, framed
+    if raw_line.lower().startswith(b"content-length:"):
+        try:
+            length = int(raw_line.decode("ascii", errors="ignore").split(":", 1)[1].strip())
+        except ValueError:
+            return "", True
+        while True:
+            header = sys.stdin.buffer.readline()
+            if header in {b"\r\n", b"\n", b""}:
+                break
+        if length <= 0:
+            return "", True
+        raw_payload = sys.stdin.buffer.read(length)
+        if len(raw_payload) != length:
+            return None, True
+        return raw_payload.decode("utf-8", errors="replace").strip(), True
+    return raw_line.decode("utf-8", errors="replace").strip(), framed
+
+
 def _stdio_jsonrpc_loop(
     tools: dict[str, Tool],
     stdout_lock: threading.Lock,
@@ -6846,27 +6969,9 @@ def _stdio_jsonrpc_loop(
     use_content_length = False
     request_slots = threading.BoundedSemaphore(_MAX_CONCURRENT_MCP_REQUESTS)
     while True:
-        raw_line = sys.stdin.buffer.readline()
-        if raw_line == b"":
+        line, use_content_length = _read_stdio_jsonrpc_line(use_content_length)
+        if line is None:
             return
-        if raw_line.lower().startswith(b"content-length:"):
-            use_content_length = True
-            try:
-                length = int(raw_line.decode("ascii", errors="ignore").split(":", 1)[1].strip())
-            except ValueError:
-                continue
-            while True:
-                header = sys.stdin.buffer.readline()
-                if header in {b"\r\n", b"\n", b""}:
-                    break
-            if length <= 0:
-                continue
-            raw_payload = sys.stdin.buffer.read(length)
-            if len(raw_payload) != length:
-                return
-            line = raw_payload.decode("utf-8", errors="replace").strip()
-        else:
-            line = raw_line.decode("utf-8", errors="replace").strip()
         if not line:
             continue
         try:

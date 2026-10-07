@@ -10,6 +10,7 @@ The clear now floods ``Backspace`` until the pane stops changing.
 
 from __future__ import annotations
 
+import os
 import types
 from pathlib import Path
 
@@ -75,11 +76,11 @@ def test_clear_composer_floods_backspace_until_pane_stable(
     bursts: the third sees no change and returns. It must never send the old
     ``C-a``/``C-k`` keys, which cursor-agent's composer ignores.
     """
-    # previous=capture#1 (draft); round1 sees #2 (empty, changed -> continue);
-    # round2 sees #3 (empty, unchanged -> stop).
+    # #1 is the placeholder check (a draft hides it); previous=#2 (draft); round1
+    # sees #3 (empty, changed -> continue); round2 sees #4 (unchanged -> stop).
     captured = _install_fake_tmux(
         monkeypatch,
-        pane_captures=["draft-content", "empty", "empty"],
+        pane_captures=["draft-content", "draft-content", "empty", "empty"],
     )
 
     cursor_native_bridge._clear_composer(_SOCK, _TARGET)
@@ -133,8 +134,8 @@ def test_clear_composer_is_bounded_when_pane_never_settles(
 
     cursor_native_bridge._clear_composer(_SOCK, _TARGET)
 
-    # One capture seeds `previous`, then one per round up to the cap.
-    assert counter["n"] == cursor_native_bridge._COMPOSER_CLEAR_MAX_ROUNDS + 1
+    # The placeholder check, one capture seeding `previous`, then one per round.
+    assert counter["n"] == cursor_native_bridge._COMPOSER_CLEAR_MAX_ROUNDS + 2
 
 
 def test_inject_user_message_clears_before_pasting(
@@ -153,9 +154,14 @@ def test_inject_user_message_clears_before_pasting(
         socket_path=Path(_SOCK),
         tmux_target=_TARGET,
     )
-    # Pane always reports an idle marker: _settle_pane returns immediately, the
-    # clear settles at once, and the paste-commit poll sees the needle.
-    captured = _install_fake_tmux(monkeypatch, pane_captures=["Add a follow-up hello marker"])
+    cursor_native_bridge._mark_composer_ready(bridge_dir)
+    # Settle sees the running placeholder; the clear then sees a draft (which
+    # hides it), floods until the pane settles, and the paste-commit poll sees
+    # the needle.
+    captured = _install_fake_tmux(
+        monkeypatch,
+        pane_captures=["Add a follow-up", "leftover", "leftover", "hello marker", "hello marker"],
+    )
     # Avoid real sleeps in the paste-commit settle.
     monkeypatch.setattr(cursor_native_bridge.time, "sleep", lambda *_a, **_k: None)
 
@@ -170,6 +176,111 @@ def test_inject_user_message_clears_before_pasting(
     assert not any("C-a" in cmd or "C-k" in cmd for cmd in captured)
     # Submit still happens last.
     assert any("send-keys" in cmd and "Enter" in cmd for cmd in captured)
+
+
+def test_clear_composer_sends_nothing_when_placeholder_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A visible placeholder means an empty composer: no End and no Backspace at all.
+
+    On a still-booting TUI a Backspace burst is stored as literal DELs ahead of
+    the next paste, and the pane cannot show it.
+    """
+    for marker in cursor_native_bridge._IDLE_MARKERS:
+        captured = _install_fake_tmux(monkeypatch, pane_captures=[f"> {marker}"])
+
+        cursor_native_bridge._clear_composer(_SOCK, _TARGET)
+
+        assert _send_keys_calls(captured) == []
+
+
+class TestColdStartReadiness:
+    """The first injection into a fresh TUI waits for a stable composer, or sends nothing."""
+
+    def test_settle_requires_consecutive_identical_captures(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        n = cursor_native_bridge._COMPOSER_READY_STABLE_CAPTURES
+        booting = [f"{_IDLE}\nstarting {i}" for i in range(4)]
+        captured = _install_fake_tmux(monkeypatch, pane_captures=["", *booting, _IDLE])
+        monkeypatch.setattr(cursor_native_bridge.time, "sleep", lambda *_a, **_k: None)
+
+        ready = cursor_native_bridge._settle_pane(
+            _SOCK, _TARGET, timeout_s=5.0, require_stable=True
+        )
+
+        assert ready
+        captures = [c for c in captured if "capture-pane" in c]
+        assert len(captures) == 1 + len(booting) + n
+
+    def test_warm_settle_returns_on_first_marker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured = _install_fake_tmux(monkeypatch, pane_captures=[f"{_IDLE} 1", f"{_IDLE} 2"])
+
+        assert cursor_native_bridge._settle_pane(_SOCK, _TARGET, timeout_s=5.0)
+        assert len([c for c in captured if "capture-pane" in c]) == 1
+
+    def test_cold_inject_times_out_without_typing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pane that never settles: raise before any key, paste or Enter."""
+        bridge_dir = _prepare_bridge(tmp_path)
+        counter = {"n": 0}
+        captured: list[list[str]] = []
+
+        def _fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            del kwargs
+            captured.append(cmd)
+            if "capture-pane" in cmd:
+                counter["n"] += 1
+                return _FakeCompleted(stdout=f"{_IDLE}\nstarting {counter['n']}")
+            return _FakeCompleted()
+
+        monkeypatch.setattr("subprocess.run", _fake_run)
+
+        with pytest.raises(RuntimeError, match="not stably ready"):
+            cursor_native_bridge.inject_user_message(bridge_dir, content="hello", timeout_s=0.5)
+
+        keys = ("send-keys", "load-buffer", "paste-buffer")
+        typed = [c for c in captured if any(k in c for k in keys)]
+        assert typed == []
+        assert not cursor_native_bridge._composer_ready_seen(bridge_dir)
+
+    def test_ready_stamp_follows_the_tui_instance(self, tmp_path: Path) -> None:
+        """A relaunch rewrites tmux.json, so the next injection is cold again."""
+        bridge_dir = _prepare_bridge(tmp_path)
+        assert not cursor_native_bridge._composer_ready_seen(bridge_dir)
+        cursor_native_bridge._mark_composer_ready(bridge_dir)
+        assert cursor_native_bridge._composer_ready_seen(bridge_dir)
+
+        write_tmux_target(bridge_dir, socket_path=Path(_SOCK), tmux_target=_TARGET, pid=4242)
+
+        assert not cursor_native_bridge._composer_ready_seen(bridge_dir)
+
+    def test_warm_inject_skips_the_stability_wait(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Once stamped, a changing pane (a running turn) does not delay steering."""
+        bridge_dir = _prepare_bridge(tmp_path)
+        cursor_native_bridge._mark_composer_ready(bridge_dir)
+        counter = {"n": 0}
+        captured: list[list[str]] = []
+
+        def _fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            del kwargs
+            captured.append(cmd)
+            if "capture-pane" in cmd:
+                counter["n"] += 1
+                return _FakeCompleted(stdout=f"{_IDLE} hello marker {counter['n']}")
+            return _FakeCompleted()
+
+        monkeypatch.setattr("subprocess.run", _fake_run)
+        monkeypatch.setattr(cursor_native_bridge.time, "sleep", lambda *_a, **_k: None)
+
+        cursor_native_bridge.inject_user_message(bridge_dir, content="hello marker", timeout_s=0.5)
+
+        tails = _send_keys_calls(captured)
+        assert tails == [["-t", _TARGET, "Enter"]]  # no clear keys, one submit
+        assert counter["n"] == 3  # settle, placeholder check, needle poll
 
 
 # Idle marker so _settle_pane returns and _clear_composer settles at once.
@@ -541,6 +652,168 @@ class TestMcpBridgeConfigSecureDir:
         assert not (bridge_dir / "bridge.json").exists()
 
 
+class TestSharedMcpScope:
+    """A session-bound MCP server never lands in the user ``~/.cursor/mcp.json``."""
+
+    #: Unrelated servers (one with a secret-shaped env) and odd formatting.
+    USER_BYTES = (
+        b'{ "mcpServers": {"github": {"command": "gh-mcp", "env": {"GH_TOKEN": "x"}},\n'
+        b'  "notion": {"url": "https://example.invalid/mcp"}}}  \n'
+    )
+
+    @pytest.fixture(autouse=True)
+    def _spy_cursor_state(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        # A production-shaped bridge root: the session token is still provisioned.
+        monkeypatch.setattr(
+            cursor_native_bridge, "_BRIDGE_ROOT", tmp_path / "omnigent-test" / "cursor-native"
+        )
+        calls: list[str] = []
+        monkeypatch.setattr(
+            cursor_native_bridge, "enable_mcp_for_workspace", lambda _: calls.append("enable")
+        )
+        monkeypatch.setattr(
+            cursor_native_bridge, "allow_mcp_tools_in_cli_config", lambda: calls.append("allow")
+        )
+        self.calls = calls
+        return calls
+
+    @staticmethod
+    def _home(tmp_path: Path, user_bytes: bytes | None) -> Path:
+        home = tmp_path / "home"
+        (home / ".cursor").mkdir(parents=True)
+        if user_bytes is not None:
+            (home / ".cursor" / "mcp.json").write_bytes(user_bytes)
+        return home
+
+    @pytest.mark.parametrize(
+        "alias", ["same", "symlink", "dotdot", "cursor_dir_link", "dangling_cursor_dir_link"]
+    )
+    def test_home_workspace_is_never_written(self, tmp_path: Path, alias: str) -> None:
+        home = self._home(tmp_path, self.USER_BYTES)
+        if alias == "same":
+            ws = home
+        elif alias == "symlink":
+            ws = tmp_path / "ws-link"
+            ws.symlink_to(home)
+        elif alias == "dotdot":
+            (home / "sub").mkdir()
+            ws = home / "sub" / ".."
+        else:
+            ws = tmp_path / "ws"
+            ws.mkdir()
+            if alias == "dangling_cursor_dir_link":
+                (home / ".cursor" / "mcp.json").unlink()
+                (home / ".cursor").rmdir()
+            (ws / ".cursor").symlink_to(home / ".cursor")
+        bridge = cursor_native_bridge.bridge_dir_for_session_id("s")
+        assert cursor_native_bridge.shared_mcp_scope_reason(ws, home=home) == (
+            f"workspace_is_home:{ws}"
+        )
+        assert cursor_native_bridge.write_mcp_config(ws, bridge, home=home) is None
+        if alias == "dangling_cursor_dir_link":
+            assert not (home / ".cursor").exists()
+        else:
+            assert (home / ".cursor" / "mcp.json").read_bytes() == self.USER_BYTES
+            assert sorted(p.name for p in (home / ".cursor").iterdir()) == ["mcp.json"]
+        assert self.calls == []
+        # The session-local bridge token is still provisioned.
+        assert (bridge / "bridge.json").exists()
+
+    def test_account_home_is_never_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import pwd
+
+        account_home = tmp_path / "account-home"
+        account_home.mkdir()
+        entry = types.SimpleNamespace(pw_dir=str(account_home))
+        monkeypatch.setattr(pwd, "getpwuid", lambda _uid: entry)
+        path = cursor_native_bridge.write_mcp_config(
+            account_home,
+            cursor_native_bridge.bridge_dir_for_session_id("s"),
+            home=tmp_path / "env-home",
+        )
+        assert path is None
+        assert not (account_home / ".cursor").exists()
+
+    @pytest.mark.parametrize("link", ["symlink", "dangling-symlink", "hardlink", "dotfiles"])
+    def test_project_file_aliasing_the_user_file_is_never_written(
+        self, tmp_path: Path, link: str
+    ) -> None:
+        home = self._home(tmp_path, None)
+        user_file = home / ".cursor" / "mcp.json"
+        dotfile = tmp_path / "dotfiles" / "mcp.json"
+        if link == "dotfiles":
+            dotfile.parent.mkdir()
+            dotfile.write_bytes(self.USER_BYTES)
+            user_file.symlink_to(dotfile)
+        elif link != "dangling-symlink":
+            user_file.write_bytes(self.USER_BYTES)
+        ws = tmp_path / "ws"
+        (ws / ".cursor").mkdir(parents=True)
+        project_file = ws / ".cursor" / "mcp.json"
+        if link == "hardlink":
+            os.link(user_file, project_file)
+        elif link == "dotfiles":
+            project_file.symlink_to(dotfile)
+        else:
+            project_file.symlink_to(user_file)
+        before = user_file.read_bytes() if user_file.exists() else None
+        user_kind = (os.path.lexists(user_file), os.path.islink(user_file))
+        assert cursor_native_bridge.shared_mcp_scope_reason(ws, home=home) == (
+            f"shared_mcp_config:{project_file}"
+        )
+        assert (
+            cursor_native_bridge.write_mcp_config(
+                ws, cursor_native_bridge.bridge_dir_for_session_id("s"), home=home
+            )
+            is None
+        )
+        assert (user_file.read_bytes() if user_file.exists() else None) == before
+        assert (os.path.lexists(user_file), os.path.islink(user_file)) == user_kind
+        assert os.path.islink(project_file) == (link != "hardlink")
+        assert not (ws / ".cursor" / "mcp.json.tmp").exists()
+        assert self.calls == []
+
+    def test_distinct_projects_get_their_own_bound_server(self, tmp_path: Path) -> None:
+        import json
+
+        home = self._home(tmp_path, self.USER_BYTES)
+        project_bytes = b'{"mcpServers": {"local": {"command": "./srv"}}}'
+        written = {}
+        for name in ("a", "b"):
+            ws = tmp_path / name
+            (ws / ".cursor").mkdir(parents=True)
+            (ws / ".cursor" / "mcp.json").write_bytes(project_bytes)
+            assert cursor_native_bridge.shared_mcp_scope_reason(ws, home=home) is None
+            bridge = cursor_native_bridge.bridge_dir_for_session_id(name)
+            path = cursor_native_bridge.write_mcp_config(ws, bridge, home=home)
+            assert path == ws / ".cursor" / "mcp.json"
+            written[name] = json.loads(path.read_text())["mcpServers"]
+        for name, servers in written.items():
+            assert servers["local"] == {"command": "./srv"}
+            bridge = cursor_native_bridge.bridge_dir_for_session_id(name)
+            assert servers["omnigent"]["args"][-1] == str(bridge)
+        assert (home / ".cursor" / "mcp.json").read_bytes() == self.USER_BYTES
+        assert self.calls == ["enable", "allow", "enable", "allow"]
+
+    @pytest.mark.parametrize(
+        ("payload", "want"),
+        [
+            (None, False),
+            (b"not json", False),
+            (b'{"mcpServers": []}', False),
+            (b'{"mcpServers": {"github": {}}}', False),
+            (b'{"mcpServers": {"omnigent": {"command": "py"}}}', True),
+        ],
+    )
+    def test_user_mcp_has_omnigent_server(
+        self, tmp_path: Path, payload: bytes | None, want: bool
+    ) -> None:
+        home = self._home(tmp_path, payload)
+        assert cursor_native_bridge.user_mcp_has_omnigent_server(home=home) is want
+
+
 def test_kill_session_issues_kill_session_on_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -789,6 +1062,68 @@ class TestCompletionReceiptHookGate:
         )
         assert reason == want
 
+    @pytest.mark.parametrize("link", ["symlink", "dangling-symlink", "hardlink"])
+    def test_hooks_file_aliasing_the_user_file_is_shared_scope(
+        self, tmp_path: Path, link: str
+    ) -> None:
+        """A project hooks.json that is the user one is refused and never written."""
+        home = tmp_path / "home"
+        (home / ".cursor").mkdir(parents=True)
+        user_file = home / ".cursor" / "hooks.json"
+        if link != "dangling-symlink":
+            user_file.write_bytes(b'{"hooks": {"stop": [{"command": "./mine.sh"}]}}')
+        ws = tmp_path / "ws"
+        (ws / ".cursor").mkdir(parents=True)
+        project_file = ws / ".cursor" / "hooks.json"
+        if link == "hardlink":
+            os.link(user_file, project_file)
+        else:
+            project_file.symlink_to(user_file)
+        before = user_file.read_bytes() if user_file.exists() else None
+        want = f"shared_hooks_config:{project_file}"
+        assert cursor_native_bridge.shared_hooks_scope_reason(ws, home=home) == want
+        assert cursor_native_bridge.completion_receipt_project_precheck(ws, home=home) == want
+        assert cursor_native_bridge.write_hooks_config(ws, tmp_path / "bridge", home=home) is None
+        after = user_file.read_bytes() if user_file.exists() else None
+        assert after == before
+
+    @pytest.mark.parametrize("alias", ["same", "symlink", "dotdot", "cursor_dir_link"])
+    def test_write_hooks_config_skips_home_workspace(self, tmp_path: Path, alias: str) -> None:
+        home = tmp_path / "home"
+        (home / ".cursor").mkdir(parents=True)
+        user_bytes = b'{"version": 1, "hooks": {"stop": [{"command": "./mine.sh"}]}}'
+        (home / ".cursor" / "hooks.json").write_bytes(user_bytes)
+        if alias == "same":
+            ws = home
+        elif alias == "symlink":
+            ws = tmp_path / "ws-link"
+            ws.symlink_to(home)
+        elif alias == "dotdot":
+            (home / "sub").mkdir()
+            ws = home / "sub" / ".."
+        else:
+            ws = tmp_path / "ws"
+            ws.mkdir()
+            (ws / ".cursor").symlink_to(home / ".cursor")
+        assert cursor_native_bridge.write_hooks_config(ws, tmp_path / "b", home=home) is None
+        assert (home / ".cursor" / "hooks.json").read_bytes() == user_bytes
+        assert sorted(p.name for p in (home / ".cursor").iterdir()) == ["hooks.json"]
+
+    def test_write_hooks_config_skips_account_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import pwd
+
+        account_home = tmp_path / "account-home"
+        account_home.mkdir()
+        entry = types.SimpleNamespace(pw_dir=str(account_home))
+        monkeypatch.setattr(pwd, "getpwuid", lambda _uid: entry)
+        path = cursor_native_bridge.write_hooks_config(
+            account_home, tmp_path / "b", home=tmp_path / "env-home"
+        )
+        assert path is None
+        assert not (account_home / ".cursor").exists()
+
     def test_account_home_is_refused_even_when_home_env_differs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -987,3 +1322,191 @@ class TestCompletionReceiptHookGate:
             == "not_opted_in"
         )
         assert status.read_receipt_epoch(bridge) is None
+
+
+class TestCursorLaunchAdmission:
+    """Launch admission mirrors Cursor's project root and refuses the user scope."""
+
+    @staticmethod
+    def _home(tmp_path: Path) -> Path:
+        home = tmp_path / "home"
+        (home / ".cursor").mkdir(parents=True)
+        (home / ".cursor" / "mcp.json").write_text('{"mcpServers": {}}')
+        (home / ".cursor" / "hooks.json").write_text('{"version": 1}')
+        return home
+
+    def test_project_root_is_workspace_without_git(self, tmp_path: Path) -> None:
+        ws = tmp_path / "a" / "b"
+        ws.mkdir(parents=True)
+        assert cursor_native_bridge.cursor_project_root(ws) == ws
+
+    @pytest.mark.parametrize("git_kind", ["dir", "file", "symlink"])
+    def test_project_root_is_nearest_git_ancestor(self, tmp_path: Path, git_kind: str) -> None:
+        (tmp_path / ".git").mkdir()
+        repo = tmp_path / "repo"
+        ws = repo / "src" / "pkg"
+        ws.mkdir(parents=True)
+        if git_kind == "dir":
+            (repo / ".git").mkdir()
+        elif git_kind == "file":
+            (repo / ".git").write_text("gitdir: /elsewhere\n")
+        else:
+            (tmp_path / "store.git").mkdir()
+            (repo / ".git").symlink_to(tmp_path / "store.git", target_is_directory=True)
+        assert cursor_native_bridge.cursor_project_root(ws) == repo
+
+    def test_dangling_git_link_is_not_a_root(self, tmp_path: Path) -> None:
+        # cursor-agent tests ``existsSync(<dir>/.git)``, which follows the link.
+        (tmp_path / ".git").mkdir()
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / ".git").symlink_to(tmp_path / "missing")
+        assert cursor_native_bridge.cursor_project_root(ws) == tmp_path
+
+    def test_distinct_project_is_admitted(self, tmp_path: Path) -> None:
+        home = self._home(tmp_path)
+        ws = tmp_path / "project"
+        (ws / ".git").mkdir(parents=True)
+        cursor_native_bridge.check_cursor_launch_admission(ws, home=home)
+
+    def test_own_repo_inside_home_repo_is_admitted(self, tmp_path: Path) -> None:
+        home = self._home(tmp_path)
+        (home / ".git").mkdir()
+        ws = home / "code" / "app"
+        (ws / ".git").mkdir(parents=True)
+        cursor_native_bridge.check_cursor_launch_admission(ws, home=home)
+
+    def test_home_workspace_is_refused(self, tmp_path: Path) -> None:
+        home = self._home(tmp_path)
+        with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+            cursor_native_bridge.check_cursor_launch_admission(home, home=home)
+        assert refused.value.shared_scope == home
+        assert refused.value.reason == f"workspace_is_home:{home}"
+        assert refused.value.stale_omnigent_server is False
+
+    def test_hooks_only_share_is_refused(self, tmp_path: Path) -> None:
+        home = self._home(tmp_path)
+        ws = tmp_path / "project"
+        (ws / ".cursor").mkdir(parents=True)
+        (ws / ".cursor" / "hooks.json").symlink_to(home / ".cursor" / "hooks.json")
+        assert cursor_native_bridge.shared_mcp_scope_reason(ws, home=home) is None
+        with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+            cursor_native_bridge.check_cursor_launch_admission(ws, home=home)
+        assert refused.value.reason.startswith("shared_hooks_config:")
+
+    @pytest.mark.parametrize("stale", [False, True])
+    def test_folder_inside_home_repo_is_refused(self, tmp_path: Path, stale: bool) -> None:
+        import json
+
+        home = self._home(tmp_path)
+        (home / ".git").mkdir()
+        if stale:
+            config = cursor_native_bridge.build_mcp_config(tmp_path / "other-bridge")
+            (home / ".cursor" / "mcp.json").write_text(json.dumps(config))
+        ws = home / "notes"
+        ws.mkdir()
+        listing = sorted(p for p in tmp_path.rglob("*"))
+        with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+            cursor_native_bridge.check_cursor_launch_admission(ws, home=home)
+        error = refused.value
+        assert (error.workspace, error.project_root, error.shared_scope) == (ws, home, home)
+        assert error.stale_omnigent_server is stale
+        assert ("remove that entry" in error.user_message()) is stale
+        assert "other-bridge" not in error.user_message()
+        # Admission only reads.
+        assert sorted(p for p in tmp_path.rglob("*")) == listing
+
+    @pytest.mark.parametrize("depth", [1, 3])
+    def test_repo_subfolder_is_refused(self, tmp_path: Path, depth: int) -> None:
+        home = self._home(tmp_path)
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        ws = repo.joinpath(*[f"d{i}" for i in range(depth)])
+        ws.mkdir(parents=True, exist_ok=True)
+        with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+            cursor_native_bridge.check_cursor_launch_admission(ws, home=home)
+        error = refused.value
+        assert error.reason == f"workspace_not_project_root:{repo}"
+        assert (error.project_root, error.shared_scope) == (repo, repo)
+        subfolder = "/".join(f"d{i}" for i in range(depth))
+        assert error.user_message() == (
+            "Cursor can't start here. Cursor reads its project tools and hooks from "
+            f"the git repository {repo}, not from the workspace {ws}, so this session "
+            "would get no Omnigent tools of its own and could load another session's. "
+            f"Start a new session with {repo} as the workspace, and name the subfolder "
+            f"{subfolder} in your task."
+        )
+
+    def test_alias_of_repo_root_is_admitted(self, tmp_path: Path) -> None:
+        home = self._home(tmp_path)
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        (tmp_path / "links").mkdir()
+        alias = tmp_path / "links" / "repo"
+        alias.symlink_to(repo, target_is_directory=True)
+        cursor_native_bridge.check_cursor_launch_admission(alias, home=home)
+
+    def test_alias_under_a_repo_to_a_plain_folder_is_admitted(self, tmp_path: Path) -> None:
+        # Cursor resolves from its physical cwd, which is the plain folder.
+        home = self._home(tmp_path)
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        alias = repo / "linked"
+        alias.symlink_to(plain, target_is_directory=True)
+        assert cursor_native_bridge.cursor_project_root(plain) == plain
+        cursor_native_bridge.check_cursor_launch_admission(alias, home=home)
+
+    def test_alias_to_a_repo_subfolder_is_refused(self, tmp_path: Path) -> None:
+        home = self._home(tmp_path)
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        (repo / "pkg").mkdir()
+        alias = tmp_path / "pkg-link"
+        alias.symlink_to(repo / "pkg", target_is_directory=True)
+        with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+            cursor_native_bridge.check_cursor_launch_admission(alias, home=home)
+        assert refused.value.reason == f"workspace_not_project_root:{repo}"
+        assert "name the subfolder pkg in your task" in refused.value.user_message()
+
+    def test_filesystem_root_git_is_never_a_project_root(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # cursor-agent's lookup stops before testing ``/.git`` for any deeper cwd;
+        # only a cwd of ``/`` itself is its own root either way.
+        real_exists = os.path.exists
+        monkeypatch.setattr(
+            cursor_native_bridge.os.path,
+            "exists",
+            lambda p: p == "/.git" or (not str(p).startswith("/nonexistent") and real_exists(p)),
+        )
+        ws = Path("/nonexistent-omnigent-probe/a/b")
+        assert cursor_native_bridge.cursor_project_root(ws) == ws
+        assert cursor_native_bridge.cursor_project_root(Path("/")) == Path("/")
+
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            (None, False),
+            ("not json", False),
+            ('{"mcpServers": {"omnigent": {"command": "omnigent", "args": ["mcp"]}}}', False),
+            ('{"mcpServers": {"omnigent": "serve-mcp --bridge-dir x"}}', False),
+            (
+                '{"mcpServers": {"omnigent": {"command": "python", "args": '
+                '["-I", "-m", "omnigent.harnesses.claude_native.bridge", "serve-mcp", '
+                '"--bridge-dir", "/tmp/b"]}}}',
+                True,
+            ),
+        ],
+    )
+    def test_session_bound_omnigent_server_probe(
+        self, tmp_path: Path, content: str | None, expected: bool
+    ) -> None:
+        home = tmp_path / "home"
+        (home / ".cursor").mkdir(parents=True)
+        if content is not None:
+            (home / ".cursor" / "mcp.json").write_text(content)
+        assert (
+            cursor_native_bridge.user_mcp_has_session_bound_omnigent_server(home=home) is expected
+        )

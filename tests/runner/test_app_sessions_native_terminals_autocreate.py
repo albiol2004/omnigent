@@ -6,7 +6,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -49,6 +51,7 @@ from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
 from omnigent.inner.terminal import TerminalInstance
 from omnigent.runner import create_runner_app, subagent_work
 from omnigent.runner.app import (
+    NativeLaunchContext,
     ResolvedSpec,
     _agent_os_env_from_spec,
     _auto_create_claude_terminal,
@@ -57,6 +60,7 @@ from omnigent.runner.app import (
     _auto_create_pi_terminal,
     _codex_native_launch_config,
     _KiroNativeLaunchConfig,
+    _launch_native_terminal,
     _load_claude_launch_metadata,
     _log_terminal_lookup_miss,
     _PiNativeLaunchConfig,
@@ -1695,8 +1699,15 @@ async def _run_auto_create_cursor_terminal(
     terminal_launch_args: list[str] | None,
     labels: dict[str, str] | None = None,
     workspace_hooks: str | None = None,
+    prepare_workspace: Callable[[Path], None] | None = None,
+    published: list[_PublishedEvent] | None = None,
+    external_session_id: str | None = None,
 ) -> dict[str, Any]:
     """Drive ``_auto_create_cursor_terminal`` and return what it wired up.
+
+    With *published*, the launch goes through the runner's native launch
+    pipeline (``_launch_native_terminal``) instead, which records its events
+    there and its ``bool`` outcome as ``captured["result"]``.
 
     Stubs the cursor-agent binary lookup, the transcript forwarder, and the
     runner auth factory so the model-injection branch runs without a real
@@ -1716,6 +1727,8 @@ async def _run_auto_create_cursor_terminal(
     if workspace_hooks is not None:
         (workspace / ".cursor").mkdir()
         (workspace / ".cursor" / "hooks.json").write_text(workspace_hooks)
+    if prepare_workspace is not None:
+        prepare_workspace(workspace)
     monkeypatch.setattr(cursor_native_bridge, "_BRIDGE_ROOT", tmp_path / "cursor-bridge")
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://127.0.0.1:8000")
     monkeypatch.setattr(
@@ -1779,11 +1792,28 @@ async def _run_auto_create_cursor_terminal(
     }
     if labels is not None:
         snapshot["labels"] = labels
+    if external_session_id is not None:
+        snapshot["external_session_id"] = external_session_id
     fake_client = httpx.AsyncClient(
         base_url="http://test-server",
         transport=httpx.MockTransport(lambda req: httpx.Response(200, json=snapshot)),
     )
     try:
+        if published is not None:
+            captured["result"] = await _launch_native_terminal(
+                "cursor-native",
+                NativeLaunchContext(
+                    session_id="c42dbcb16fd3a87ee8f5d1fe4cabfdf8",
+                    resource_registry=_FakeResourceRegistry(),  # type: ignore[arg-type]
+                    publish_event=lambda sid, evt: published.append(
+                        _PublishedEvent(session_id=sid, event=evt)
+                    ),
+                    server_client=fake_client,
+                    agent_spec=agent_spec,
+                ),
+                ensure_locks={},
+            )
+            return captured
         await _auto_create_cursor_terminal(
             "c42dbcb16fd3a87ee8f5d1fe4cabfdf8",
             _FakeResourceRegistry(),  # type: ignore[arg-type]
@@ -4950,35 +4980,802 @@ async def test_auto_create_cursor_terminal_foreign_stop_hook_withholds_receipts(
 
 
 @pytest.mark.asyncio
-async def test_auto_create_cursor_terminal_workspace_home_alias_withholds_receipts(
+async def test_auto_create_cursor_terminal_workspace_home_alias_is_refused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """HOME reaching the workspace through a symlink still makes it the user scope."""
-    from omnigent.harnesses.cursor_native import status as cursor_native_status
-
     alias = tmp_path / "home-alias"
     alias.symlink_to(tmp_path / "ws", target_is_directory=True)
     monkeypatch.setenv("HOME", str(alias))
     monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
-    bridge_dir = tmp_path / "cursor-bridge" / "home"
-    monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
-    labels = {
-        cursor_native_status.COMPLETION_RECEIPTS_LABEL: (
-            cursor_native_status.COMPLETION_RECEIPTS_VERSION
-        )
-    }
-    with caplog.at_level("WARNING"):
+    with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
         await _run_auto_create_cursor_terminal(
             tmp_path=tmp_path,
             monkeypatch=monkeypatch,
             agent_spec=None,
             terminal_launch_args=None,
-            labels=labels,
         )
+    assert refused.value.reason.startswith("workspace_is_home:")
+    assert not (tmp_path / "cursor-bridge").exists()
+
+
+def _tree_state(root: Path) -> dict[str, tuple[object, ...]]:
+    """Every entry under *root*, links not followed: kind plus bytes, inode or target."""
+    state: dict[str, tuple[object, ...]] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in (*dirnames, *filenames):
+            path = os.path.join(dirpath, name)
+            if os.path.islink(path):
+                state[path] = ("link", os.readlink(path))
+            elif os.path.isdir(path):
+                state[path] = ("dir",)
+            else:
+                info = os.stat(path)
+                state[path] = ("file", Path(path).read_bytes(), info.st_ino, info.st_nlink)
+    return state
+
+
+def _spy_launch_writes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record every Cursor launch step that writes config or bridge state."""
+    from omnigent.harnesses.cursor_native import forwarder as cursor_native_forwarder
+
+    calls: list[str] = []
+    for module, names in (
+        (
+            cursor_native_bridge,
+            (
+                "prepare_completion_receipts",
+                "write_mcp_config",
+                "write_hooks_config",
+                "arm_completion_receipts",
+                "approve_mcp_server_for_workspace",
+                "write_fork_preamble",
+            ),
+        ),
+        (
+            cursor_native_forwarder,
+            ("clear_cursor_bridge_state", "clear_receipt_forwarder_state", "preseed_resume_state"),
+        ),
+    ):
+        for name in names:
+            real = getattr(module, name)
+
+            def _spy(*args: Any, _name: str = name, _real: Any = real, **kwargs: Any) -> Any:
+                calls.append(_name)
+                return _real(*args, **kwargs)
+
+            monkeypatch.setattr(module, name, _spy)
+    return calls
+
+
+#: A user hooks file with unrelated hooks, a foreign stop hook, an Omnigent
+#: hook for some other session and non-canonical formatting: the launch must
+#: leave every byte of it alone.
+_USER_HOOKS_BYTES = (
+    b'{ "version": 1,\n  "hooks": {"preToolUse": [{"command": "./policy.sh"}],\n'
+    b'  "stop": [{"command": "./user-stop.sh"}, {"command": '
+    b'"/usr/bin/python3 -I -m omnigent.harnesses.cursor_native.usage record-usage '
+    b'--bridge-dir /tmp/omnigent-1000/cursor-native/other"}]}}  \n'
+)
+
+
+def _link_home_into_workspace(variant: str, home: Path) -> Callable[[Path], None]:
+    """Make the launch workspace's hooks.json reach *home*'s through *variant*."""
+
+    def _prepare(ws: Path) -> None:
+        if variant == "cursor-dir-symlink":
+            (ws / ".cursor").symlink_to(home / ".cursor", target_is_directory=True)
+            return
+        (ws / ".cursor").mkdir()
+        if variant == "hooks-file-symlink":
+            (ws / ".cursor" / "hooks.json").symlink_to(home / ".cursor" / "hooks.json")
+        elif variant == "hooks-file-hardlink":
+            os.link(home / ".cursor" / "hooks.json", ws / ".cursor" / "hooks.json")
+
+    return _prepare
+
+
+@pytest.mark.parametrize("opted_in", [True, False], ids=["receipts-v1", "default"])
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "home-is-workspace",
+        "home-symlink",
+        "cursor-dir-symlink",
+        "cursor-dir-symlink-no-user-file",
+        "hooks-file-symlink",
+        "hooks-file-hardlink",
+    ],
+)
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_home_hooks_scope_is_refused_before_any_write(
+    variant: str,
+    opted_in: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A launch whose project hooks.json is the user one is refused before it writes.
+
+    The user file is shared by every Cursor session on the machine, so the
+    session could have no stop hook (usage, idle, receipts) of its own. No
+    terminal starts, and nothing under HOME, the workspace or the bridge
+    changes, including a prior epoch in the bridge.
+    """
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+    ws = tmp_path / "ws"
+    if variant == "home-is-workspace":
+        home = ws
+    elif variant == "home-symlink":
+        home = tmp_path / "home-alias"
+        home.symlink_to(ws, target_is_directory=True)
+    else:
+        home = tmp_path / "home"
+        (home / ".cursor").mkdir(parents=True)
+    user_file = home / ".cursor" / "hooks.json"
+    write_user_file = variant != "cursor-dir-symlink-no-user-file"
+    before: dict[str, tuple[object, ...]] = {}
+
+    def _prepare(workspace: Path) -> None:
+        if variant in ("home-is-workspace", "home-symlink"):
+            (workspace / ".cursor").mkdir()
+            user_file.write_bytes(_USER_HOOKS_BYTES)
+        else:
+            if write_user_file:
+                user_file.write_bytes(_USER_HOOKS_BYTES)
+            _link_home_into_workspace(variant.removesuffix("-no-user-file"), home)(workspace)
+        before.update(_tree_state(tmp_path))
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    bridge_dir = tmp_path / "cursor-bridge" / "home"
+    monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
+    cursor_native_status.write_receipt_epoch(bridge_dir, 1)
+    writes = _spy_launch_writes(monkeypatch)
+    labels = (
+        {
+            cursor_native_status.COMPLETION_RECEIPTS_LABEL: (
+                cursor_native_status.COMPLETION_RECEIPTS_VERSION
+            )
+        }
+        if opted_in
+        else {}
+    )
+    captured: dict[str, Any] = {}
+    with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+        captured = await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+            labels=labels,
+            prepare_workspace=_prepare,
+        )
+
+    assert "spec" not in captured
+    assert writes == []
+    assert _tree_state(tmp_path) == before
+    assert refused.value.reason.startswith(("workspace_is_home:", "shared_hooks_config:"))
+    assert _HOME_REMEDY in refused.value.user_message()
+
+
+@pytest.mark.parametrize("opted_in", [True, False], ids=["receipts-v1", "default"])
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_distinct_project_gets_own_bound_stop_hook(
+    opted_in: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A project apart from HOME gets this launch's hook; the user file is untouched."""
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+    home = tmp_path / "home"
+    (home / ".cursor").mkdir(parents=True)
+    user_bytes = b'{"version": 1, "hooks": {"preToolUse": [{"command": "./policy.sh"}]}}\n'
+    (home / ".cursor" / "hooks.json").write_bytes(user_bytes)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    bridge_dir = tmp_path / "cursor-bridge" / "project"
+    monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
+    labels = (
+        {
+            cursor_native_status.COMPLETION_RECEIPTS_LABEL: (
+                cursor_native_status.COMPLETION_RECEIPTS_VERSION
+            )
+        }
+        if opted_in
+        else {}
+    )
+    await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=None,
+        labels=labels,
+    )
+    assert (home / ".cursor" / "hooks.json").read_bytes() == user_bytes
+    written = json.loads((tmp_path / "ws" / ".cursor" / "hooks.json").read_text())
+    commands = [entry["command"] for entry in written["hooks"]["stop"]]
+    assert len(commands) == 1
+    assert cursor_native_bridge._owned_hook_bridge(commands[0]) == str(bridge_dir)
+    epoch = cursor_native_status.read_receipt_epoch(bridge_dir)
+    if opted_in:
+        assert epoch is not None
+    else:
+        assert epoch is None
+
+
+#: A user MCP file with unrelated servers (one with a secret-shaped env) and
+#: non-canonical formatting: a launch must leave every byte of it alone.
+_USER_MCP_BYTES = (
+    b'{ "mcpServers": {"github": {"command": "gh-mcp", "env": {"GH_TOKEN": "x"}},\n'
+    b'  "railway": {"url": "https://example.invalid/mcp"}}}  \n'
+)
+_USER_CLI_CONFIG_BYTES = b'{"permissions": {"allow": ["Shell(ls)"]}}\n'
+
+
+def _spy_mcp_approvals(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record ``cursor-agent mcp enable omnigent`` runs instead of spawning Cursor."""
+    approved: list[Path] = []
+    monkeypatch.setattr(cursor_native_bridge, "approve_mcp_server_for_workspace", approved.append)
+    return approved
+
+
+#: A user MCP file with unrelated servers (one with a secret-shaped env) and
+#: non-canonical formatting: a launch must leave every byte of it alone.
+_USER_MCP_BYTES = (
+    b'{ "mcpServers": {"github": {"command": "gh-mcp", "env": {"GH_TOKEN": "x"}},\n'
+    b'  "railway": {"url": "https://example.invalid/mcp"}}}  \n'
+)
+_USER_CLI_CONFIG_BYTES = b'{"permissions": {"allow": ["Shell(ls)"]}}\n'
+_RESUME_CHAT_ID = "0b6f7c1e-4a53-4d0e-9a53-3f1d2c4b5a69"
+_HOME_REMEDY = (
+    "whose workspace is the root folder of a git repository other than your home "
+    "folder, or a folder that is not inside any git repository"
+)
+
+
+def _spy_mcp_approvals(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record ``cursor-agent mcp enable omnigent`` runs instead of spawning Cursor."""
+    approved: list[Path] = []
+    monkeypatch.setattr(cursor_native_bridge, "approve_mcp_server_for_workspace", approved.append)
+    return approved
+
+
+def _stale_user_mcp_bytes(tmp_path: Path) -> bytes:
+    """A user mcp.json holding another session's ``omnigent`` server and a secret env."""
+    stale = cursor_native_bridge.build_mcp_config(tmp_path / "OTHER-SESSION-BRIDGE")
+    stale["mcpServers"]["github"] = {"command": "gh-mcp", "env": {"GH_TOKEN": "x"}}  # type: ignore[index]
+    return json.dumps(stale).encode()
+
+
+def _assert_no_config_contents(message: str) -> None:
+    """The refusal names paths only, never what the user's config files hold."""
+    for secret in ("OTHER-SESSION-BRIDGE", "GH_TOKEN", "gh-mcp", "serve-mcp", "example.invalid"):
+        assert secret not in message
+
+
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "resume"])
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "home-is-workspace",
+        "home-symlink",
+        "cursor-dir-symlink",
+        "dangling-cursor-dir-symlink",
+        "mcp-file-symlink",
+        "mcp-file-hardlink",
+        "dotfiles-shared-target",
+        "stale-omnigent-entry",
+    ],
+)
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_home_mcp_scope_is_refused_before_any_write(
+    variant: str,
+    resume: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A launch whose project mcp.json is the user one is refused, new or resumed.
+
+    Cursor has no per-session MCP config there: the session would have no
+    Omnigent tools, and would load (and ``--approve-mcps``) any ``omnigent``
+    server another session left in the user file. No terminal starts, nothing
+    is written or approved, and the message says what to do instead.
+    """
+    ws = tmp_path / "ws"
+    home = tmp_path / "home"
+    user_bytes = _USER_MCP_BYTES
+    if variant in ("home-is-workspace", "stale-omnigent-entry"):
+        home = ws
+    elif variant == "home-symlink":
+        home = tmp_path / "home-alias"
+        home.symlink_to(ws, target_is_directory=True)
+    elif variant != "dangling-cursor-dir-symlink":
+        (home / ".cursor").mkdir(parents=True)
+    else:
+        home.mkdir()
+    if variant == "stale-omnigent-entry":
+        user_bytes = _stale_user_mcp_bytes(tmp_path)
+    user_file = home / ".cursor" / "mcp.json"
+    dotfile = tmp_path / "dotfiles" / "mcp.json"
+    before: dict[str, tuple[object, ...]] = {}
+
+    def _prepare(workspace: Path) -> None:
+        if variant in ("home-is-workspace", "home-symlink", "stale-omnigent-entry"):
+            (workspace / ".cursor").mkdir()
+            user_file.write_bytes(user_bytes)
+        elif variant in ("cursor-dir-symlink", "dangling-cursor-dir-symlink"):
+            if variant == "cursor-dir-symlink":
+                user_file.write_bytes(user_bytes)
+            (workspace / ".cursor").symlink_to(home / ".cursor", target_is_directory=True)
+        else:
+            (workspace / ".cursor").mkdir()
+            project_file = workspace / ".cursor" / "mcp.json"
+            if variant == "dotfiles-shared-target":
+                dotfile.parent.mkdir()
+                dotfile.write_bytes(user_bytes)
+                user_file.symlink_to(dotfile)
+                project_file.symlink_to(dotfile)
+            else:
+                user_file.write_bytes(user_bytes)
+                if variant == "mcp-file-symlink":
+                    project_file.symlink_to(user_file)
+                else:
+                    os.link(user_file, project_file)
+        if (home / ".cursor").is_dir():
+            (home / ".cursor" / "cli-config.json").write_bytes(_USER_CLI_CONFIG_BYTES)
+        before.update(_tree_state(tmp_path))
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    bridge_dir = tmp_path / "cursor-bridge" / "home"
+    monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
+    writes = _spy_launch_writes(monkeypatch)
+    captured: dict[str, Any] = {}
+    with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+        captured = await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+            prepare_workspace=_prepare,
+            external_session_id=_RESUME_CHAT_ID if resume else None,
+        )
+
+    # No terminal, no launch step, and not one byte, link or inode changed.
+    assert "spec" not in captured
+    assert writes == []
+    assert _tree_state(tmp_path) == before
+    assert not bridge_dir.exists()
+    error = refused.value
+    assert error.reason.startswith(("workspace_is_home:", "shared_mcp_config:"))
+    assert error.shared_scope == error.workspace == Path(os.path.realpath(ws))
+    message = error.user_message()
+    assert message.startswith(f"Cursor can't start here. The workspace {error.workspace} is ")
+    assert _HOME_REMEDY in message
+    stale_sentence = "has an 'omnigent' server left by an earlier session; remove that entry."
+    assert (stale_sentence in message) == (variant == "stale-omnigent-entry")
+    _assert_no_config_contents(message)
+
+
+def _home_git_repo_prepare(
+    home: Path, git_kind: str, user_bytes: bytes, before: dict[str, tuple[object, ...]]
+) -> Callable[[Path], None]:
+    """HOME is a git repository (``.git`` as *git_kind*) and the workspace sits inside it."""
+
+    def _prepare(workspace: Path) -> None:
+        if git_kind == "dir":
+            (home / ".git").mkdir()
+        elif git_kind == "file":
+            (home / ".git").write_text("gitdir: /elsewhere/.git/worktrees/home\n")
+        elif git_kind == "symlink":
+            (home / "dotfiles.git").mkdir()
+            (home / ".git").symlink_to(home / "dotfiles.git", target_is_directory=True)
+        else:
+            (home / ".git").symlink_to(home / "missing.git")
+        (home / ".cursor").mkdir()
+        (home / ".cursor" / "mcp.json").write_bytes(user_bytes)
+        (home / ".cursor" / "cli-config.json").write_bytes(_USER_CLI_CONFIG_BYTES)
+        (workspace / ".cursor").mkdir()
+        (workspace / ".cursor" / "mcp.json").write_bytes(b'{"mcpServers": {"local": {}}}')
+        before.update(_tree_state(home))
+
+    return _prepare
+
+
+@pytest.mark.parametrize("stale", [False, True], ids=["clean", "stale-omnigent-entry"])
+@pytest.mark.parametrize("git_kind", ["dir", "file", "symlink"])
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_refuses_workspace_inside_home_git_repo(
+    git_kind: str,
+    stale: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A folder under a HOME git repository is refused: Cursor's project root is HOME.
+
+    cursor-agent reads project config from the nearest ``.git`` ancestor, so it
+    would load the user ~/.cursor/mcp.json as the project file and never the
+    workspace's own. Nothing under HOME, the workspace included, is written.
+    """
+    home = tmp_path
+    user_bytes = _stale_user_mcp_bytes(tmp_path) if stale else _USER_MCP_BYTES
+    before: dict[str, tuple[object, ...]] = {}
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    writes = _spy_launch_writes(monkeypatch)
+    captured: dict[str, Any] = {}
+    with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+        captured = await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+            prepare_workspace=_home_git_repo_prepare(home, git_kind, user_bytes, before),
+        )
+
+    assert "spec" not in captured
+    assert writes == []
+    assert _tree_state(home) == before
+    error = refused.value
+    ws = Path(os.path.realpath(tmp_path / "ws"))
+    assert error.workspace == ws
+    assert error.project_root == error.shared_scope == Path(os.path.realpath(home))
+    assert error.reason.startswith("workspace_is_home:")
+    message = error.user_message()
+    assert (
+        f"The workspace {ws} is inside the git repository {error.project_root}, which "
+        "Cursor uses as its project folder. That folder is your home folder"
+    ) in message
+    assert ("left by an earlier session; remove that entry." in message) == stale
+    _assert_no_config_contents(message)
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_dangling_home_git_link_is_not_a_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``.git`` link to nothing is no git root for Cursor, so the workspace is the project."""
+    home = tmp_path
+    before: dict[str, tuple[object, ...]] = {}
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    approved = _spy_mcp_approvals(monkeypatch)
+    captured = await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=None,
+        prepare_workspace=_home_git_repo_prepare(home, "dangling", _USER_MCP_BYTES, before),
+    )
+    assert captured["spec"].command == "cursor-agent"
+    assert (home / ".cursor" / "mcp.json").read_bytes() == _USER_MCP_BYTES
+    ws = Path(os.path.realpath(tmp_path / "ws"))
+    servers = json.loads((ws / ".cursor" / "mcp.json").read_text())["mcpServers"]
+    assert set(servers) == {"local", "omnigent"}
+    assert approved == [ws]
+
+
+@pytest.mark.parametrize("layout", ["own-repo-inside-home-repo", "plain-folder", "repo-root"])
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_project_launch_keeps_own_tools(
+    layout: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Launches where the workspace is Cursor's project root are wired exactly as before.
+
+    Covers a repository root, a folder in no repository, and a repository nested
+    in a HOME dotfiles repository (its own ``.git`` is the nearer root).
+    """
+    home = tmp_path / "home"
+    ws = tmp_path / "ws"
+    if layout == "own-repo-inside-home-repo":
+        home = tmp_path
+
+    def _prepare(workspace: Path) -> None:
+        if layout == "own-repo-inside-home-repo":
+            (home / ".git").mkdir()
+        if layout != "plain-folder":
+            (workspace / ".git").mkdir()
+        (home / ".cursor").mkdir(parents=True, exist_ok=True)
+        (home / ".cursor" / "mcp.json").write_bytes(_USER_MCP_BYTES)
+        (workspace / ".cursor").mkdir()
+        (workspace / ".cursor" / "mcp.json").write_bytes(b'{"mcpServers": {"local": {}}}')
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    bridge_dir = tmp_path / "cursor-bridge" / "project"
+    monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
+    approved = _spy_mcp_approvals(monkeypatch)
+    captured = await _run_auto_create_cursor_terminal(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        agent_spec=None,
+        terminal_launch_args=None,
+        prepare_workspace=_prepare,
+    )
+    assert captured["spec"].command == "cursor-agent"
+    assert "--approve-mcps" in captured["spec"].args
+    # The user file keeps its unrelated servers byte for byte.
+    assert (home / ".cursor" / "mcp.json").read_bytes() == _USER_MCP_BYTES
+    real_ws = Path(os.path.realpath(ws))
+    servers = json.loads((real_ws / ".cursor" / "mcp.json").read_text())["mcpServers"]
+    assert servers["local"] == {}
+    assert servers["omnigent"]["args"][-2:] == ["--bridge-dir", str(bridge_dir)]
+    assert approved == [real_ws]
+    hooks = json.loads((real_ws / ".cursor" / "hooks.json").read_text())["hooks"]["stop"]
+    assert cursor_native_bridge._owned_hook_bridge(hooks[0]["command"]) == str(bridge_dir)
+
+
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "resume"])
+@pytest.mark.parametrize("user_entry", ["absent", "stale"])
+@pytest.mark.parametrize(
+    "case", ["repo-subfolder", "own-repo-subfolder-in-home-repo", "subfolder-after-root-session"]
+)
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_refuses_repo_subfolder_before_any_write(
+    case: str,
+    user_entry: str,
+    resume: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A workspace below its git root is refused: Cursor reads the root's config.
+
+    The launch's own ``<ws>/.cursor`` files would never be read, so the session
+    would have no Omnigent tools, could load the user file's leftover server or
+    an earlier root session's server and stop hook, and would arm receipts its
+    own hook can never deliver. Nothing is written, approved or launched.
+    """
+    from omnigent.harnesses.cursor_native import status as cursor_native_status
+
+    if case == "own-repo-subfolder-in-home-repo":
+        home = tmp_path
+        repo = tmp_path / "code" / "app"
+    else:
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+    launch_dir = repo / "packages"
+    launch_dir.mkdir(parents=True)
+    (home / ".cursor").mkdir(parents=True, exist_ok=True)
+    if case == "own-repo-subfolder-in-home-repo":
+        (home / ".git").mkdir()
+    (repo / ".git").mkdir()
+    if user_entry == "stale":
+        (home / ".cursor" / "mcp.json").write_bytes(_stale_user_mcp_bytes(tmp_path))
+    if case == "subfolder-after-root-session":
+        # Session A launched at the repo root left its own server and stop hook there.
+        root_session = tmp_path / "ROOT-SESSION-BRIDGE"
+        (repo / ".cursor").mkdir()
+        (repo / ".cursor" / "mcp.json").write_text(
+            json.dumps(cursor_native_bridge.build_mcp_config(root_session))
+        )
+        (repo / ".cursor" / "hooks.json").write_text(
+            json.dumps(cursor_native_bridge.build_hooks_config(root_session))
+        )
+    before: dict[str, tuple[object, ...]] = {}
+
+    def _prepare(workspace: Path) -> None:
+        (workspace / ".cursor").mkdir()
+        (workspace / ".cursor" / "mcp.json").write_bytes(b'{"mcpServers": {"local": {}}}')
+        before.update(_tree_state(tmp_path))
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    # Under the launch's bridge root, so a launch that is not refused runs to completion.
+    bridge_dir = launch_dir / "cursor-bridge" / "b"
+    monkeypatch.setattr(cursor_native_bridge, "bridge_dir_for_session_id", lambda _sid: bridge_dir)
+    writes = _spy_launch_writes(monkeypatch)
+    labels = {
+        cursor_native_status.COMPLETION_RECEIPTS_LABEL: (
+            cursor_native_status.COMPLETION_RECEIPTS_VERSION
+        )
+    }
+    captured: dict[str, Any] = {}
+    with pytest.raises(cursor_native_bridge.CursorSharedWorkspaceError) as refused:
+        captured = await _run_auto_create_cursor_terminal(
+            tmp_path=launch_dir,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+            labels=labels,
+            prepare_workspace=_prepare,
+            external_session_id=_RESUME_CHAT_ID if resume else None,
+        )
+
+    # No terminal, no launch step, not one byte changed, and no receipt epoch.
+    assert "spec" not in captured
+    assert writes == []
+    assert _tree_state(tmp_path) == before
+    assert not bridge_dir.exists()
     assert cursor_native_status.read_receipt_epoch(bridge_dir) is None
-    assert "completion receipts disabled for this launch (workspace_is_home:" in caplog.text
+    error = refused.value
+    real_repo = Path(os.path.realpath(repo))
+    ws = Path(os.path.realpath(launch_dir / "ws"))
+    assert error.reason == f"workspace_not_project_root:{real_repo}"
+    assert error.project_root == error.shared_scope == real_repo
+    message = error.user_message()
+    assert message.startswith(
+        f"Cursor can't start here. Cursor reads its project tools and hooks from the "
+        f"git repository {real_repo}, not from the workspace {ws}, so this session "
+        "would get no Omnigent tools of its own and could load another session's. "
+        f"Start a new session with {real_repo} as the workspace, and name the "
+        "subfolder packages/ws in your task."
+    )
+    assert ("left by an earlier session; remove that entry." in message) == (user_entry == "stale")
+    _assert_no_config_contents(message)
+    assert "ROOT-SESSION-BRIDGE" not in message
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_home_refusal_reaches_failed_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Through the runner launch pipeline a HOME refusal is a visible failed session.
+
+    The status carries the actionable message (not a runner-log pointer),
+    including the stale-server cleanup hint, and never the config contents.
+    """
+    home = tmp_path / "ws"
+    user_bytes = _stale_user_mcp_bytes(tmp_path)
+    before: dict[str, tuple[object, ...]] = {}
+
+    def _prepare(workspace: Path) -> None:
+        (workspace / ".cursor").mkdir()
+        (workspace / ".cursor" / "mcp.json").write_bytes(user_bytes)
+        before.update(_tree_state(tmp_path))
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    writes = _spy_launch_writes(monkeypatch)
+    published: list[_PublishedEvent] = []
+    with caplog.at_level(logging.WARNING):
+        captured = await _run_auto_create_cursor_terminal(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            agent_spec=None,
+            terminal_launch_args=None,
+            prepare_workspace=_prepare,
+            published=published,
+        )
+
+    assert captured["result"] is False
+    assert "spec" not in captured
+    assert writes == []
+    assert _tree_state(tmp_path) == before
+    events = [p.event for p in published]
+    assert events[0] == {"type": "session.terminal_pending", "pending": True}
+    assert events[-1] == {"type": "session.terminal_pending", "pending": False}
+    (status,) = [e for e in events if e["type"] == "session.status"]
+    assert status["status"] == "failed"
+    error = status["error"]
+    assert error["code"] == "native_terminal_start_failed"
+    ws = os.path.realpath(home)
+    assert error["message"] == (
+        f"Cursor can't start here. The workspace {ws} is your home folder or shares "
+        "its ~/.cursor config, so Cursor would share its tool and hook config with "
+        "every other Cursor session on this machine. Start a new session whose "
+        "workspace is the root folder of a git repository other than your home "
+        "folder, or a folder that is not inside any git repository, and name any "
+        "subfolder you want to work in in your task. Your ~/.cursor/mcp.json also "
+        "has an 'omnigent' server left by an earlier session; remove that entry. "
+        f"Error ID: {error['error_id']}."
+    )
+    assert "see the runner log" not in error["message"]
+    _assert_no_config_contents(error["message"])
+    assert error["error_id"] in caplog.text
+    assert "OTHER-SESSION-BRIDGE" not in caplog.text
+
+
+def test_native_terminal_ensure_response_carries_cursor_refusal() -> None:
+    """The HTTP ensure path answers a refusal with the same actionable message."""
+    from omnigent.runner.native.orchestration import _native_terminal_start_error_response
+
+    error = cursor_native_bridge.CursorSharedWorkspaceError(
+        workspace=Path("/home/u/notes"),
+        project_root=Path("/home/u"),
+        shared_scope=Path("/home/u"),
+        reason="workspace_is_home:/home/u",
+        stale_omnigent_server=False,
+    )
+    response = _native_terminal_start_error_response(
+        error, "Cursor", session_id="sess-cursor-refusal"
+    )
+    assert response.status_code == 500
+    payload = json.loads(bytes(response.body))["error"]
+    assert payload["code"] == "native_terminal_start_failed"
+    assert payload["message"].startswith(
+        "Cursor can't start here. The workspace /home/u/notes is inside the git "
+        "repository /home/u, which Cursor uses as its project folder."
+    )
+    assert "remove that entry" not in payload["message"]
+
+    subfolder_error = cursor_native_bridge.CursorSharedWorkspaceError(
+        workspace=Path("/src/repo/pkg"),
+        project_root=Path("/src/repo"),
+        shared_scope=Path("/src/repo"),
+        reason="workspace_not_project_root:/src/repo",
+        stale_omnigent_server=True,
+    )
+    response = _native_terminal_start_error_response(
+        subfolder_error, "Cursor", session_id="sess-cursor-refusal"
+    )
+    message = json.loads(bytes(response.body))["error"]["message"]
+    assert message.startswith(
+        "Cursor can't start here. Cursor reads its project tools and hooks from the git "
+        "repository /src/repo, not from the workspace /src/repo/pkg"
+    )
+    assert "Start a new session with /src/repo as the workspace" in message
+    assert "remove that entry" in message
+
+
+@pytest.mark.asyncio
+async def test_auto_create_cursor_terminal_home_then_projects_keep_sessions_apart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HOME session A is refused; project sessions B and C each keep their own bridge.
+
+    A leaves the user file byte-identical; B and C each get exactly their own
+    bridge in their own project file, with the project's other servers kept.
+    """
+    home = tmp_path / "a" / "ws"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cursor_native_bridge, "_SYSTEM_HOOKS_PATHS", (), raising=False)
+    approved = _spy_mcp_approvals(monkeypatch)
+    project_bytes = b'{"mcpServers": {"local": {"command": "./srv"}}}'
+
+    def _home_prepare(workspace: Path) -> None:
+        (workspace / ".cursor").mkdir()
+        (workspace / ".cursor" / "mcp.json").write_bytes(_USER_MCP_BYTES)
+
+    def _project_prepare(workspace: Path) -> None:
+        (workspace / ".cursor").mkdir()
+        (workspace / ".cursor" / "mcp.json").write_bytes(project_bytes)
+
+    bridges: dict[str, Path] = {}
+    launched: dict[str, bool] = {}
+    for name, prepare in (("a", _home_prepare), ("b", _project_prepare), ("c", _project_prepare)):
+        root = tmp_path / name
+        root.mkdir(exist_ok=True)
+        bridges[name] = root / "cursor-bridge" / name
+        monkeypatch.setattr(
+            cursor_native_bridge,
+            "bridge_dir_for_session_id",
+            lambda _sid, bridge=bridges[name]: bridge,
+        )
+        try:
+            captured = await _run_auto_create_cursor_terminal(
+                tmp_path=root,
+                monkeypatch=monkeypatch,
+                agent_spec=None,
+                terminal_launch_args=None,
+                prepare_workspace=prepare,
+            )
+        except cursor_native_bridge.CursorSharedWorkspaceError:
+            launched[name] = False
+        else:
+            launched[name] = captured["spec"].command == "cursor-agent"
+
+    assert launched == {"a": False, "b": True, "c": True}
+    assert not bridges["a"].exists()
+    assert (home / ".cursor" / "mcp.json").read_bytes() == _USER_MCP_BYTES
+    for name in ("b", "c"):
+        servers = json.loads((tmp_path / name / "ws" / ".cursor" / "mcp.json").read_text())[
+            "mcpServers"
+        ]
+        assert servers["local"] == {"command": "./srv"}
+        assert servers["omnigent"]["args"][-2:] == ["--bridge-dir", str(bridges[name])]
+    assert approved == [
+        Path(os.path.realpath(tmp_path / "b" / "ws")),
+        Path(os.path.realpath(tmp_path / "c" / "ws")),
+    ]
 
 
 @pytest.mark.asyncio

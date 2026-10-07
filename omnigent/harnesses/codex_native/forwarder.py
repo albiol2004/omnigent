@@ -53,6 +53,9 @@ from omnigent.harnesses.codex_native.elicitation import (
 from omnigent.harnesses.codex_native.elicitation import (
     is_codex_request_id as _is_codex_request_id,
 )
+from omnigent.harnesses.codex_native.manual_compact import (
+    observe_codex_manual_compact_event,
+)
 from omnigent.native._native_forwarder_health import (
     note_post_success as note_native_post_success,
 )
@@ -2198,6 +2201,8 @@ async def supervise_forwarder(
                         parent_thread_id=target.thread_id,
                         event=event,
                     )
+                    # Live events only (not resume replay): settle manual compactions.
+                    observe_codex_manual_compact_event(event)
                     await _handle_event(
                         ap_client,
                         session_id=target.session_id,
@@ -3864,9 +3869,15 @@ async def _handle_terminal_turn_boundary_inner(
     # Safety net: if a compaction was reported in progress but Codex never
     # emitted a completion signal we recognize (e.g. a protocol-spelling
     # drift), force the spinner closed at the turn boundary so it can't hang.
+    # A failed or interrupted turn did not compact, so it must not read as done.
     if forwarder_state is not None and forwarder_state.compaction_status_posted == "in_progress":
         await _post_compaction_status(
-            client, session_id, "completed", forwarder_state=forwarder_state
+            client,
+            session_id,
+            "failed"
+            if method == "turn/failed" or _turn_ended_without_success(params)
+            else "completed",
+            forwarder_state=forwarder_state,
         )
     await _maybe_persist_interrupted_partial_text(
         client,
@@ -4913,6 +4924,19 @@ def _turn_status_is_failed(params: _JsonObject) -> bool:
     if isinstance(status, dict):
         status = status.get("type") or status.get("status")
     return status in {"failed", "errored"}
+
+
+def _turn_ended_without_success(params: _JsonObject) -> bool:
+    """
+    Report whether a terminal turn failed or was interrupted.
+
+    :param params: Codex ``turn/completed`` / ``turn/failed`` params.
+    :returns: ``True`` for a ``failed``/``errored``/``interrupted`` status.
+    """
+    if _turn_status_is_failed(params):
+        return True
+    turn = params.get("turn")
+    return isinstance(turn, dict) and turn.get("status") == "interrupted"
 
 
 def _turn_items_are_empty(params: _JsonObject) -> bool:

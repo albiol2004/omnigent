@@ -1310,31 +1310,86 @@ def build_native_controls(
         return Response(status_code=200)
 
     async def _handle_codex_native_compact(conv_id: str) -> Response:
-        registry = resource_registry.terminal_registry
-        instance = registry.get(conv_id, "codex", "main") if registry is not None else None
-        if instance is None or not instance.running:
+        # Compaction goes through the app-server RPC, never tmux keystrokes.
+        # 200 means Codex *accepted* the request; completion arrives later on
+        # the forwarder's stream and is awaited in the background.
+        from omnigent.harnesses.codex_native.manual_compact import (
+            CodexCompactState,
+            start_codex_manual_compact,
+        )
+
+        state = await _codex_native_bridge_state_for_session(conv_id, action="compact")
+        if state is None:
             return JSONResponse(
                 status_code=503,
                 content={
-                    "error": "codex_native_compact_failed",
-                    "detail": "Codex terminal is not running; reconnect first.",
+                    "error": "codex_native_compact_unavailable",
+                    "state": CodexCompactState.DISCONNECTED.value,
+                    "detail": "Codex app-server is not connected; reconnect first.",
                 },
             )
-
-        socket_path = str(instance.socket_path)
-        target = instance.tmux_target
-
-        try:
-            await asyncio.to_thread(_inject_codex_compact, socket_path, target)
-        except (RuntimeError, ValueError) as exc:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": "codex_native_compact_failed",
-                    "detail": _client_safe_error_detail(exc, context="codex-native compact"),
-                },
+        outcome, entry = await start_codex_manual_compact(
+            session_id=conv_id,
+            thread_id=state.thread_id,
+            transport=state.socket_path,
+            active_turn_id=state.active_turn_id,
+        )
+        _logger.info(
+            "Codex-native compact for session=%s: %s",
+            conv_id,
+            outcome.as_payload(),
+            extra={"session_id": conv_id},
+        )
+        if entry is not None:
+            task = asyncio.create_task(
+                _await_codex_native_compact_completion(conv_id, entry),
+                name=f"codex-native-compact-{conv_id}",
             )
-        return Response(status_code=200)
+            task.add_done_callback(_background_tasks.discard)
+            _background_tasks.add(task)
+        if outcome.state is CodexCompactState.ACCEPTED:
+            return JSONResponse(status_code=200, content={"compaction": outcome.as_payload()})
+        status_code, error = {
+            CodexCompactState.BUSY: (409, "codex_native_compact_busy"),
+            CodexCompactState.DISCONNECTED: (503, "codex_native_compact_unavailable"),
+            CodexCompactState.REJECTED: (502, "codex_native_compact_rejected"),
+            CodexCompactState.UNCERTAIN: (504, "codex_native_compact_uncertain"),
+        }.get(outcome.state, (500, "codex_native_compact_failed"))
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "error": error,
+                "state": outcome.state.value,
+                "detail": outcome.detail,
+                "compaction": outcome.as_payload(),
+            },
+        )
+
+    async def _await_codex_native_compact_completion(conv_id: str, entry: Any) -> None:
+        from omnigent.harnesses.codex_native.manual_compact import (
+            CodexCompactState,
+            await_codex_manual_compact,
+        )
+
+        outcome = await await_codex_manual_compact(entry)
+        if outcome.state is CodexCompactState.COMPLETED:
+            # The forwarder already published completion and persisted the item.
+            _logger.info(
+                "Codex-native compact completed for session=%s: %s",
+                conv_id,
+                outcome.as_payload(),
+                extra={"session_id": conv_id},
+            )
+            return
+        _logger.warning(
+            "Codex-native compact did not confirm completion for session=%s: %s",
+            conv_id,
+            outcome.as_payload(),
+            extra={"session_id": conv_id},
+        )
+        if outcome.state is CodexCompactState.FAILED or entry.item_started:
+            # Clear any "Compacting…" spinner; nothing claims completion.
+            _publish_event(conv_id, {"type": "response.compaction.failed", "task_id": conv_id})
 
     async def _handle_opencode_native_compact(conv_id: str) -> Response:
         from omnigent.harnesses.opencode_native.bridge import (
@@ -1538,17 +1593,6 @@ def build_native_controls(
                 },
             )
         return Response(status_code=200)
-
-    def _inject_codex_compact(socket_path: str, target: str) -> None:
-        # Typing "/compact" opens Codex's slash-command popup, which draws
-        # asynchronously: an Enter sent back-to-back is swallowed by the
-        # still-opening popup and the command never submits, so settle first.
-        from omnigent.harnesses.claude_native.bridge import _run_tmux
-
-        _run_tmux(socket_path, "send-keys", "-t", target, "C-u")
-        _run_tmux(socket_path, "send-keys", "-l", "-t", target, "/compact")
-        time.sleep(_CODEX_POPUP_RENDER_S)
-        _run_tmux(socket_path, "send-keys", "-t", target, "Enter")
 
     def _inject_codex_permission_mode(
         socket_path: str,

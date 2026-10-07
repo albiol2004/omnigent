@@ -24,7 +24,19 @@ Config JSON (``--cfg``): ``{"turn_s": float, "turn_s_by_prefix": {prefix: s},
   end the TUI reads the ``stop`` entries of ``<workspace>/.cursor/hooks.json``
   then ``$HOME/.cursor/hooks.json``, runs each through ``/bin/sh -c`` with the
   payload on stdin, and queues any ``followup_message`` one answers. Real
-  cursor's load/merge/reload rules are not modelled beyond that.
+  cursor's load/merge/reload rules are not modelled beyond that;
+* ``"cold_start_s": s`` models the live cold-start race: for ``s`` seconds after
+  launch the placeholder is already painted but the key handler is not wired, so
+  Backspace/DEL bytes are kept as literal (invisible) composer text, and with
+  ``"cold_start_paste": "drop"`` pasted text is lost (default ``"keep"``). While
+  cold, a boot line ticks every 0.1s unless ``"cold_start_ticker": false`` (a
+  static pane that no pane check can tell from ready);
+* ``"bracketed_paste": true`` enables bracketed-paste mode like cursor does, so
+  a paste stays in the composer until Enter (without it tmux pastes raw text
+  and the payload's trailing CR submits it);
+* ``"busy_ticker": true`` re-renders a ticking footer while a turn runs, so the
+  pane never settles mid-turn (as while cursor streams output).
+Every stdin read is logged as ``{"ev": "input", "n", "dels", "cold"}``.
 Events are appended to ``--log`` as JSONL for assertions.
 """
 
@@ -67,6 +79,11 @@ class Tui:
         self.wake = threading.Event()
         self.lines: list[str] = []
         self.store: sqlite3.Connection | None = None
+        self.t0 = time.monotonic()
+        self.cold_until = self.t0 + float(self.cfg.get("cold_start_s", 0.0))
+
+    def cold(self) -> bool:
+        return time.monotonic() < self.cold_until
 
     # ---------------------------------------------------------------- output
     def log(self, **event: object) -> None:
@@ -78,9 +95,17 @@ class Tui:
         with self.lock:
             out = ["\x1b[2J\x1b[H"]
             out += [line[:150] + "\r\n" for line in self.lines[-20:]]
+            tick = int((time.monotonic() - self.t0) * 10)
+            if self.cold() and self.cfg.get("cold_start_ticker", True):
+                out.append(f"starting {tick}\r\n")
             state = "Generating..." if self.busy else "idle"
+            if self.busy and self.cfg.get("busy_ticker"):
+                state += f" {tick}"
             out.append(f"[{state}] queued={len(self.queue)}\r\n")
-            shown = self.composer.replace("\n", " ")
+            # Like cursor: control bytes (incl. a literal DEL) are not rendered.
+            shown = "".join(
+                " " if ch in "\r\n" else ch for ch in self.composer if ch >= " " and ch != "\x7f"
+            )
             out.append("> " + (shown if shown else "Add a follow-up") + "\r\n")
         sys.stdout.write("".join(out))
         sys.stdout.flush()
@@ -232,6 +257,18 @@ class Tui:
                 )
             self.render()
 
+    def ticker(self) -> None:
+        was_cold = self.cold()
+        while True:
+            time.sleep(0.1)
+            cold = self.cold()
+            ticking = (cold and self.cfg.get("cold_start_ticker", True)) or (
+                self.busy and self.cfg.get("busy_ticker")
+            )
+            if ticking or (was_cold and not cold):
+                self.render()
+            was_cold = cold
+
     # ------------------------------------------------------------------ input
     def input_loop(self) -> None:
         fd = sys.stdin.fileno()
@@ -244,14 +281,18 @@ class Tui:
                 if not chunk:
                     return
                 buf += chunk
+                self.log(ev="input", n=len(chunk), dels=chunk.count(b"\x7f"), cold=self.cold())
             while buf:
                 if in_paste:
+                    keep = not (self.cold() and self.cfg.get("cold_start_paste") == "drop")
                     end = buf.find(PASTE_END)
                     if end < 0:
-                        self.composer += buf.decode("utf-8", "replace")
+                        if keep:
+                            self.composer += buf.decode("utf-8", "replace")
                         buf = b""
                         break
-                    self.composer += buf[:end].decode("utf-8", "replace")
+                    if keep:
+                        self.composer += buf[:end].decode("utf-8", "replace")
                     buf = buf[end + len(PASTE_END) :]
                     in_paste = False
                     continue
@@ -275,6 +316,8 @@ class Tui:
                     self.composer = ""
                     if text:
                         self.submit(text, "pane")
+                elif ch in (b"\x7f", b"\x08") and self.cold():
+                    self.composer += "\x7f"  # not wired yet: taken as text
                 elif ch in (b"\x7f", b"\x08"):
                     self.composer = self.composer[:-1]
                 elif ch >= b" ":
@@ -294,8 +337,11 @@ def main() -> None:
     tui = Tui(args)
     old = termios.tcgetattr(sys.stdin.fileno())
     tty.setraw(sys.stdin.fileno())
+    if tui.cfg.get("bracketed_paste"):
+        sys.stdout.write("\x1b[?2004h")
     try:
         threading.Thread(target=tui.worker, daemon=True).start()
+        threading.Thread(target=tui.ticker, daemon=True).start()
         tui.render()
         tui.input_loop()
     finally:

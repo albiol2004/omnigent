@@ -3,21 +3,16 @@ r"""E2E: ``/compact`` on a codex-native session must actually compact.
 Guarded hazard: after a Codex (codex-native) session runs a turn to
 completion, ``/compact`` from the web composer can silently do nothing — no
 "Compacting conversation…" spinner, no "Conversation compacted" marker, no
-error. The compact POST 200s: the server forwards the control to the runner,
-whose ``_inject_codex_compact`` (``omnigent/runner/app.py``) types
-``/compact`` into the Codex TUI's tmux pane and presses Enter. Codex's
-slash-command popup renders asynchronously, so an Enter sent back-to-back
-with the typed command is swallowed by the still-opening popup and the
-command never submits — the TUI is left with ``/compact`` sitting
-un-submitted in its composer. The injector must settle between typing and
-submitting (the same race its sibling ``_inject_codex_permission_mode``
-documents and settles around).
+error. The server forwards the control to the runner, which sends the Codex
+app-server ``thread/compact/start`` RPC for the session's thread
+(``omnigent/harnesses/codex_native/manual_compact.py``); completion is only
+visible once the forwarder mirrors the ``contextCompaction`` item.
 
 This test drives the real user journey end to end against a live Codex TUI:
 run one composer turn to completion, run ``/compact``, and require the
 compaction to become user-visible — either the in-progress
 ``compacting-indicator`` or the durable "Conversation compacted" marker. If
-the injection races the popup, neither ever appears and this fails.
+the compaction never reaches Codex, neither ever appears and this fails.
 
 Codex is launched against the session-scoped mock LLM server (which serves the
 OpenAI Responses API the ``codex-native`` harness speaks). The runner resolves

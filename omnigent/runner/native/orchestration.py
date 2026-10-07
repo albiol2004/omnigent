@@ -2906,7 +2906,9 @@ async def _auto_create_cursor_terminal(
         approve_mcp_server_for_workspace,
         arm_completion_receipts,
         bridge_dir_for_session_id,
+        check_cursor_launch_admission,
         prepare_completion_receipts,
+        user_mcp_has_omnigent_server,
         write_fork_preamble,
         write_hooks_config,
         write_mcp_config,
@@ -2935,6 +2937,10 @@ async def _auto_create_cursor_terminal(
     # cursor TUI's cwd and the forwarder hash the SAME path — cursor keys its
     # chat store dir on ``md5(cwd)``, and a mismatch would hide the store.
     workspace = os.path.realpath(str(launch_config.workspace))
+    # Refuse, before any write or TUI start, a workspace whose Cursor project
+    # config (from its git root) is the user ~/.cursor one: no own tools, and it
+    # would load a leftover ``omnigent`` server. Surfaced as a failed launch.
+    check_cursor_launch_admission(Path(workspace))
     # Validate the persisted chat id ONCE, up front. It feeds two untrusted
     # sinks below — the cursor store path in preseed_resume_state (filesystem)
     # and the ``--resume`` argv in _cursor_native_resume_args — so a malformed
@@ -3028,10 +3034,40 @@ async def _auto_create_cursor_terminal(
                 exc_info=True,
                 extra={"session_id": session_id},
             )
-    write_mcp_config(Path(workspace), bridge_dir)
+    # Skipped when the project mcp.json is the user one (workspace == HOME): a
+    # server bound to this bridge there would attach every Cursor on the machine
+    # to this session. Cursor has no per-session MCP config, so no tools here.
+    mcp_config = write_mcp_config(Path(workspace), bridge_dir)
+    if mcp_config is None:
+        _logger.warning(
+            "cursor-native: workspace %s shares the user ~/.cursor/mcp.json; not "
+            "registering this session's Omnigent MCP server, so the Cursor TUI has no "
+            "Omnigent tools (launch from a project directory to get them) (session=%s).",
+            workspace,
+            session_id,
+            extra={"session_id": session_id},
+        )
+        if user_mcp_has_omnigent_server():
+            _logger.warning(
+                "cursor-native: the user ~/.cursor/mcp.json already declares an "
+                "'omnigent' MCP server that is not bound to this session; this Cursor "
+                "will load it. Remove it unless another tool owns it (session=%s).",
+                session_id,
+                extra={"session_id": session_id},
+            )
     # Register the cursor ``stop`` hook that captures per-turn token usage into
     # the bridge dir for the usage forwarder below (see cursor_native_usage).
-    write_hooks_config(Path(workspace), bridge_dir)
+    # Skipped when the project hooks.json is the user one (workspace == HOME):
+    # there it would fire for every Cursor session on the machine.
+    if write_hooks_config(Path(workspace), bridge_dir) is None:
+        _logger.warning(
+            "cursor-native: workspace %s shares the user ~/.cursor/hooks.json; not "
+            "registering the usage stop hook, so this session reports no token usage "
+            "and no turn-end idle (session=%s).",
+            workspace,
+            session_id,
+            extra={"session_id": session_id},
+        )
     # Armed on the hooks files the TUI will load: only this launch's own project
     # stop hook may remain. Anything else (a foreign or shared-scope stop hook,
     # an unreadable/malformed config, workspace == HOME) leaves this launch
@@ -3145,7 +3181,8 @@ async def _auto_create_cursor_terminal(
             explicit_bridge_dir=bridge_dir,
             await_notify=False,
         )
-    approve_mcp_server_for_workspace(Path(workspace))
+    if mcp_config is not None:
+        approve_mcp_server_for_workspace(Path(workspace))
 
     async def _supervise_cursor_native_bridges() -> None:
         """Run the transcript forwarder and the approval mirror together.
@@ -7671,9 +7708,12 @@ def _native_terminal_start_error_payload(
         extra=extra,
     )
     from omnigent.harnesses.claude_native.bridge import ClaudeNativeHookInterpreterMismatchError
+    from omnigent.harnesses.cursor_native.bridge import CursorSharedWorkspaceError
     from omnigent.terminals.registry import TerminalExitedDuringLaunch
 
-    if runtime_name == "Codex" and isinstance(exc, TerminalExitedDuringLaunch):
+    if isinstance(exc, CursorSharedWorkspaceError):
+        message = exc.user_message()
+    elif runtime_name == "Codex" and isinstance(exc, TerminalExitedDuringLaunch):
         message = _codex_terminal_exit_summary(exc.instance, before_thread=False)
         # A failed diagnostic read must not hide the known terminal-exit cause.
         with contextlib.suppress(Exception):

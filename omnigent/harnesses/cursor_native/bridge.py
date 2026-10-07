@@ -106,6 +106,18 @@ _TRUST_MARKER = "Trust this workspace"
 # deletions comfortably exceed any real draft.
 _COMPOSER_CLEAR_CHUNK = 200
 _COMPOSER_CLEAR_MAX_ROUNDS = 50
+# Cold-start readiness (see _settle_pane): cursor-agent paints the input
+# placeholder before its key handler is wired, so keys sent then are taken as
+# literal text (a Backspace burst landed as 200 DELs ahead of a first prompt) or
+# dropped. The first injection into a freshly launched TUI therefore also needs
+# the pane unchanged across this many consecutive captures (~1s at
+# _POLL_INTERVAL_S) once a placeholder is up. Later injections skip it: a running
+# turn's pane never stops changing, and mid-turn steering must stay fast.
+_COMPOSER_READY_STABLE_CAPTURES = 6
+# Per-bridge stamp: the tmux.json instance (see _tmux_instance_key) whose
+# composer has been seen stably ready. A relaunch rewrites tmux.json, so the
+# next injection is cold again.
+_COMPOSER_READY_FILE = "composer_ready.json"
 # After a cancel, cursor-agent restores the interrupted prompt into the composer
 # slightly after the turn stops. Wait for the pane to stop changing (generation
 # ended and the draft settled) before clearing it, bounded by this timeout.
@@ -334,13 +346,21 @@ def write_mcp_config(
     bridge_dir: Path,
     *,
     python_executable: str | None = None,
-) -> Path:
+    home: Path | None = None,
+) -> Path | None:
     """Write the workspace-scoped Cursor MCP config for Omnigent tools.
 
     Merges the Omnigent bridge server into an existing ``mcp.json`` so that
-    user-configured MCP servers are preserved.
+    user-configured MCP servers are preserved. Returns the written path.
+
+    Returns ``None`` and leaves Cursor's config alone when the project file is
+    the user file (see :func:`shared_mcp_scope_reason`): a server bound to this
+    session's bridge there is loaded by every Cursor session on the machine.
+    Such a launch has no Omnigent MCP tools.
     """
     write_mcp_bridge_config(bridge_dir)
+    if shared_mcp_scope_reason(workspace, home=home) is not None:
+        return None
     cursor_dir = workspace / ".cursor"
     cursor_dir.mkdir(parents=True, exist_ok=True)
     path = cursor_dir / _MCP_CONFIG_FILE
@@ -429,14 +449,22 @@ def write_hooks_config(
     bridge_dir: Path,
     *,
     python_executable: str | None = None,
-) -> Path:
+    home: Path | None = None,
+) -> Path | None:
     """Merge Omnigent's usage ``stop`` hook into the workspace's ``hooks.json``.
 
     Sibling of :func:`write_mcp_config`: project-scoped Cursor config the TUI
     loads on launch in a trusted workspace. Preserves the workspace's existing
     hooks (e.g. a project ``preToolUse`` policy hook) and replaces only stale
     Omnigent usage hooks from earlier sessions. Returns the written path.
+
+    Returns ``None`` and writes nothing when the project file is the user file
+    (see :func:`shared_hooks_scope_reason`): a session-specific stop hook there
+    fires for every Cursor session on the machine. Such a launch reports no
+    token usage and no turn-end idle.
     """
+    if shared_hooks_scope_reason(workspace, home=home) is not None:
+        return None
     cursor_dir = workspace / ".cursor"
     cursor_dir.mkdir(parents=True, exist_ok=True)
     path = cursor_dir / _HOOKS_CONFIG_FILE
@@ -581,14 +609,192 @@ def _home_candidates(home: Path | None) -> list[Path]:
     return candidates
 
 
-def _workspace_home_reason(workspace: Path, home: Path | None) -> str | None:
-    """Refuse a workspace whose project hooks file is the user hooks file."""
+def _shared_config_scope_reason(
+    workspace: Path, file_name: str, reason: str, *, home: Path | None
+) -> str | None:
+    """Why *workspace*'s project ``.cursor/<file_name>`` is the user one, else ``None``.
+
+    True when the workspace is ``$HOME`` or the account home (directly or via an
+    alias), when its ``.cursor`` directory is the home one, or when the project
+    file resolves to the home one. Cursor then loads one file as both project
+    and user scope, so it is shared by every session on the machine.
+    """
     for candidate in _home_candidates(home):
         if _same_path(workspace, candidate) or _same_path(
             workspace / ".cursor", candidate / ".cursor"
         ):
             return f"workspace_is_home:{workspace}"
+        project_file = workspace / ".cursor" / file_name
+        if _same_path(project_file, candidate / ".cursor" / file_name):
+            return f"{reason}:{project_file}"
     return None
+
+
+def shared_hooks_scope_reason(workspace: Path, *, home: Path | None = None) -> str | None:
+    """Why *workspace*'s project ``hooks.json`` is the user hooks file, else ``None``."""
+    return _shared_config_scope_reason(
+        workspace, _HOOKS_CONFIG_FILE, "shared_hooks_config", home=home
+    )
+
+
+def shared_mcp_scope_reason(workspace: Path, *, home: Path | None = None) -> str | None:
+    """Why *workspace*'s project ``mcp.json`` is the user MCP file, else ``None``."""
+    return _shared_config_scope_reason(workspace, _MCP_CONFIG_FILE, "shared_mcp_config", home=home)
+
+
+def user_mcp_has_omnigent_server(*, home: Path | None = None) -> bool:
+    """Whether the user ``~/.cursor/mcp.json`` declares an ``omnigent`` server.
+
+    Every Cursor session loads that entry, so a shared-scope launch that writes
+    none of its own still connects to whatever bridge it names.
+    """
+    return _user_mcp_omnigent_entry(home) is not None
+
+
+def _user_mcp_omnigent_entry(home: Path | None) -> object | None:
+    path = (home if home is not None else Path.home()) / ".cursor" / _MCP_CONFIG_FILE
+    loaded = _load_json_config(path)
+    servers = loaded.get("mcpServers") if isinstance(loaded, dict) else None
+    if not isinstance(servers, dict) or _MCP_SERVER_NAME not in servers:
+        return None
+    return servers[_MCP_SERVER_NAME]
+
+
+def user_mcp_has_session_bound_omnigent_server(*, home: Path | None = None) -> bool:
+    """Whether the user ``mcp.json`` holds an ``omnigent`` entry an Omnigent launch wrote.
+
+    Matches the shape :func:`build_mcp_config` writes (``serve-mcp`` bound to
+    one session's ``--bridge-dir``), so only an entry Omnigent itself left
+    behind counts. Only the bool leaves this function, never the entry.
+    """
+    entry = _user_mcp_omnigent_entry(home)
+    args = entry.get("args") if isinstance(entry, dict) else None
+    return isinstance(args, list) and "serve-mcp" in args and "--bridge-dir" in args
+
+
+def cursor_project_root(workspace: Path) -> Path:
+    """The project root cursor-agent uses for a TUI started in *workspace*.
+
+    Mirrors cursor-agent's ``src/utils/git.ts`` lookup (read in the installed
+    2026.09.23 bundle), which picks the directory its project ``.cursor/mcp.json``
+    and ``.cursor/hooks.json`` come from: the nearest of *workspace* and its
+    ancestors holding a ``.git`` entry (a directory, a worktree file, or a link
+    that resolves), never the filesystem root itself; otherwise *workspace*.
+    """
+    current = str(workspace)
+    anchor = Path(current).anchor
+    while True:
+        if os.path.exists(os.path.join(current, ".git")):
+            return Path(current)
+        parent = os.path.dirname(current)
+        if parent in (current, anchor):
+            return workspace
+        current = parent
+
+
+class CursorSharedWorkspaceError(RuntimeError):
+    """A Cursor launch whose project config is not the workspace's own.
+
+    Cursor loads its project ``mcp.json`` / ``hooks.json`` from the workspace's
+    git root. When that root is the home folder (or links to its ``.cursor``
+    files), the project config is the user config shared by every Cursor
+    session on the machine. When it is another folder above the workspace, the
+    session's own config is never read. Either way the session gets no Omnigent
+    tools of its own and would load whatever another session left there.
+    """
+
+    def __init__(
+        self,
+        *,
+        workspace: Path,
+        project_root: Path,
+        shared_scope: Path,
+        reason: str,
+        stale_omnigent_server: bool,
+    ) -> None:
+        self.workspace = workspace
+        self.project_root = project_root
+        self.shared_scope = shared_scope
+        self.reason = reason
+        self.stale_omnigent_server = stale_omnigent_server
+        super().__init__(
+            f"cursor-native launch refused: workspace={workspace} "
+            f"project_root={project_root} reason={reason} "
+            f"stale_omnigent_server={stale_omnigent_server}"
+        )
+
+    def user_message(self) -> str:
+        """Actionable, non-secret text for the failed-launch status (paths only)."""
+        if self.reason.startswith(_NOT_PROJECT_ROOT_REASON):
+            subfolder = os.path.relpath(os.path.realpath(self.workspace), self.project_root)
+            message = (
+                "Cursor can't start here. Cursor reads its project tools and hooks "
+                f"from the git repository {self.project_root}, not from the workspace "
+                f"{self.workspace}, so this session would get no Omnigent tools of its "
+                "own and could load another session's. Start a new session with "
+                f"{self.project_root} as the workspace, and name the subfolder "
+                f"{subfolder} in your task."
+            )
+        else:
+            if self.shared_scope == self.workspace:
+                where = f"The workspace {self.workspace} is"
+            else:
+                where = (
+                    f"The workspace {self.workspace} is inside the git repository "
+                    f"{self.project_root}, which Cursor uses as its project folder. "
+                    "That folder is"
+                )
+            message = (
+                f"Cursor can't start here. {where} your home folder or shares its "
+                "~/.cursor config, so Cursor would share its tool and hook config "
+                "with every other Cursor session on this machine. Start a new session "
+                "whose workspace is the root folder of a git repository other than "
+                "your home folder, or a folder that is not inside any git repository, "
+                "and name any subfolder you want to work in in your task."
+            )
+        if self.stale_omnigent_server:
+            message += (
+                " Your ~/.cursor/mcp.json also has an 'omnigent' server left by an "
+                "earlier session; remove that entry."
+            )
+        return message
+
+
+_NOT_PROJECT_ROOT_REASON = "workspace_not_project_root:"
+
+
+def check_cursor_launch_admission(workspace: Path, *, home: Path | None = None) -> None:
+    """Refuse a Cursor launch that would not load the workspace's own project config.
+
+    Cursor resolves its project root (:func:`cursor_project_root`) from its
+    physical cwd. The launch is refused when the workspace or that root shares
+    the user MCP or hooks config, or when the root is a folder above the
+    workspace (aliases of the workspace itself are fine): Cursor would then read
+    that folder's ``.cursor`` config, not the one this launch writes. Reads
+    only; run it before any launch write.
+
+    :raises CursorSharedWorkspaceError: When the launch is refused.
+    """
+    project_root = cursor_project_root(Path(os.path.realpath(workspace)))
+    is_root = _same_path(project_root, workspace)
+    candidates = [workspace] if is_root else [workspace, project_root]
+    for candidate in candidates:
+        reason = shared_mcp_scope_reason(candidate, home=home) or shared_hooks_scope_reason(
+            candidate, home=home
+        )
+        if reason is not None:
+            break
+    else:
+        candidate = project_root
+        reason = None if is_root else f"{_NOT_PROJECT_ROOT_REASON}{project_root}"
+    if reason is not None:
+        raise CursorSharedWorkspaceError(
+            workspace=workspace,
+            project_root=project_root,
+            shared_scope=candidate,
+            reason=reason,
+            stale_omnigent_server=user_mcp_has_session_bound_omnigent_server(home=home),
+        )
 
 
 def completion_receipt_project_precheck(
@@ -601,7 +807,7 @@ def completion_receipt_project_precheck(
     Stale owned hooks for other bridges pass here; they are replaced by the
     rewrite and :func:`completion_receipt_hook_hold_reason` re-checks the result.
     """
-    reason = _workspace_home_reason(workspace, home)
+    reason = shared_hooks_scope_reason(workspace, home=home)
     if reason is not None:
         return reason
     return _stop_hooks_hold_reason(workspace / ".cursor" / _HOOKS_CONFIG_FILE, stale_ok=True)
@@ -626,7 +832,7 @@ def completion_receipt_hook_hold_reason(
 
     :returns: ``None`` when no such hook exists, else the first hold reason.
     """
-    reason = _workspace_home_reason(workspace, home)
+    reason = shared_hooks_scope_reason(workspace, home=home)
     if reason is not None:
         return reason
     reason = _stop_hooks_hold_reason(
@@ -939,27 +1145,80 @@ def _submit_needle(content: str) -> str:
     return stripped[:24] if len(stripped) >= 4 else ""
 
 
-def _settle_pane(socket_path: str, tmux_target: str, *, timeout_s: float) -> None:
-    """Best-effort wait until the Cursor input box is ready to receive a paste.
+def _settle_pane(
+    socket_path: str,
+    tmux_target: str,
+    *,
+    timeout_s: float,
+    require_stable: bool = False,
+) -> bool:
+    """Wait until the Cursor input box is ready to receive a paste.
 
     Accepts the first-run "Trust this workspace" modal (sends ``a`` at most once)
-    so the input box can mount, then waits for an idle/running input marker. Falls
-    through after the timeout (mid-turn steering has no idle placeholder) rather
-    than raising.
+    so the input box can mount, then waits for an idle/running input marker. With
+    *require_stable* (a cold TUI) the pane must also stay byte-identical, marker
+    visible, for :data:`_COMPOSER_READY_STABLE_CAPTURES` consecutive captures.
+
+    :returns: Whether readiness was seen before *timeout_s*. Warm callers ignore
+        a ``False`` and fall through (mid-turn steering may show no placeholder).
     """
     deadline = time.monotonic() + timeout_s
     trust_accepted = False
+    stable_pane: str | None = None
+    stable_count = 0
     while time.monotonic() < deadline:
         pane = _capture_pane(socket_path, tmux_target)
         if any(marker in pane for marker in _IDLE_MARKERS):
-            return
-        # One-shot, only when no input marker is up (so a later transcript that
-        # merely echoes the phrase can't spray repeated keystrokes into the TUI).
-        if not trust_accepted and _TRUST_MARKER in pane:
-            trust_accepted = True
-            with contextlib.suppress(RuntimeError):
-                _run_tmux(socket_path, "send-keys", "-t", tmux_target, "a")
+            if not require_stable:
+                return True
+            if pane == stable_pane:
+                stable_count += 1
+            else:
+                stable_pane, stable_count = pane, 1
+            if stable_count >= _COMPOSER_READY_STABLE_CAPTURES:
+                return True
+        else:
+            stable_pane, stable_count = None, 0
+            # One-shot, only when no input marker is up (so a later transcript that
+            # merely echoes the phrase can't spray repeated keystrokes into the TUI).
+            if not trust_accepted and _TRUST_MARKER in pane:
+                trust_accepted = True
+                with contextlib.suppress(RuntimeError):
+                    _run_tmux(socket_path, "send-keys", "-t", tmux_target, "a")
         time.sleep(_POLL_INTERVAL_S)
+    return False
+
+
+def _tmux_instance_key(bridge_dir: Path) -> str | None:
+    """Identify the advertised TUI instance: a hash of ``tmux.json`` (rewritten per launch)."""
+    try:
+        raw = (bridge_dir / _TMUX_FILE).read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _composer_ready_seen(bridge_dir: Path) -> bool:
+    """Whether this TUI instance's composer was already seen stably ready."""
+    key = _tmux_instance_key(bridge_dir)
+    if key is None:
+        return False
+    try:
+        data = json.loads((bridge_dir / _COMPOSER_READY_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("tmux") == key
+
+
+def _mark_composer_ready(bridge_dir: Path) -> None:
+    """Stamp this TUI instance as warm (best effort: a lost stamp only re-waits)."""
+    key = _tmux_instance_key(bridge_dir)
+    if key is None:
+        return
+    tmp = bridge_dir / (_COMPOSER_READY_FILE + ".tmp")
+    with contextlib.suppress(OSError):
+        tmp.write_text(json.dumps({"tmux": key}), encoding="utf-8")
+        os.replace(tmp, bridge_dir / _COMPOSER_READY_FILE)
 
 
 def _clear_composer(socket_path: str, tmux_target: str) -> None:
@@ -970,10 +1229,15 @@ def _clear_composer(socket_path: str, tmux_target: str) -> None:
     widget ignores the readline ``C-a``/``C-k``/``C-u`` keys we'd otherwise use
     to clear a line — only ``Backspace`` deletes. So jump to the end (``End``)
     and flood ``Backspace`` in ``send-keys -N`` bursts until the pane stops
-    changing (the draft is gone) or a generous round cap is hit. A burst against
-    an already-empty composer is a harmless no-op (unlike ``C-c``, which would
-    arm cursor-agent's exit), so this is safe to run before every injection.
+    changing (the draft is gone) or a generous round cap is hit.
+
+    A visible input placeholder means the composer is already empty, so no key
+    is sent at all: on a TUI that is still booting the burst is taken as literal
+    ``\x7f`` text ahead of the next paste, which the unchanged pane cannot reveal.
     """
+    pane = _capture_pane(socket_path, tmux_target)
+    if any(marker in pane for marker in _IDLE_MARKERS):
+        return
     _run_tmux(socket_path, "send-keys", "-t", tmux_target, "End")
     previous = _capture_pane(socket_path, tmux_target)
     for _ in range(_COMPOSER_CLEAR_MAX_ROUNDS):
@@ -1009,8 +1273,9 @@ def inject_user_message(
     :param bridge_dir: The cursor-native bridge dir holding ``tmux.json``.
     :param content: User text (non-empty).
     :param timeout_s: Per-readiness-gate timeout.
-    :raises RuntimeError: If the tmux target is never advertised or a tmux
-        command fails.
+    :raises RuntimeError: If the tmux target is never advertised, a tmux
+        command fails, or a freshly launched TUI's input box is not stably ready
+        within *timeout_s* (nothing is typed in that case).
     """
     if not content:
         raise RuntimeError("cursor-native injection requires non-empty content")
@@ -1027,7 +1292,18 @@ def inject_user_message(
     # Admission point for completion receipts: refuses when the input fence is
     # closed and logs the prompt for opted-in sessions (no-op otherwise).
     cursor_native_status.record_injection(bridge_dir, content, kind="message")
-    _settle_pane(socket_path, tmux_target, timeout_s=timeout_s)
+    # A freshly launched TUI must be stably ready before any key reaches it; if
+    # it never is, fail before typing anything (the logged injection then holds
+    # as undelivered — never retried here).
+    cold = not _composer_ready_seen(bridge_dir)
+    ready = _settle_pane(socket_path, tmux_target, timeout_s=timeout_s, require_stable=cold)
+    if cold:
+        if not ready:
+            raise RuntimeError(
+                f"cursor input box was not stably ready within {timeout_s:.0f}s after launch; "
+                "the message was not sent"
+            )
+        _mark_composer_ready(bridge_dir)
     # Clear any leftover draft (e.g. the prompt cursor-agent restores into the
     # composer after a cancelled turn) so it can't prepend the new message.
     _clear_composer(socket_path, tmux_target)

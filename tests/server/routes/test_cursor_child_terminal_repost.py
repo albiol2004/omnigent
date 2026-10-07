@@ -216,3 +216,38 @@ async def test_a_terminal_post_whose_forward_failed_is_redelivered(
     await _post(route, turn_seq=1, rev=1, outcome="failed")
     assert _returned(route) == ["failed"]
     assert len(_terminal_forwards(route)) == 1
+
+
+async def test_unauthorised_receipt_caller_does_not_write_the_turn_marker(
+    route: _StatusRoute, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Edit access without runner/owner authority: ``turn_end`` names no turn.
+
+    The failed post is delivered as before, but its ``turn_end`` is neither
+    stored nor used for the terminal marker, so a later authorised bare idle
+    for that turn is a plain completion, not an inherited-and-suppressed one.
+    """
+    real_require_access = routes_events._require_access
+
+    async def deny_owner(user_id: Any, session_id: str, level: Any, *args: Any, **kwargs: Any):
+        if level == routes_events.LEVEL_OWNER:
+            raise routes_events.OmnigentError("owner required", code="forbidden")
+        return await real_require_access(user_id, session_id, level, *args, **kwargs)
+
+    _mirror_reply(route, "turn-1")
+    monkeypatch.setattr(routes_events, "_require_access", deny_owner)
+    await _post(route, turn_seq=1, rev=1, outcome="failed")
+    assert _returned(route) == ["failed"]
+    unauthorised = route.store.get_conversation(route.child_id)
+    assert unauthorised is not None
+    assert input_fence.TURN_TERMINAL_LABEL not in unauthorised.labels
+    assert input_fence.TURN_RECEIPT_LABEL not in unauthorised.labels
+
+    monkeypatch.setattr(routes_events, "_require_access", real_require_access)
+    _mirror_reply(route, "turn-1-late-flush")
+    await _post(route, turn_seq=1, rev=2, outcome=None, status="idle")
+    assert _returned(route) == ["failed", "completed"]
+    assert len(_terminal_forwards(route)) == 2
+    authorised = route.store.get_conversation(route.child_id)
+    assert authorised is not None
+    assert authorised.labels[input_fence.TURN_TERMINAL_LABEL]

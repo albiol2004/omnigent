@@ -28,8 +28,7 @@ from omnigent.server.routes._sessions import input_fence
 from tests.server.integration import test_cursor_receipt_binding_e2e as b
 from tests.server.integration.test_sessions_permissions import (  # noqa: F401 - fixtures
     auth_app,
-    auth_client,
-)
+)  # ``auth_client`` now lives in tests/server/conftest.py and picks this ``auth_app`` up.
 
 pytestmark = [
     pytest.mark.asyncio,

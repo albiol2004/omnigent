@@ -31,8 +31,7 @@ from tests.server.integration.test_sessions_permissions import (  # noqa: F401 -
     _create_session_as,
     _grant_permission,
     auth_app,
-    auth_client,
-)
+)  # ``auth_client`` now lives in tests/server/conftest.py and picks this ``auth_app`` up.
 
 pytestmark = pytest.mark.asyncio
 

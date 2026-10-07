@@ -98,3 +98,28 @@ still failing in both (pre-existing, identical ids): 14
   FAILED tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_interrupt_codex_side_chat_leaves_parent_turn_running[running]
 
 flakiness reruns: none needed (0 new failure ids)
+
+## Lead re-run at final tip (rev 250f4c3e57b3d6a5d262f60d3e8151b461685e6c, after the Lead's ruff/pyrefly fix commits)
+command: TMPDIR=/var/tmp/pytest-of-coder bash scripts/v17_focused_suite.sh /var/tmp/pytest-of-coder/v17-full-lead.txt  (exit 0, SUITE_DONE, 0 TIMEOUT)
+| dispatch | 284 passed, 1 skipped in 36.06s |
+| interrupt | 24 passed in 0.98s |
+| runner-native | 7 failed, 583 passed in 622.49s (0:10:22) |
+| sys-session | 45 passed in 58.21s |
+| terminals | 109 passed, 2 skipped in 37.96s |
+| claude-native | 3 failed, 1546 passed, 6 warnings in 216.23s (0:03:36) |
+| codex-native | 1484 passed, 2 warnings in 49.86s |
+| cursor-native | 556 passed in 28.06s |
+| inner-proc | 40 passed, 8 skipped in 0.47s |
+| host | 6 failed, 257 passed, 74 warnings in 36.28s |
+| sessions-routes | 64 passed in 189.44s (0:03:09) |
+
+FAILED/ERROR ids at final tip: 16; absent from the baseline: 1
+  FAILED tests/harnesses/claude_native/test_claude_native_status_file.py::test_poller_publishes_when_only_the_reason_changes
+  -> pre-existing timing-dependent upstream failure, not a regression: omnigent/harnesses/claude_native/status_file.py
+     and its test are byte-identical to v0.17.0 (git diff --stat v0.17.0 HEAD -- both paths is empty; status_file.py imports
+     only stdlib), and the same test file on a detached pristine v0.17.0 worktree just now gave:
+     FAILED ...::test_unknown_status_clears_dedup_so_next_read_publishes
+     FAILED ...::test_poller_publishes_when_only_the_reason_changes
+     2 failed, 19 passed in 0.27s
+     The set of failing ids in this file varies run to run on both pristine and tip (baseline: edges_only + unknown_status;
+     builder after-port: unknown_status only; this run: all three).

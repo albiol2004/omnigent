@@ -13,3 +13,4 @@
 - iter 1 | builder | v17-report: docs/v17-report.md written: 66-row disposition table (43 ported, 12 adapted, 3 dropped, 8 not ported), overlaps, baseline vs after-port, DoD4 test map, patch ch (trio-worker/v17-report-61328491@2d5655b)
 - iter 1 | lead | review of 9 merged slices (66 v16 commits: 43 ported/12 adapted/3 dropped/8 not ported); fixed ruff format+RUF100, 7 port-introduced pyrefly errors in cursor forwarder, overlap-script false-move; full_check at 250f4c3e5 0 regressions (1 extra id is pristine-failing timing test); patch applies pristine+tip
 - iter 1 | evaluator | VERDICT: SHIP — full_check re-run at c813e0b82: 0 port regressions (extra id is a path-depth artifact that fails on pristine too); 55 -x picks + 3 evidenced drops; patch applies to pristine+tip; overlaps intact; 2 fault injections caught
+- iter 1 | loop | landed trio/loop @cfe851ec96ce onto trio-v0.17.0-fixes

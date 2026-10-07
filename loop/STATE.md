@@ -13,6 +13,7 @@ mission: Re-port the user's Omnigent fork patches onto upstream stable v0.17.0 s
 - iter 1: all suite runs use TMPDIR=/var/tmp/pytest-of-coder (AF_UNIX 108-byte limit); targeted checks may --deselect only pristine-proven upstream failures.
 target_ref: trio-v0.17.0-fixes
 target_base: b52507b70a057cf7414465946813c52ec9508421
-phase: shipped
+phase: landed
 evaluated_sha: c813e0b825b803b70350bad650cd024c7e2b121e
 evaluator_attempt: 2c376deddaf84b97845c07adb216e236
+landed: cfe851ec96cecb2c89c0118e2327c099bbe83028

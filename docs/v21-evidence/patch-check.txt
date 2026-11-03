@@ -1,0 +1,44 @@
+$ git rev-parse HEAD v0.21.0rc1
+00930adbe01fa16b9ac6d26070a1417ad10efcd9
+20e15700f2fadc5f511e4582ce6b048faf6059b9
+
+(all pytest runs use TMPDIR=/var/tmp/pytest-of-coder)
+
+$ GIT_INDEX_FILE=$I git read-tree v0.21.0rc1 && GIT_INDEX_FILE=$I git apply --check --cached patches/child-reasoning-effort.v0.21.0rc1.patch   # pristine v0.21.0rc1
+exit=0
+
+$ git apply --check patches/child-reasoning-effort.v0.21.0rc1.patch   # port tip (HEAD)
+exit=0
+
+$ GIT_INDEX_FILE=$I git read-tree v0.21.0rc1 && GIT_INDEX_FILE=$I git apply --check --cached patches/child-reasoning-effort.v0.17.0.patch   # pristine v0.21.0rc1, for the record
+error: patch failed: omnigent/runner/tool_dispatch.py:119
+error: omnigent/runner/tool_dispatch.py: patch does not apply
+error: patch failed: omnigent/server/routes/_sessions/helpers.py:9663
+error: omnigent/server/routes/_sessions/helpers.py: patch does not apply
+exit=1
+
+$ git apply --check patches/child-reasoning-effort.v0.17.0.patch   # port tip
+error: patch failed: omnigent/runner/tool_dispatch.py:119
+error: omnigent/runner/tool_dispatch.py: patch does not apply
+error: patch failed: omnigent/server/routes/_sessions/helpers.py:9663
+error: omnigent/server/routes/_sessions/helpers.py: patch does not apply
+exit=1
+
+## Hunks re-anchored / dropped
+- tool_dispatch.py import hunk: re-anchored (U1) after UploadFileTool; v0.17 context was timer/update_comment at line 119 (upstream inserted the ui import between them). Behaviour unchanged: import EFFORT_VALUES/validate_effort.
+- tool_dispatch.py _build_session_create_body docstring/validate_effort and _execute_session_create try/except: re-anchored (U1). Call site keeps HEAD/rc1 `message` (not v0.17 `args.get("message")`).
+- helpers.py: kept adding `_resolve_agent_spec` (session_id expand_env, matching the v0.17 test) plus `__all__` and sessions/__init__.py re-export. Dropped the v0.17 `_resolve_subagent_spec` refactor hunk: upstream v0.21.0rc1 `_resolve_subagent_spec` (helpers.py:10305) loads with `expand_env=agent.operator_authored`, not `agent.session_id is None`. Wiring it through `_resolve_agent_spec` would change child-spec resolution.
+- sessions/__init__.py import hunk: re-anchored (U1) next to `_resolve_llm_model`. On this fork HEAD, `_resolve_agent_spec = _resolve_subagent_spec` still follows the import (same shadowing as v17); on pristine rc1 the import is the public name.
+
+## Targeted check
+$ P=patches/child-reasoning-effort.v0.21.0rc1.patch; I="$(mktemp -u /var/tmp/pytest-of-coder/idx.XXXXXX)"; GIT_INDEX_FILE="$I" git read-tree v0.21.0rc1 && GIT_INDEX_FILE="$I" git apply --check --cached "$P" && git apply --check "$P" && git apply "$P" && ( TMPDIR=/var/tmp/pytest-of-coder uv run --frozen --extra all --group dev pytest -q -p no:cacheprovider tests/tools/builtins/test_child_reasoning_effort.py tests/tools/builtins/test_sys_session.py tests/runtime/test_reasoning_effort_validation.py; rc=$?; git apply -R "$P"; rm -f "$I"; exit $rc )
+76 passed in 80.30s (0:01:20)
+rc=0
+final exit=0
+
+NOTE: tests/runtime/test_reasoning_effort_validation.py exists on HEAD (kept in the command).
+NOTE: patch not left applied; git status after reverse is only the two new files.
+
+$ git status --short (after check; patch not left applied)
+?? docs/v21-evidence/patch-check.txt
+?? patches/child-reasoning-effort.v0.21.0rc1.patch

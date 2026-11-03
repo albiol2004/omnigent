@@ -355,6 +355,10 @@ class _ForwarderFakeClient:
     async def connect(self) -> None:
         """No-op connect."""
 
+    def is_subscribed_to_thread(self, _thread_id: str) -> bool:
+        """Not subscribed before ``thread/resume`` (v0.21 forwarder probes this)."""
+        return False
+
     async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Answer ``thread/resume`` with an empty thread."""
         self.requests.append((method, params))

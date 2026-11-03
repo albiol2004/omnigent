@@ -1952,7 +1952,6 @@ def build_native_controls(
             # Clear any "Compacting…" spinner; nothing claims completion.
             _publish_event(conv_id, {"type": "response.compaction.failed", "task_id": conv_id})
 
-
     async def _handle_codex_native_clear(conv_id: str) -> Response:
         return await _inject_codex_native_slash(conv_id, command="/clear", action="clear")
 

@@ -647,7 +647,7 @@ async def record_turn_terminal(
             session_id,
             {TURN_TERMINAL_LABEL: _label_json({"e": turn_key[0], "s": turn_key[1], "o": outcome})},
         )
-    except Exception:  # noqa: BLE001 — bookkeeping must not fail the status edge
+    except Exception:  # Bookkeeping must not fail the status edge.
         _logger.warning("turn terminal marker not stored; session=%s", session_id, exc_info=True)
 
 

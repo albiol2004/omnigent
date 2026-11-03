@@ -277,7 +277,7 @@ def observe_codex_manual_compact_event(event: CodexMessage) -> None:
     """
     try:
         _TRACKER.observe(event)
-    except Exception:  # noqa: BLE001 - observation must not break forwarding.
+    except Exception:  # Observation must not break forwarding.
         _logger.warning("Codex manual-compact observer failed", exc_info=True)
 
 

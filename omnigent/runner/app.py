@@ -3833,6 +3833,10 @@ def create_runner_app(
             )
             return None, bridge_dir
         if state.session_id != conv_id:
+            if action == "model options" and await _codex_native_bridge_id_label(conv_id):
+                # Read-only discovery follows a labeled live app-server through
+                # fork/resume rotation; mutations remain owner-bound below.
+                return state, bridge_dir
             _logger.warning(
                 "Codex-native %s skipped for %s: bridge belongs to %s.",
                 action,
@@ -3852,6 +3856,16 @@ def create_runner_app(
             conv_id, action=action, missing_state_log_level=missing_state_log_level
         )
         return state
+
+    async def _codex_native_bridge_id_label(conv_id: str) -> str | None:
+        """Return the session's codex-native bridge id label, if it has one."""
+        from omnigent.harnesses.codex_native.bridge import CODEX_NATIVE_BRIDGE_ID_LABEL_KEY
+
+        labels = await _session_labels_for_runner_spawn(
+            server_client=server_client,
+            session_id=conv_id,
+        )
+        return labels.get(CODEX_NATIVE_BRIDGE_ID_LABEL_KEY)
 
     async def _codex_native_bridge_dir_for_session(conv_id: str) -> Path:
         """

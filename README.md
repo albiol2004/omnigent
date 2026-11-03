@@ -707,25 +707,27 @@ the service. To opt out, follow our instructions in
 
 ---
 
-## trio-v0.17.0-fixes (this worktree)
+## trio-v0.21.0-fixes (this worktree)
 
-Stock `v0.17.0` plus the Trio keeper set re-ported from
-`trio-v0.16.0-fixes` (cherry-picked `-x`). The fork branch is
-`trio-v0.17.0-fixes`, based on upstream `v0.17.0`. Live install
-`/home/coder/omnigent` (`~/omnigent`) stays on its current fork branch
-until adopted. Motivation: idle native role TUIs from finished Trio loops
-leaked ~5 GB (upstream omnigent-ai/omnigent#7498);
+Stock `v0.21.0rc1` plus the Trio keeper set re-ported from
+`trio-v0.17.0-fixes` (cherry-picked `-x`). The fork branch is
+`trio-v0.21.0-fixes`, based on upstream `v0.21.0rc1` (rebase onto final
+`v0.21.0` once tagged). Live install `/home/coder/omnigent` (`~/omnigent`)
+stays on its current fork branch until adopted. Motivation: idle native role
+TUIs from finished Trio loops leaked ~5 GB (upstream omnigent-ai/omnigent#7498);
 `sys_session_close` now closes tree-scoped children whose title does not
 parse as `<agent>:<title>` and tears down the Claude, Codex, and Cursor
 native tmux panes, terminals, and Codex app-server.
 
-Keepers: kill-on-close, queue-aware Cursor yolo (+ phantom-card drop), Codex
-labeled-bridge model options, summary-only Codex compaction replay, close-guard,
-stop-routing (Claude/Codex/Cursor), kill-escalation (`omnigent/native_tmux_kill.py`),
-pane reaper after harness release, Codex advertise guard.
+Keepers: kill-on-close, Codex labeled-bridge model options, summary-only Codex
+compaction replay, close-guard, stop-routing (Claude/Codex/Cursor),
+kill-escalation (`omnigent/native_tmux_kill.py`), pane reaper after harness
+release, Codex advertise guard, Cursor completion receipts / input fence /
+isolation guards / `OMNIGENT_CURSOR_PLUGIN_DIR`, Codex app-server manual compact.
 
-The per-commit disposition of the 0.17.0 re-port (ported / adapted / dropped,
-with the superseding upstream change) is in `docs/v17-report.md` (the 0.16.0 notes stay in `docs/v16-report.md`).
+The per-commit disposition of the 0.21.0rc1 re-port (ported / adapted / dropped,
+with the superseding upstream change) is in `docs/v21-report.md` (the 0.17.0 and
+0.16.0 notes stay in `docs/v17-report.md` and `docs/v16-report.md`).
 
 Do not treat this as upstream `main`. The fork keeps a thin alias
 `_resolve_agent_spec = _resolve_subagent_spec` since `trioctl omnigent

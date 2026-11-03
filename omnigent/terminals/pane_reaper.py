@@ -38,9 +38,9 @@ import contextlib
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 if TYPE_CHECKING:
     from omnigent.inner.terminal import TerminalInstance
@@ -104,6 +104,110 @@ class PaneRef(NamedTuple):
     terminal_name: str
     socket_path: Path
     instance: TerminalInstance | None = None
+
+
+class _ProcessManagerLike(Protocol):
+    """Subset of ``HarnessProcessManager`` the busy predicate consults.
+
+    A narrow protocol keeps the helper testable with a fake and decouples it
+    from the runtime harness module, so tests never import the 10k-line app.
+    """
+
+    def has_session(self, conversation_id: str) -> bool:
+        """``True`` if a harness subprocess entry is registered for the id."""
+
+    def has_active_turn(self, conversation_id: str) -> bool:
+        """``True`` if an in-flight harness turn is streaming for the id."""
+
+
+async def _pane_is_busy_after_harness(
+    *,
+    conv_id: str,
+    socket_path: Path,
+    active_turns: Collection[str],
+    process_manager: _ProcessManagerLike | None,
+    native_pane_status: Mapping[str, str],
+    tmux_last_client_input_at: Callable[[str, str], float | None],
+    client_interaction_within: Callable[[float], bool] | None,
+    tmux_window_activity_at: Callable[[str, str], float | None],
+    now: float,
+    screen_changed_within: Callable[[float], bool | None] | None = None,
+    server_confirms_turn_in_flight: Callable[[str], Awaitable[bool]] | None = None,
+) -> bool:
+    """Decide whether a native pane is busy enough to spare from reaping.
+
+    Order matters: an in-flight turn is checked first and always wins, even
+    for a pane whose harness subprocess has already been released — a turn
+    can outlive the PM entry it rides on.
+
+    An attached viewer alone never spares a pane (a tab left open overnight
+    kept idle native stacks resident); a human counts only when they drove it
+    recently — a CLI keypress (tmux ``client_activity``) or a web-bridge event
+    (``client_interaction_within``) inside :data:`PANE_OUTPUT_BUSY_WINDOW_S`.
+
+    Once the harness subprocess is gone (``has_session`` is False), ``release``
+    only popped the PM entry; it did NOT close the native tmux pane. The vendor
+    TUI (notably ``cursor``) keeps redrawing, which would otherwise pin the
+    leaked pane two ways: a stale ``"running"`` status (only cleared on full
+    ``delete_session``) and fresh tmux ``window_activity``. For such an
+    orphaned pane only recent human input spares it; the redraw noise must not
+    defeat the reaper.
+
+    Otherwise (harness alive, or no ``process_manager`` at all) output is
+    primary evidence: the idle watcher's screen diff when it has a fresh view
+    (``screen_changed_within``; it ignores title updates and identical
+    repaints), else tmux ``window_activity``. A ``"running"`` status with no
+    other evidence spares the pane only while ``server_confirms_turn_in_flight``
+    agrees (or when it is not supplied).
+
+    :param client_interaction_within: The pane terminal's
+        ``client_interaction_within`` (web-bridge interaction stamp), or
+        ``None`` when the terminal instance is gone.
+    :param screen_changed_within: The pane terminal's ``screen_changed_within``,
+        or ``None`` when the terminal instance is gone.
+    :param server_confirms_turn_in_flight: Awaited with *conv_id* when the
+        runner's record says ``running`` and nothing else shows activity.
+    """
+    # In-flight runner turn: always busy, even for an orphaned pane whose PM
+    # entry is gone — a turn can outlive the entry it rides on.
+    if conv_id in active_turns or (
+        process_manager is not None and process_manager.has_active_turn(conv_id)
+    ):
+        return True
+    # A human drove the pane recently: a CLI keypress or any web-bridge event.
+    input_at = await asyncio.to_thread(tmux_last_client_input_at, str(socket_path), "main")
+    if input_at is not None and now - input_at < PANE_OUTPUT_BUSY_WINDOW_S:
+        return True
+    if client_interaction_within is not None and client_interaction_within(
+        PANE_OUTPUT_BUSY_WINDOW_S
+    ):
+        return True
+    # Harness subprocess is gone. release() only pops the PM entry; it does NOT
+    # close the native tmux pane, and the vendor TUI keeps redrawing. A stale
+    # "running" status (cleared only on delete_session) or fresh window_activity
+    # would pin this leaked pane forever — only recent human input spares it.
+    if process_manager is not None and not process_manager.has_session(conv_id):
+        return False
+    # Harness still alive, or no PM at all (tests / runners without one): output
+    # is primary evidence, independent of the status pipeline (a stalled
+    # forwarder once froze it and got a live session reaped).
+    screen_changed = (
+        screen_changed_within(PANE_OUTPUT_BUSY_WINDOW_S)
+        if screen_changed_within is not None
+        else None
+    )
+    if screen_changed is None:
+        # No fresh watcher view: tmux stamps window_activity on every byte.
+        activity_at = await asyncio.to_thread(tmux_window_activity_at, str(socket_path), "main")
+        screen_changed = activity_at is not None and now - activity_at < PANE_OUTPUT_BUSY_WINDOW_S
+    if screen_changed:
+        return True
+    # "running" covers an autonomous turn between runner turns.
+    if native_pane_status.get(conv_id) == "running":
+        return server_confirms_turn_in_flight is None or await server_confirms_turn_in_flight(
+            conv_id
+        )
+    return False
 
 
 def resolve_native_pane_idle_timeout_s(

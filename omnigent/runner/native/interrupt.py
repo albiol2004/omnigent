@@ -16,8 +16,8 @@ only by bridge module, control-function name, and error label; they collapse to
 two parametrized methods driven by :data:`_UNIFORM_INTERRUPT` /
 :data:`_UNIFORM_STOP`. claude interrupt (bridge-id resolution), codex interrupt
 (MCP-startup + app-server ``turn/interrupt``), and opencode interrupt (native
-``POST /api/session/{id}/interrupt``) keep dedicated methods; claude stop is likewise
-special-cased and codex/pi alias stop to their interrupt handler.
+``POST /api/session/{id}/interrupt``) keep dedicated methods; claude and codex stop are
+special-cased (runner-side hard stop) and pi/opencode alias stop to their interrupt handler.
 
 Coverage note: antigravity-native has no handler here and :meth:`interrupt` /
 :meth:`stop` return ``None`` for it, so the caller falls through to the
@@ -42,6 +42,7 @@ from omnigent.native.native_coding_agents import native_coding_agent_for_harness
 from omnigent.runner.native.orchestration import (
     _cancel_auto_forwarder_task,
     _claude_native_bridge_id_for_session,
+    teardown_codex_native_app_server,
 )
 from omnigent.runner.resource_registry import (
     _STATUS_EMITTING_TERMINAL_ROLES,
@@ -231,8 +232,8 @@ _UNIFORM_INTERRUPT: dict[str, _UniformInterrupt] = {
     ),
 }
 
-# The seven uniform stop harnesses (claude has a special stop; codex/pi have no
-# distinct stop — they route to interrupt, handled in ``stop``).
+# The seven uniform stop harnesses (claude and codex have special stops; pi has no
+# distinct stop — it routes to interrupt, handled in ``stop``).
 _UNIFORM_STOP: dict[str, _UniformStop] = {
     "cursor": _UniformStop(
         "omnigent.harnesses.cursor_native.bridge",
@@ -391,8 +392,8 @@ class NativeInterruptRunner:
     async def stop(self, harness_name: str | None, conv_id: str) -> Response | None:
         """Dispatch a stop_session to the harness's bridge.
 
-        codex/pi/opencode have no distinct stop — they route to their interrupt
-        handler.
+        claude/codex own a runner-side hard stop (tmux kill-session);
+        pi/opencode have no distinct stop — they route to their interrupt handler.
 
         :returns: A response when this harness has a stop handler, else ``None``
             so the caller falls through to the in-process turn cancel.
@@ -403,7 +404,9 @@ class NativeInterruptRunner:
         key = agent.key
         if key == "claude":
             return await self._claude_stop(conv_id)
-        if key in ("codex", "pi", "opencode"):
+        if key == "codex":
+            return await self._codex_stop(conv_id)
+        if key in ("pi", "opencode"):
             return await self.interrupt(harness_name, conv_id)
         spec = _UNIFORM_STOP.get(key)
         if spec is None:
@@ -699,6 +702,72 @@ class NativeInterruptRunner:
         ):
             self._logger.warning(
                 "Claude-native stop succeeded but sub-agent delivery was "
+                "not confirmed; session=%s reason=%s",
+                conv_id,
+                delivery_ack.reason,
+            )
+        return Response(status_code=204)
+
+    async def _codex_stop(self, conv_id: str) -> Response:
+        from pathlib import Path
+
+        from omnigent.harnesses.codex_native.bridge import (
+            TmuxSessionNotAdvertised,
+            cancel_pending_mcp_startup,
+            clear_active_turn_id_if_matches,
+            kill_session,
+            read_bridge_state,
+        )
+
+        # A fresh Codex session can bridge under a label-resolved id, not conv_id,
+        # so resolve the directory (and the state read from it) the way interrupt does.
+        state, bridge_dir = await self._codex_bridge_state_for_session(
+            conv_id, action="stop", missing_state_log_level=logging.DEBUG
+        )
+        # A bridge another session owns is never ours to kill; an absent one is
+        # (the pane may be advertised before its state is written).
+        owned = state is not None or read_bridge_state(Path(bridge_dir)) is None
+        if owned:
+            # Flip pending MCP servers to cancelled so the first-turn gate cannot
+            # stay wedged after the app-server is torn down. Interrupt used to
+            # own this; stop must too because it no longer routes through interrupt.
+            # Path() so unit tests that stub bridge_dir as a string still no-op
+            # instead of raising on ``str / filename``.
+            cancel_pending_mcp_startup(Path(bridge_dir))
+            try:
+                await asyncio.to_thread(kill_session, bridge_dir, timeout_s=1.0)
+            except TmuxSessionNotAdvertised:
+                # No live tmux pane (already gone / never advertised): best-effort,
+                # continue teardown so the stop still completes.
+                self._logger.debug("codex-native stop: no live tmux for %s", conv_id)
+            except RuntimeError as exc:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": "codex_native_stop_failed",
+                        "detail": self._client_safe_error_detail(exc, context="codex-native stop"),
+                    },
+                )
+            if state is not None and state.active_turn_id is not None:
+                # The killed pane takes its turn with it; a stale recorded turn id
+                # would otherwise keep the bridge reading as mid-turn.
+                clear_active_turn_id_if_matches(Path(bridge_dir), state.active_turn_id)
+        await self._teardown_session_terminals(conv_id)
+        # teardown_codex_native_app_server cancels the transcript forwarder itself,
+        # so do not double-cancel via _cancel_auto_forwarder_task here.
+        await teardown_codex_native_app_server(conv_id)
+        self._publish_event(conv_id, {"type": "session.status", "status": "idle"})
+        self._resource_registry.note_external_session_status(conv_id, "idle")
+        delivery_ack = self._mark_subagent_terminal_and_wake(
+            conv_id,
+            status="cancelled",
+            output="[System: sub-agent stopped]",
+        )
+        if not delivery_ack.delivered and (
+            delivery_ack.entry is not None or conv_id in self._session_sub_agent_names
+        ):
+            self._logger.warning(
+                "Codex-native stop succeeded but sub-agent delivery was "
                 "not confirmed; session=%s reason=%s",
                 conv_id,
                 delivery_ack.reason,

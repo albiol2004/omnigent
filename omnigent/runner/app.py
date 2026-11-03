@@ -8418,9 +8418,9 @@ def create_runner_app(
         )
         from omnigent.runner.tool_dispatch import _publish_terminal_deleted_event
         from omnigent.terminals.pane_reaper import (
-            PANE_OUTPUT_BUSY_WINDOW_S,
             NativePaneReaper,
             PaneRef,
+            _pane_is_busy_after_harness,
         )
 
         def _native_panes_for_reaper() -> list[PaneRef]:
@@ -8476,51 +8476,36 @@ def create_runner_app(
             return False
 
         async def _native_pane_is_busy(pane: PaneRef) -> bool:
+            # A pane parked on a permission prompt emits nothing and reports
+            # no active turn. Reaping it kills the prompt and strands its
+            # approval card. Check before the harness-release helper so an
+            # orphaned pane still waiting on a card is not torn down.
+            if approval_wait_is_fresh(pane.conversation_id):
+                return True
             conv_id = pane.conversation_id
-            if conv_id in _active_turns or (
-                process_manager is not None and process_manager.has_active_turn(conv_id)
-            ):
-                return True
-            # A pane parked on a permission prompt emits nothing and reports no
-            # active turn, so every signal above reads idle. Reaping it kills the
-            # prompt and strands its approval card unanswerable.
-            if approval_wait_is_fresh(conv_id):
-                return True
-            # An attached viewer alone does not spare the pane (a tab left open
-            # overnight kept idle native stacks resident). Count it only when a
-            # human drove it recently: a CLI keypress, or any web-bridge event.
-            input_at = await asyncio.to_thread(
-                _tmux_last_client_input_at, str(pane.socket_path), "main"
-            )
-            if input_at is not None and time.time() - input_at < PANE_OUTPUT_BUSY_WINDOW_S:
-                return True
+            # Delegated to pane_reaper so the busy logic is unit-testable
+            # without importing this 10k-line app module. See
+            # _pane_is_busy_after_harness for why an orphaned pane (harness
+            # released) ignores stale "running" status and TUI-redraw
+            # window_activity — only recent human input spares it.
             instance = _pane_reaper_registry.get(conv_id, pane.terminal_name, "main")
-            if instance is not None and instance.client_interaction_within(
-                PANE_OUTPUT_BUSY_WINDOW_S
-            ):
-                return True
-            # Output is primary evidence, independent of the status pipeline (a
-            # stalled forwarder once froze it and got a live session reaped). The
-            # watcher's screen diff ignores title updates and identical repaints.
-            screen_changed = (
-                instance.screen_changed_within(PANE_OUTPUT_BUSY_WINDOW_S)
-                if instance is not None
-                else None
+            return await _pane_is_busy_after_harness(
+                conv_id=conv_id,
+                socket_path=pane.socket_path,
+                active_turns=_active_turns,
+                process_manager=process_manager,
+                native_pane_status=_native_pane_status,
+                tmux_last_client_input_at=_tmux_last_client_input_at,
+                client_interaction_within=(
+                    instance.client_interaction_within if instance is not None else None
+                ),
+                tmux_window_activity_at=_tmux_window_activity_at,
+                now=time.time(),
+                screen_changed_within=(
+                    instance.screen_changed_within if instance is not None else None
+                ),
+                server_confirms_turn_in_flight=_server_confirms_turn_in_flight,
             )
-            if screen_changed is None:
-                # No fresh watcher view: tmux stamps window_activity on every byte.
-                activity_at = await asyncio.to_thread(
-                    _tmux_window_activity_at, str(pane.socket_path), "main"
-                )
-                screen_changed = (
-                    activity_at is not None
-                    and time.time() - activity_at < PANE_OUTPUT_BUSY_WINDOW_S
-                )
-            if screen_changed:
-                return True
-            if _native_pane_status.get(conv_id) == "running":
-                return await _server_confirms_turn_in_flight(conv_id)
-            return False
 
         async def _reap_native_pane(pane: PaneRef) -> None:
             conv_id = pane.conversation_id

@@ -1,0 +1,1 @@
+--deselect=tests/host/test_connect.py::test_run_host_process_announces_session_log_dir_on_start

@@ -2,10 +2,9 @@
 
 Method: `git cherry-pick -x` of the v17 commits #12-22 in original order on top of v21-port-close.
 
-**INCOMPLETE:** #21 (`9d7976a0d`), #22 (`48757757d`) and the final
-`slice(v21-port-stop): README for v0.21.0rc1` commit were NOT made. The harness permission classifier denied
-(then required approval for) `git cherry-pick -x 9d7976a0d`; the builder did not work around it. Those three
-README/doc steps remain to be done (cherry-pick `9d7976a0d`, `48757757d`, then the README adaptation).
+**Completed by the Lead (review call):** the builder's harness denied `git cherry-pick -x 9d7976a0d`; the Lead
+picked #21 `9d7976a0d` -> `58fd53ffb` and #22 `48757757d` -> `9bbbc9552` (both clean) and adapted the README fork
+section for v0.21.0rc1 in `83fc04a14` (`slice(v21-port-stop): README for v0.21.0rc1`).
 
 ## Conflicts and how they were resolved (upstream v0.21.0rc1 kept, fork layered on top)
 

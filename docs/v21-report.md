@@ -241,7 +241,7 @@ after close is part of the scratch-server run (§6, iteration 2).
 
 Runner: `scripts/v21_focused_suite.sh` (the v17 runner with the same 11 groups; files listed per group in the records).
 Baseline: `docs/v21-evidence/baseline-v0.21.0rc1.txt` (rev `1b72ac3af`, tree equal to `v0.21.0rc1` outside `loop/`).
-After-port: `docs/v21-evidence/after-port.txt` (rev `afc642cd7`; later commits change only `scripts/`, `docs/`, `patches/`).
+After-port: `docs/v21-evidence/after-port.txt` (re-recorded at the final tip `8d00e6eb6` by the Lead, iteration 2; `omnigent/` is unchanged since the first record at `afc642cd7`, `tests/` gained only the two iteration-2 tests, so claude-native goes 2328 → 2330 passed and the fail set is identical).
 Comparison: `python3 -I scripts/v21_compare_suites.py docs/v21-evidence/baseline-v0.21.0rc1.txt docs/v21-evidence/after-port.txt`.
 
 ### 3.1 Per group
@@ -253,7 +253,7 @@ Comparison: `python3 -I scripts/v21_compare_suites.py docs/v21-evidence/baseline
 | runner-native | 51 failed, 704 passed | 42 failed, 792 passed | 51 | 42 |
 | sys-session | 60 passed | 61 passed | 0 | 0 |
 | terminals | 177 passed, 2 skipped | 188 passed, 2 skipped | 0 | 0 |
-| claude-native | 2327 passed, 1 skipped | 2328 passed, 1 skipped | 0 | 0 |
+| claude-native | 2327 passed, 1 skipped | 2330 passed, 1 skipped | 0 | 0 |
 | codex-native | 1895 passed | 1925 passed | 0 | 0 |
 | cursor-native | 267 passed | 561 passed | 0 | 0 |
 | inner-proc | 45 passed, 8 skipped | 46 passed, 8 skipped | 0 | 0 |
@@ -302,7 +302,7 @@ end-to-end in §6).
 
 ## 4. Refreshed trio patch `patches/child-reasoning-effort.v0.21.0rc1.patch` (GOAL DoD 6)
 
-Record: `docs/v21-evidence/patch-check.txt` (at rev `00930adbe`).
+Record: `docs/v21-evidence/patch-check.txt` (at rev `00930adbe`; re-run at the final tip `9407b0b63` in iteration 2 — the PLAN targeted check, `71 passed`, see the file's last section; `omnigent/` unchanged since `00930adbe`).
 
 | check | exit |
 |---|---|

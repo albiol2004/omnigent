@@ -42,3 +42,9 @@ NOTE: patch not left applied; git status after reverse is only the two new files
 $ git status --short (after check; patch not left applied)
 ?? docs/v21-evidence/patch-check.txt
 ?? patches/child-reasoning-effort.v0.21.0rc1.patch
+
+## Final-tip re-run (Lead review call, iteration 2)
+$ git rev-parse HEAD   # 9407b0b63a21fecdb73b793de9c16524448ca3ac (omnigent/ unchanged since 00930adbe: `git diff --quiet 00930adbe HEAD -- omnigent` exit=0)
+$ trio-test run --label patch-check-tip --role lead -- <PLAN.md iteration-1 patch targeted_check: rc1 read-tree + apply --check --cached, apply --check, apply, pytest tests/tools/builtins/test_child_reasoning_effort.py tests/tools/builtins/test_sys_session.py, apply -R>
+TRIO_TEST: PASS rc=0 passed=71 failed=0 skipped=0 errors=0 dur=70.3s
+(run alone: no other check was running; git status after the run: clean, patch not left applied)

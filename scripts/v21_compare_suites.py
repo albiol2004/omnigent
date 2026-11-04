@@ -8,9 +8,10 @@ AFTER group whose summary is TIMEOUT / PYTEST-TIMEOUT-HANG / NO-SUMMARY (or
 that is missing), unless BASELINE has the same outcome class for the group AND
 the per-file record (PATH, default docs/v21-evidence/after-port-perfile.txt,
 used only if it exists; records `== record: pristine ==` / `== record:
-tip ==`, optionally `pristine-capsys` / `tip-capsys`) shows that every file hanging at the tip also hangs on pristine, every
-failing id at the tip also fails on pristine/baseline, and every file absent on
-pristine (fork-added) passes at the tip.
+tip ==`, optionally `pristine-capsys` / `tip-capsys`) shows that every file
+hanging at the tip also hangs on pristine, every failing id at the tip also
+fails on pristine/baseline, and every file absent on pristine (fork-added)
+passes at the tip.
 Exit 0 iff REGRESSIONS == 0; exit 2 on unreadable/incomplete input.
 """
 
@@ -48,8 +49,15 @@ def parse_record(lines):
         elif ln.startswith("== ") and ln.endswith(" ==") and not ln.startswith("== record:"):
             key = ln[3:-3]
             group, _, fil = key.partition(" :: ")
-            cur = {"group": group, "file": fil or None, "files": [], "absent": [],
-                   "summary": None, "failed": set(), "absent_group": False}
+            cur = {
+                "group": group,
+                "file": fil or None,
+                "files": [],
+                "absent": [],
+                "summary": None,
+                "failed": set(),
+                "absent_group": False,
+            }
             # a re-run section replaces an earlier one of the same key
             if key not in rec["sections"]:
                 rec["order"].append(key)
@@ -132,7 +140,6 @@ def excused(group, after_sec, base_sec, base_ids, perfile):
     missing = [f for f in after_sec["files"] if f not in tip_files]
     if missing:
         return False, "per-file tip record lacks " + ", ".join(missing)
-    pri_ids = set().union(*[s["failed"] for s in pri_files.values()]) if pri_files else set()
     for fil, sec in sorted(tip_files.items()):
         kls = klass(sec["summary"])
         pri = pri_files.get(fil)
@@ -156,7 +163,20 @@ def excused(group, after_sec, base_sec, base_ids, perfile):
         # the --capture=sys tip record exercises the tests themselves: all must run to a summary
         if klass(sec["summary"]) != "ok":
             return False, f"{fil} does not complete at the tip even with --capture=sys"
-        new = sec["failed"] - base_ids - (set().union(*[x["failed"] for x in file_sections(perfile["pristine-capsys"], group).values()]) if "pristine-capsys" in perfile else set())
+        new = (
+            sec["failed"]
+            - base_ids
+            - (
+                set().union(
+                    *[
+                        x["failed"]
+                        for x in file_sections(perfile["pristine-capsys"], group).values()
+                    ]
+                )
+                if "pristine-capsys" in perfile
+                else set()
+            )
+        )
         if new:
             return False, f"{fil} has failures at the tip with --capture=sys: {sorted(new)[0]}"
     return True, "every tip hang/failure also occurs on pristine; fork-added files pass"
@@ -184,7 +204,11 @@ def main(argv):
         perfile_path = os.path.join(root, "docs/v21-evidence/after-port-perfile.txt")
     perfile = parse_perfile(perfile_path) if os.path.exists(perfile_path) else None
 
-    base_ids = set().union(*[s["failed"] for s in base["sections"].values()]) if base["sections"] else set()
+    base_ids = (
+        set().union(*[s["failed"] for s in base["sections"].values()])
+        if base["sections"]
+        else set()
+    )
     regressions = []
     fixed, pre = [], []
     rows = []
@@ -210,7 +234,11 @@ def main(argv):
         if akls in BAD:
             ok, why = (False, "group has no result")
             if b is not None and akls != "missing":
-                ok, why = excused(g, a, b, base_ids, perfile) if klass(b["summary"]) == akls else (False, "baseline outcome class differs")
+                ok, why = (
+                    excused(g, a, b, base_ids, perfile)
+                    if klass(b["summary"]) == akls
+                    else (False, "baseline outcome class differs")
+                )
             if ok:
                 status = f"excused ({why})"
             else:
@@ -238,7 +266,10 @@ def main(argv):
     for f in pre:
         print(f"  {f}")
     if perfile is not None:
-        print(f"per-file record: {perfile_path} (pristine rev {perfile['pristine']['rev']}, tip rev {perfile['tip']['rev']})")
+        print(
+            f"per-file record: {perfile_path} "
+            f"(pristine rev {perfile['pristine']['rev']}, tip rev {perfile['tip']['rev']})"
+        )
     for r in regressions:
         print(f"REGRESSION: {r}")
     print(f"REGRESSIONS: {len(regressions)}")

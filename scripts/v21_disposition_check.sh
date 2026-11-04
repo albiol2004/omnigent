@@ -12,6 +12,9 @@ exec python3 -I - "$REPORT" <<'PY'
 import re
 import subprocess
 import sys
+import time
+
+T0 = time.monotonic()
 
 BASE, SRC_FROM, SRC_TO = "v0.21.0rc1", "v0.17.0", "v17/trio-v0.17.0-fixes"
 
@@ -136,6 +139,10 @@ print(
     f"p+d={p + dropped}; trailers in v17 order: {'yes' if order_ok else 'no'}"
 )
 ok = not fails and order_ok and p + dropped == len(product)
+# pytest-shaped counts line for trio-test's summary parser: one "passed" per §1 row with no failure
+bad_rows = {f.split(":", 1)[0] for f in fails if f.startswith("row #")}
+n_fail = len(fails) + (0 if order_ok else 1)
+print(f"{max(len(rows) - len(bad_rows), 0)} passed, {n_fail} failed in {time.monotonic() - T0:.2f}s")
 print(f"TARGETED_CHECK: {'PASS 1' if ok else 'FAILED ' + str(len(fails)) + ' failure(s)'}")
 sys.exit(0 if ok else 1)
 PY

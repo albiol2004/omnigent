@@ -317,6 +317,12 @@ adding `_resolve_agent_spec` (+ `__all__`, `sessions/__init__.py` re-export); th
 hunk is dropped because rc1's function already has the needed shape (details in `patch-check.txt`). The patch is
 re-checked against the final tip in iteration 2.
 
+v0.21.0rc1 already forwards `reasoning_effort` to children (8 of the 10
+patch tests pass without the patch's code — Evaluator it1 base-revert probe),
+so the patch's remaining value is invalid-effort rejection and
+`_resolve_agent_spec` loading; the human decides whether it is still needed
+on 0.21.
+
 ## 5. Behaviour checks → tests (GOAL DoD 4)
 
 Pending — iteration 2.
@@ -327,4 +333,253 @@ Pending — iteration 2.
 
 ## 7. Risks, migrations, not-verifiable items, rebase to final v0.21.0, install/rollback (GOAL DoD 7)
 
-Pending — iteration 2.
+Template: `docs/v17-report.md` §6–§8. Every claim below is a command or
+file:line read in this tree at `07292095d`.
+
+### 7.1 Database migrations since v0.17.0
+
+`git diff --name-only --diff-filter=A v0.17.0 HEAD -- omnigent/db/migrations/versions`
+lists **6 new files** (v0.17.0 head is `mm1a2b3c4d5e`). Chain (Lead recon,
+verified by reading each file's `revision` / `down_revision`):
+`nf12ab34cd56` (revises `mm1a2b3c4d5e`) → `c8e4f2a6b901` →
+`{9e82957bd115, d3f7a1c9e2b4}` → `b2e4f6a8c013` (merge) → `d0a1f879a01d`.
+
+| revision id | file | revises | what it does |
+|---|---|---|---|
+| `nf12ab34cd56` | `omnigent/db/migrations/versions/nf12ab34cd56_index_conversations_by_host.py` | `mm1a2b3c4d5e` | Additive index `ix_conversation_metadata_host_id` on `omnigent_conversation_metadata(workspace_id, host_id, id)` for host-bound session recovery. PostgreSQL: `CREATE INDEX CONCURRENTLY` in an autocommit block; drops an INVALID leftover first (`nf12ab34cd56_index_conversations_by_host.py:21-46`). Other dialects: `op.create_index`. `downgrade()` = `op.drop_index` (`:49-50`). No data change. |
+| `c8e4f2a6b901` | `omnigent/db/migrations/versions/c8e4f2a6b901_add_scheduled_task_dispatch_fields.py` | `nf12ab34cd56` | Widens scheduled-task/run timestamps Integer→BigInteger; adds `next_run_at`, `project_id`, `delegation_ref`, due index; run `trigger_key`/`host_id`/`lease_expires_at`, uniqueness, expired-claim index; check constraint now allows status `6` (`:30-78`). Docstring: deploy before consumers; reserve status 6 until readers support starting. `downgrade()` is **online-only** (`context.is_offline_mode()` raises `:83-86`) and **guarded**: refuses if any run has status 6 or timestamps outside signed 32-bit (`:87-104`); then **discards** the new columns (`:106-141`). |
+| `9e82957bd115` | `omnigent/db/migrations/versions/9e82957bd115_add_scheduled_task_completed_state.py` | `c8e4f2a6b901` | Replaces `ck_scheduled_tasks_state` with `ck_scheduled_tasks_lifecycle_state` allowing state `4` (completed) (`:24-31`). `downgrade()` online-only and **guarded**: refuses while any task is completed (`:34-41`). No row rewrite on upgrade. |
+| `d3f7a1c9e2b4` | `omnigent/db/migrations/versions/d3f7a1c9e2b4_add_pull_requests_to_conversation_metadata.py` | `c8e4f2a6b901` | Adds nullable compressed `pull_requests` LargeBinary on `omnigent_conversation_metadata` (`:31-33`). Additive, no backfill. `downgrade()` drops the column (**discards** stored copies; hosts re-report) (`:36-39`). Parallel branch with `9e82957bd115`. |
+| `b2e4f6a8c013` | `omnigent/db/migrations/versions/b2e4f6a8c013_merge_completed_state_and_pull_requests.py` | `9e82957bd115`, `d3f7a1c9e2b4` | Alembic merge only. `upgrade()`/`downgrade()` are empty (`:18-23`); no schema or data change. |
+| `d0a1f879a01d` | `omnigent/db/migrations/versions/d0a1f879a01d_add_scheduled_task_session_mode.py` | `b2e4f6a8c013` | Adds `session_mode` (NOT NULL, server_default `"1"`, check IN (1,2)) and nullable `session_id` on `scheduled_tasks`; new index `ix_scheduled_task_runs_conversation_status` (`:33-45`). Existing tasks default to a new session per run. `downgrade()` drops the index and both columns (`:48-54`) — continued tasks would start a new session each run again. Not a row-delete; default backfill only. |
+
+Head revision: `d0a1f879a01d`
+
+The fork adds **no** migration: `git diff --name-only --diff-filter=A v0.21.0rc1 HEAD -- omnigent/db` is empty.
+
+How the server applies them on start (`omnigent/db/utils.py`):
+- `_initialize_or_verify_schema` (`:768`): fresh DB → `_run_migrations`; at head → no-op; **Behind head** → warning `"Omnigent database schema is out of date … attempting automatic migration"` (`:805-812`) then `_run_migrations`.
+- `_run_migrations` (`:561`) always calls Alembic `command.upgrade(..., "head")` (`:606`).
+- Manual path still exists: `omnigent debug db-upgrade` (error text at `:819`).
+
+**Downgrade is not supported.** `_verify_db_revision_is_supported` (`:745-765`) raises
+`RuntimeError("Omnigent database schema is newer than this version of Omnigent … Upgrade Omnigent before using this database.")`
+when this build does not know the stamped revision. There is no `command.downgrade` CLI.
+`c8e4f2a6b901` / `9e82957bd115` downgrades are guarded/online-only; `d3f7a1c9e2b4` discards PR copies.
+
+A live DB still on v0.17.0 (`mm1a2b3c4d5e`) gets **all six** revisions in one start
+(behind-head path above). Snapshot `chat.db` first (§7.5).
+
+### 7.2 Config / preference / API changes
+
+- **#10850 (`f93be3274`, `fix: sync runtime and session validation improvements`)**:
+  session-ownership for permission/approval-mode changes, terminal launch args,
+  terminal transfers, external transcript / native mode-change events; native
+  approval hooks need edit access. Project `.omnigent/config.yaml` can no longer
+  set `server` or per-harness `command`/`args`: `omnigent/config.py::_merge_effective_config`
+  (`:82-114`) copies project keys except `server` and `harness`, then allows only
+  `harness.default`; `_ignored_project_harness_keys` (`:74-79`) logs ignored
+  per-harness names without printing their command/args.
+  Consumers (key **names** / line numbers only — values not recorded):
+  `find /home/coder/personal -maxdepth 4 -path '*/.omnigent/config.yaml'` found
+  **no** files. `~/.omnigent/config.yaml` exists; `grep -nE '^\s*(server|command|args)\s*:'`
+  matched key `server` at line 4 (no `command` / `args` keys).
+- **#10906 (`60a5f61f7`)**: HTTP bundle restrictions in
+  `omnigent/server/bundles.py` (`validate_agent_bundle` `:102-171`,
+  `_reject_uploaded_callable_tools` `:36-65`, `_reject_uploaded_escaping_cwd`
+  `:92-99`) and `omnigent/spec/__init__.py::load` (`enforce_handler_allowlist`
+  `:164-201`, applied `:303`). Untrusted uploads: no server-side callable /
+  `.py`/`.ts` source-file tools, no unregistered `type: function` policy
+  handlers, no absolute/`..` working dirs. Trio's
+  `omnigent.inner.nessie.policies.blast_radius` guardrail is a **registered
+  shim**: `omnigent/policies/builtins/__init__.py` `BUILTIN_POLICY_MODULES`
+  (`:37-52`) includes `"omnigent.inner.nessie.policies"`; that module
+  (`omnigent/inner/nessie/policies.py:1-22`) re-exports
+  `omnigent.policies.builtins.orchestration` (including `blast_radius` at
+  `orchestration.py:352`) under the legacy handler prefix.
+- **#9844 (`d2e077a1e`)**: tighter shell-policy gating — preserve shell groups
+  and quoted arguments (`omnigent/policies/builtins/_shell.py:307`) and Git
+  global options that consume a following token
+  (`omnigent/policies/builtins/working_dir.py:74`). Bundles/runtime tool
+  validation aligned in the same commit.
+- **Python client pagination**: `sdks/python-client/omnigent_client/_sessions.py`
+  `list_items()` (`:953-992`) and `child_sessions()` (`:994-1031`) now return
+  `PaginatedList`. `git show v0.17.0:sdks/python-client/omnigent_client/_sessions.py`
+  shows `list_items` `:880` → `builtins.list[dict[str, Any]]` and
+  `child_sessions` `:920` → `builtins.list[dict[str, Any]]`. Callers that
+  iterate the return value as a list must use `.data`.
+- **Feature flags** (`git diff v0.17.0 HEAD -- omnigent/server/feature_flags.py`):
+  **removed / renamed:** `Feature.HARNESS_SETTINGS_UI = "harness_settings_ui"`
+  is gone (`e0f7d2e73` #10459: "Deployments that still list harness_settings_ui
+  in OMNIGENT_FEATURES must remove it: unknown names fail startup.").
+  **Added:** `sandbox_profiles`, `session_orchestration`, `codex_plan_at_launch`,
+  `arca_shutdown_warnings`, `import_review`, `custom_agents_settings_ui`,
+  `sidebar_grouping_ui`, `claude_osc_status`, `workspace_content_search`,
+  `grid_sessions_display_ui`, `automations_v2`, `splittable_terminal_view_ui`
+  (`omnigent/server/feature_flags.py:23-40`). Unset env now uses
+  `default_enabled` rather than "all off". Unknown names still fail startup
+  (`resolve_feature_flags` docstring `:205` and `ValueError` `:236-240`).
+- **GET `/v1/sessions` and GET `/v1/sessions/{id}` query params**
+  (`omnigent/server/routes/sessions/routes_core.py`):
+  - GET by id (`get_session` `:1647-1655`): v0.17.0 had `include_items`,
+    `include_liveness`, `refresh_state`, `include_usage`
+    (`git show v0.17.0:…routes_core.py:1200-1203`). **New:** `include_live_status`
+    (default `True`, `:1653`).
+  - List (`list_sessions` `:1797-1812`): v0.17.0 already had `limit`, `after`,
+    `before`, `agent_id`, `agent_name`, `order`, `sort_by`, `search_query`,
+    `include_archived`, `kind`, `project`, `pinned`, `visibility`
+    (`v0.17.0:1315-1327`). **New:** `search_scope` (default `"all"`,
+    pattern `all|title|content`, `:1807`). App Control already uses
+    `?include_items=false` and `?limit&sort_by=updated_at&order=desc` (GOAL);
+    those params still exist.
+- **Notable removals** (`git log --oneline v0.17.0..v0.21.0rc1 | grep -iE 'break|!:|remove|retire|rename'`),
+  HTTP/CLI/config only:
+  - `e0f7d2e73` retire `harness_settings_ui` (env; see flags above).
+  - `8a1df12d8` Rename AI Gateway to Unity Gateway (#8812) — branding/API naming.
+  - `3ab97433c` `omnigent agent add` / list / remove user agents (#8677) — new CLI,
+    not a removal.
+  - Most other hits are tests, owners, Vitest/Tinypool, iOS keyboard, lab
+    connections, or internal pollers — not HTTP/CLI/config contracts.
+- **`uv.lock` / `pyproject.toml`**: `git diff --stat v0.17.0 v0.21.0rc1 -- pyproject.toml uv.lock`
+  → `pyproject.toml | 72 ++-`, `uv.lock | 1848 +++++++++++++++++++++++++++++++-------------------------`,
+  `2 files changed, 1075 insertions(+), 845 deletions(-)`. `pyproject.toml`
+  version `0.17.0` → `0.21.0rc1` (and matching `omnigent-client` /
+  `omnigent-ui-sdk` pins); floors/caps move for rich, pillow, cachetools,
+  argon2-cffi, packaging, certifi. `uv sync --frozen` on this tag needs the
+  lock that ships with rc1 (do not keep a v0.17 lock).
+
+### 7.3 Not verifiable without the live server
+
+Scratch-server checks (other slices, isolated HOME/port ≠ 6767) cannot show:
+
+- Real `cursor-agent` / `codex` / `claude` turns (receipts, plugin-dir, compact,
+  hook Unix-socket MCP, hook TMPDIR). Gated e2e:
+  `tests/e2e/test_cursor_native_plugin_dir_cli_e2e.py` and related, need
+  `OMNIGENT_E2E_*=1` plus a logged-in CLI.
+- Live migration of the real `~/.omnigent/chat.db` (this slice only **read**
+  Alembic files; no copy of the live DB was migrated).
+- Live host under load: kill escalation, pane reaper, viewer-attached busy
+  rule, runner/zygote env (`OMNIGENT_CURSOR_PLUGIN_DIR`) through the real host.
+- Web UI (Harnesses/custom-agents/settings, grids, automations v2).
+- `trioctl omnigent doctor` import of `_resolve_agent_spec` (alias is in the
+  tree — `c366fd184` / `v21-port-close.md`; the import was not exercised from
+  the installed trio release).
+- The child-reasoning-effort patch driving **real Trio loops** (only apply-check
+  + unit tests + Evaluator it1 base-revert probe).
+- Gated e2e / skipped focused-group tests and anything that needs the live
+  `omni server` on 127.0.0.1:6767 (GOAL forbids contacting it).
+
+### 7.4 Rebase onto final v0.21.0
+
+Chosen method: **new branch + `git cherry-pick -x`** of
+`v0.21.0rc1..trio-v0.21.0-fixes`, skipping `loop/`-only commits. Justification:
+this port already used `-x` in original v17 order; `git rebase --onto v0.21.0
+v0.21.0rc1 trio-v0.21.0-fixes` would rewrite those commits and re-open the
+version/lock conflicts the Lead resolved by keeping upstream. Cherry-pick
+keeps trailers and lets `loop/`-only commits stay dropped.
+
+Exact commands (documentation; this slice does not run them):
+
+```sh
+git fetch upstream --tags
+git rev-parse v0.21.0^{}          # verify the tag object
+git merge-base --is-ancestor v0.21.0rc1 v0.21.0   # expect 0 if rc1 is ancestor
+git switch -c trio-v0.21.0-final v0.21.0
+# product commits only (exclude paths that are only loop/ / loop-archive-*):
+git log --reverse --pretty=%H v0.21.0rc1..trio-v0.21.0-fixes |
+  while read -r c; do
+    paths=$(git diff-tree --no-commit-id --name-only -r "$c")
+    echo "$paths" | grep -qvE '^(loop/|loop-archive)' || continue
+    git cherry-pick -x "$c"
+  done
+```
+
+Conflict policy: keep **upstream** `omnigent/version.py`, `pyproject.toml`,
+`uv.lock`, and `sdks/*/pyproject.toml` / `integrations/slack/pyproject.toml`.
+Re-layer fork hunks on top of the v0.21.0 files (same as the rc1 port).
+
+Then re-run (after retargeting rc1 literals):
+
+```sh
+scripts/v21_focused_suite.sh          # on pristine v0.21.0 (new baseline) and on the rebased tip
+python3 -I scripts/v21_compare_suites.py docs/v21-evidence/baseline-v0.21.0.txt docs/v21-evidence/after-port.txt
+scripts/v21_overlap_check.sh
+scripts/v21_disposition_check.sh
+# patch apply checks (same GIT_INDEX_FILE read-tree pattern as docs/v21-evidence/patch-check.txt, retargeted to v0.21.0)
+scripts/v21_consumer_compat.sh        # not in this tree yet; run when that slice lands
+```
+
+`v0.21.0rc1` literals that must become `v0.21.0` (or a new baseline filename):
+
+| file:line | current literal |
+|---|---|
+| `scripts/v21_disposition_check.sh:7` | comment "ancestor of v0.21.0rc1" |
+| `scripts/v21_disposition_check.sh:19` | `BASE, SRC_FROM, SRC_TO = "v0.21.0rc1", ...` |
+| `scripts/v21_focused_suite.sh:5` | comment "v0.21.0rc1 test tree" |
+| `scripts/v21_focused_suite.sh:39` | `git diff --quiet v0.21.0rc1 HEAD` |
+| `scripts/v21_focused_suite.sh:40` | `emit "pristine-vs-v0.21.0rc1: yes"` |
+| `scripts/v21_focused_suite.sh:42` | `emit "pristine-vs-v0.21.0rc1: no"` |
+| `scripts/v21_overlap_check.sh:5` | comment "tag v0.21.0rc1" |
+| `scripts/v21_overlap_check.sh:18` | `TAG="v0.21.0rc1"` |
+| `scripts/v21_compare_suites.py` | no `v0.21.0rc1` literal (paths are caller-supplied) |
+| `scripts/v21_consumer_compat.sh` | file absent on this revision |
+
+Also rename `docs/v21-evidence/baseline-v0.21.0rc1.txt` when a new baseline is
+recorded. Patch filename `patches/child-reasoning-effort.v0.21.0rc1.patch`
+needs a v0.21.0 counterpart if the hunks still apply.
+
+### 7.5 Install and rollback for the live editable install (documentation only — not run)
+
+The live install is the editable `/home/coder/omnigent` (GOAL: currently
+branch `trio-v0.17.0-fixes`, v0.17.0 + fork, with the child-reasoning-effort
+patch as uncommitted edits). **This loop did not run any command in
+`/home/coder/omnigent`** (not even `git status`). Method reused from
+`~/.local/state/omnigent-upgrade/upgrade-to-0.14.sh` (read-only): stop
+services, snapshot `chat.db` (+ `-wal`/`-shm` via `sqlite3 .backup`) + tool
+env + git HEAD/branch/working-tree diff, switch, health-check, auto-rollback
+on failure. DB snapshot is **mandatory** (migrations are forward-only, §7.1).
+
+Delivered script: `docs/v21-evidence/upgrade-to-0.21.sh` (adapted from
+upgrade-to-0.14.sh). It **refuses to run** unless `CONFIRM_LIVE_UPGRADE=1`,
+contains the rollback path, and was only syntax-checked (`bash -n`; **never
+executed**).
+
+DB location (cite):
+- `omnigent/host/local_server.py::_local_data_dir` (`:80-102`):
+  `$OMNIGENT_DATA_DIR` if set, else `~/.omnigent`.
+- `omnigent/cli.py::_default_db_uri` (`:1296-1312`):
+  `sqlite:///<data_dir>/chat.db`. `--database-uri` / config still override.
+
+**Pre-flight (human, before stopping anything)**
+
+```sh
+D="${OMNIGENT_DATA_DIR:-$HOME/.omnigent}"; TS=$(date +%Y%m%dT%H%M%S)
+B="$HOME/omnigent-backups/pre-v0.21.0-$TS"; mkdir -p "$B"
+# 1. HUMAN: stop server/host/runner the way you normally stop them.
+# 2. consistent DB copy (WAL folded in):
+sqlite3 "$D/chat.db" ".backup '$B/chat.db'"
+sqlite3 "$B/chat.db" "select version_num from alembic_version"   # expect mm1a2b3c4d5e
+# 3. record checkout (human, in /home/coder/omnigent — not this loop):
+# git rev-parse HEAD; git branch --show-current  # expect trio-v0.17.0-fixes
+# git diff > "$B/working-tree.diff"               # trio patch if applied
+```
+
+**Install (human; or `CONFIRM_LIVE_UPGRADE=1 docs/v21-evidence/upgrade-to-0.21.sh`)**
+
+Stop services → snapshot (script uses `sqlite3 .backup`) → switch live
+checkout to the verified `trio-v0.21.0-fixes` tip → `uv tool install --editable`
+→ start; first start migrates `mm1a2b3c4d5e` → `d0a1f879a01d`.
+
+**Verify**
+
+```sh
+sqlite3 "${OMNIGENT_DATA_DIR:-$HOME/.omnigent}/chat.db" "select version_num from alembic_version"
+# must equal Head revision from 7.1: d0a1f879a01d
+omnigent --version    # 0.21.0rc1 (or 0.21.0 after the final rebase)
+```
+
+**Rollback** (script `upgrade-to-0.21.sh rollback`, or the same steps by hand):
+stop services; restore the snapshot `chat.db` (replace live `chat.db` +
+`-wal`/`-shm`); restore tool-env and git `trio-v0.17.0-fixes` + working-tree
+diff; start. Do **not** switch the branch without restoring the DB: v0.17.0
+code hits the "schema is newer" guard (§7.1) on a DB stamped `d0a1f879a01d`.

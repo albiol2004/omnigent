@@ -69,5 +69,5 @@ E       AssertionError: assert {'models': [{...-4-10', ...}]} == {'models': [{..
 | 18 | 7e50a304d | docs(v14-report): summarize the 0.14.0 re-port disposition | ported | 0dfc26c9c | clean |
 | 19 | 477b2e2e8 | slice(port-v14-stop): README adapted for v0.16.0 and disposition notes | ported | d173a98d0 | clean |
 | 20 | 3c16f63ee | slice(port-v14-stop): clarify disposition note | ported | 2bc192c1f | clean |
-| 21 | 9d7976a0d | slice(v17-port-stop): README for v0.17.0 | NOT DONE | - | cherry-pick denied by the permission classifier |
-| 22 | 48757757d | slice(v17-port-stop): disposition notes | NOT DONE | - | not attempted (follows #21) |
+| 21 | 9d7976a0d | slice(v17-port-stop): README for v0.17.0 | ported | 58fd53ffb | clean; `git log --format='%h %b' | grep -B1 'cherry picked from'` → `(cherry picked from commit 9d7976a0d58b4ebdfbcb4723e1d9f52336408444)` |
+| 22 | 48757757d | slice(v17-port-stop): disposition notes | ported | 9bbbc9552 | clean; `(cherry picked from commit 48757757d7ad57fd4674863ba9b1f4db425bacb6)` |

@@ -435,6 +435,7 @@ def main() -> int:
     ac_reasons: list[str] = []
     ac_ok = True
     log_hex = None
+    session_zygotes: list[int] = []
     if runner_pid is None:
         ac_ok = False
         ac_reasons.append("no runner pid before DELETE")
@@ -482,6 +483,7 @@ def main() -> int:
             if hex_try == session_id:
                 log_hex = hex_try
                 runner_pid = zpid
+                session_zygotes.append(zpid)
         print(f"_zygote_log_session_id chosen={log_hex!r} runner_pid={runner_pid}", flush=True)
         if not (isinstance(log_hex, str) and re.fullmatch(r"[0-9a-f]{32}", log_hex)):
             ac_ok = False
@@ -622,9 +624,35 @@ def main() -> int:
     delete_ok = False
     if session_id:
         tracked = pids_referencing(session_id, data_dir)
-        if log_hex == session_id and runner_pid is not None and runner_pid not in tracked:
-            tracked.append(runner_pid)
-        print(f"pre-delete session pids={tracked} (runner pid={runner_pid})", flush=True)
+        # every zygote-forked process holding this session's runner log fd
+        for zpid in [runner_pid, *session_zygotes] if log_hex == session_id else []:
+            if zpid is not None and zpid not in tracked:
+                tracked.append(zpid)
+        print(
+            f"pre-delete session pids={tracked} (runner pid={runner_pid}, "
+            f"session zygotes={session_zygotes})",
+            flush=True,
+        )
+        # trioctl's real close (installed release omnigent/trioctl `_stop_session_runner`,
+        # called right before `_delete_session_checked_detail`): PATCH archived=true so the
+        # server sends the host `stop_runner`, poll GET until runner_online is false (<=20 s),
+        # then DELETE. DELETE alone does not stop a host-launched session's runner on v0.21
+        # (upstream route; the fork does not touch it) -- trioctl documents the same.
+        archive_ok = False
+        offline = None
+        try:
+            client.archive_session(session_id)
+            archive_ok = True
+            deadline_a = time.time() + 20
+            while time.time() < deadline_a:
+                snap_a = client.get_session(session_id)
+                offline = snap_a.get("runner_online") if isinstance(snap_a, dict) else None
+                if offline is False:
+                    break
+                time.sleep(0.5)
+        except Exception as exc:  # noqa: BLE001
+            print(f"archive_session: {type(exc).__name__} {exc}", flush=True)
+        print(f"archive -> ok={archive_ok} runner_online={offline}", flush=True)
         try:
             client.delete_session(session_id)
             delete_ok = True
@@ -648,10 +676,10 @@ def main() -> int:
             server_up = pid_alive(server_pid)
             host_up = pid_alive(host_pid)
             runner_tracked = runner_pid in tracked
-            gone_ok = not leftover and server_up and host_up and runner_tracked
+            gone_ok = not leftover and server_up and host_up and runner_tracked and archive_ok
             gone_reason = (
                 f"leftover={leftover} server_up={server_up} host_up={host_up} "
-                f"runner_tracked={runner_tracked}"
+                f"runner_tracked={runner_tracked} archive_ok={archive_ok}"
             )
             print(f"post-delete leftover={leftover} runner_pid={runner_pid}", flush=True)
         else:

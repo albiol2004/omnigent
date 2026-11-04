@@ -1,44 +1,45 @@
 Checked 173 packages in 2ms
-SCRATCH_PORT: 57245
-SCRATCH_DIR: /var/tmp/v21s.AdZoU8
-SERVER_PID: 453059
-HOST_PID: 453362
-STATE_FILE: /var/tmp/v21s.GosqdO/stack.env
-create_session exception: PromptDeliveryUncertain: first prompt on 81a0c01fcfcf479d81c11114e5235ec4: the posted copy is unaccounted for after 20s; not re-posting, session kept
+SCRATCH_PORT: 48623
+SCRATCH_DIR: /var/tmp/v21s.a5H80I
+SERVER_PID: 479078
+HOST_PID: 479277
+STATE_FILE: /var/tmp/v21s.uXc9SE/stack.env
+create_session exception: PromptDeliveryUncertain: first prompt on d2fc5ca7037244f6b4f1b4e92ad9dca4: the posted copy is unaccounted for after 20s; not re-posting, session kept
 events: POST /events -> 202
 CHECK trio-broker: PASS
-unregistered-fn: status=400 body=POST http://127.0.0.1:57245/v1/sessions failed with HTTP 400: {"error":{"code":"invalid_input","message":"Policy 'blast_radius': handler 'os.system' is not a registered policy handler. Uploaded agent bundles may only use handlers from the policy registry; a server admin must add custom handlers via the 'policy_modules' config."}}
-cwd-abs: status=400 body=POST http://127.0.0.1:57245/v1/sessions failed with HTTP 400: {"error":{"code":"invalid_input","message":"agent os_env.cwd must be a relative path within the workspace (no absolute paths or '..'); got '/tmp'"}}
-cwd-dotdot: status=400 body=POST http://127.0.0.1:57245/v1/sessions failed with HTTP 400: {"error":{"code":"invalid_input","message":"agent os_env.cwd must be a relative path within the workspace (no absolute paths or '..'); got '../x'"}}
+unregistered-fn: status=400 body=POST http://127.0.0.1:48623/v1/sessions failed with HTTP 400: {"error":{"code":"invalid_input","message":"Policy 'blast_radius': handler 'os.system' is not a registered policy handler. Uploaded agent bundles may only use handlers from the policy registry; a server admin must add custom handlers via the 'policy_modules' config."}}
+cwd-abs: status=400 body=POST http://127.0.0.1:48623/v1/sessions failed with HTTP 400: {"error":{"code":"invalid_input","message":"agent os_env.cwd must be a relative path within the workspace (no absolute paths or '..'); got '/tmp'"}}
+cwd-dotdot: status=400 body=POST http://127.0.0.1:48623/v1/sessions failed with HTTP 400: {"error":{"code":"invalid_input","message":"agent os_env.cwd must be a relative path within the workspace (no absolute paths or '..'); got '../x'"}}
 CHECK bundle-restrictions-10906: PASS
 broker_http has no permission_mode helper; PATCH as owner
-PATCH permission_mode=plan -> BrokerHttpError status=400 PATCH http://127.0.0.1:57245/v1/sessions/81a0c01fcfcf479d81c11114e5235ec4 failed with HTTP 400: {"error":{"code":"invalid_input","message":"permission_mode is only supported for claude-native and devin-native sessions"}}
-runner_pid=454382 session_id=81a0c01fcfcf479d81c11114e5235ec4
-session pid=454381 argv=['tmux', '-S', '/var/tmp/v21s.AdZoU8/tmp/omnigent-terminal-vcj1anss/tmux.sock', '-f', '/dev/null', 'set-option', '-g', 'history-limit'] ppid=453362
-  fds=['/dev/null', '/dev/null', '/dev/null', 'pipe:[2648127869]', 'pipe:[2648127869]', '/dev/pts/ptmx', 'socket:[2648127870]']
-  _zygote_log_session_id(454381)=None
-session pid=454382 argv=['/usr/local/bin/cursor-agent', '--use-system-ca', '/usr/local/share/cursor-agent/versions/2026.10.22-27dcf5f/index.js', '--yolo', '--approve-mcps', '--model', 'glm-5.2-max'] ppid=454381
-  fds=['/dev/pts/0', '/dev/pts/0', 'anon_inode:[eventpoll]', 'anon_inode:[io_uring]', 'pipe:[2648132640]', 'pipe:[2648132640]', 'anon_inode:[eventfd]', 'anon_inode:[eventpoll]', 'anon_inode:[io_uring]', 'pipe:[2648123088]', 'pipe:[2648123088]', 'anon_inode:[eventfd]', '/dev/pts/0', '/dev/pts/0', '/dev/null', '/dev/pts/0', '/dev/pts/0', 'anon_inode:[eventpoll]', 'anon_inode:[eventfd]', 'anon_inode:[eventpoll]', 'socket:[2648127892]', 'socket:[2648127893]', 'socket:[2648127892]', 'anon_inode:[eventpoll]']
-  _zygote_log_session_id(454382)=None
-scratch-host zygote pids=[453463, 453827, 453850]
-  zygote 453463 log_hex=None ppid=453362
-  zygote 453827 log_hex='81a0c01fcfcf479d81c11114e5235ec4' ppid=453463
-  zygote 453850 log_hex='81a0c01fcfcf479d81c11114e5235ec4' ppid=453463
-_zygote_log_session_id chosen='81a0c01fcfcf479d81c11114e5235ec4' runner_pid=453850
-log hex relation: equal to API session id 81a0c01fcfcf479d81c11114e5235ec4
-_read_environ(454381)={'OMNIGENT_RUNNER_WORKSPACE': '/var/tmp/v21s.AdZoU8/ws', 'OMNIGENT_RUNNER_LAUNCH_HARNESS': 'cursor-native', 'OMNIGENT_RUNNER_PRIMARY_SESSION_ID': '81a0c01fcfcf479d81c11114e5235ec4', 'OMNIGENT_TERMINAL_LAUNCH_SESSION_ID': '81a0c01fcfcf479d81c11114e5235ec4'}
-_read_environ chosen pid=454381 {'OMNIGENT_RUNNER_WORKSPACE': '/var/tmp/v21s.AdZoU8/ws', 'OMNIGENT_RUNNER_LAUNCH_HARNESS': 'cursor-native', 'OMNIGENT_RUNNER_PRIMARY_SESSION_ID': '81a0c01fcfcf479d81c11114e5235ec4', 'OMNIGENT_TERMINAL_LAUNCH_SESSION_ID': '81a0c01fcfcf479d81c11114e5235ec4'}
-session-linked pids=[454381, 454382]
+PATCH permission_mode=plan -> BrokerHttpError status=400 PATCH http://127.0.0.1:48623/v1/sessions/d2fc5ca7037244f6b4f1b4e92ad9dca4 failed with HTTP 400: {"error":{"code":"invalid_input","message":"permission_mode is only supported for claude-native and devin-native sessions"}}
+runner_pid=480377 session_id=d2fc5ca7037244f6b4f1b4e92ad9dca4
+session pid=480376 argv=['tmux', '-S', '/var/tmp/v21s.a5H80I/tmp/omnigent-terminal-muq494ky/tmux.sock', '-f', '/dev/null', 'set-option', '-g', 'history-limit'] ppid=479277
+  fds=['/dev/null', '/dev/null', '/dev/null', 'pipe:[2648639940]', 'pipe:[2648639940]', '/dev/pts/ptmx', 'socket:[2648639941]']
+  _zygote_log_session_id(480376)=None
+session pid=480377 argv=['/usr/local/bin/cursor-agent', '--use-system-ca', '/usr/local/share/cursor-agent/versions/2026.10.22-27dcf5f/index.js', '--yolo', '--approve-mcps', '--model', 'glm-5.2-max'] ppid=480376
+  fds=['/dev/pts/0', '/dev/pts/0', 'anon_inode:[eventpoll]', 'anon_inode:[io_uring]', 'pipe:[2648635282]', 'pipe:[2648635282]', 'anon_inode:[eventfd]', 'anon_inode:[eventpoll]', 'anon_inode:[io_uring]', 'pipe:[2648631054]', 'pipe:[2648631054]', 'anon_inode:[eventfd]', '/dev/pts/0', '/dev/pts/0', '/dev/null', '/dev/pts/0', 'anon_inode:[eventpoll]', '/dev/pts/0', 'anon_inode:[eventfd]', 'anon_inode:[eventpoll]', 'socket:[2648631553]', 'socket:[2648631554]', 'socket:[2648631553]', 'anon_inode:[eventpoll]']
+  _zygote_log_session_id(480377)=None
+scratch-host zygote pids=[479347, 479699, 479717]
+  zygote 479347 log_hex=None ppid=479277
+  zygote 479699 log_hex='d2fc5ca7037244f6b4f1b4e92ad9dca4' ppid=479347
+  zygote 479717 log_hex='d2fc5ca7037244f6b4f1b4e92ad9dca4' ppid=479347
+_zygote_log_session_id chosen='d2fc5ca7037244f6b4f1b4e92ad9dca4' runner_pid=479717
+log hex relation: equal to API session id d2fc5ca7037244f6b4f1b4e92ad9dca4
+_read_environ(480376)={'OMNIGENT_RUNNER_WORKSPACE': '/var/tmp/v21s.a5H80I/ws', 'OMNIGENT_RUNNER_LAUNCH_HARNESS': 'cursor-native', 'OMNIGENT_RUNNER_PRIMARY_SESSION_ID': 'd2fc5ca7037244f6b4f1b4e92ad9dca4', 'OMNIGENT_TERMINAL_LAUNCH_SESSION_ID': 'd2fc5ca7037244f6b4f1b4e92ad9dca4'}
+_read_environ chosen pid=480376 {'OMNIGENT_RUNNER_WORKSPACE': '/var/tmp/v21s.a5H80I/ws', 'OMNIGENT_RUNNER_LAUNCH_HARNESS': 'cursor-native', 'OMNIGENT_RUNNER_PRIMARY_SESSION_ID': 'd2fc5ca7037244f6b4f1b4e92ad9dca4', 'OMNIGENT_TERMINAL_LAUNCH_SESSION_ID': 'd2fc5ca7037244f6b4f1b4e92ad9dca4'}
+session-linked pids=[480376, 480377]
 snapshot type=dict
-runner log basenames=['runner-81a0c01fcfcf479d81c11114e5235ec4-20261104-044929-806750.connected', 'runner-81a0c01fcfcf479d81c11114e5235ec4-20261104-044929-806750.log']
-runner logs matching App Control regex=['runner-81a0c01fcfcf479d81c11114e5235ec4-20261104-044929-806750.log']
+runner log basenames=['runner-d2fc5ca7037244f6b4f1b4e92ad9dca4-20261104-050047-730725.connected', 'runner-d2fc5ca7037244f6b4f1b4e92ad9dca4-20261104-050047-730725.log']
+runner logs matching App Control regex=['runner-d2fc5ca7037244f6b4f1b4e92ad9dca4-20261104-050047-730725.log']
 CHECK appcontrol-dev-processes: PASS
-http_fetch_one={'id': '81a0c01fcfcf479d81c11114e5235ec4', 'title': 'v21-scratch-builder', 'status': 'failed', 'agent_name': 'trio-omnigent-builder', 'harness': 'cursor-native', 'workspace': '/var/tmp/v21s.AdZoU8/ws', 'parent_session_id': None, 'archived': False, 'sub_agent_name': None, 'updated_at': 1793767821} list_hit={'id': '81a0c01fcfcf479d81c11114e5235ec4', 'title': 'v21-scratch-builder', 'status': 'failed', 'agent_name': 'trio-omnigent-builder', 'harness': 'cursor-native', 'workspace': '/var/tmp/v21s.AdZoU8/ws', 'archived': False, 'updated_at': 1793767821} api_title='v21-scratch-builder'
+http_fetch_one={'id': 'd2fc5ca7037244f6b4f1b4e92ad9dca4', 'title': 'v21-scratch-builder', 'status': 'failed', 'agent_name': 'trio-omnigent-builder', 'harness': 'cursor-native', 'workspace': '/var/tmp/v21s.a5H80I/ws', 'parent_session_id': None, 'archived': False, 'sub_agent_name': None, 'updated_at': 1793768499} list_hit={'id': 'd2fc5ca7037244f6b4f1b4e92ad9dca4', 'title': 'v21-scratch-builder', 'status': 'failed', 'agent_name': 'trio-omnigent-builder', 'harness': 'cursor-native', 'workspace': '/var/tmp/v21s.a5H80I/ws', 'archived': False, 'updated_at': 1793768499} api_title='v21-scratch-builder'
 CHECK appcontrol-titles: PASS
-pre-delete session pids=[454381, 454382, 453850] (runner pid=453850)
-post-delete leftover=[] runner_pid=453850
+pre-delete session pids=[480376, 480377, 479717, 479699] (runner pid=479717, session zygotes=[479699, 479717])
+archive -> ok=True runner_online=False
+post-delete leftover=[] runner_pid=479717
 CHECK runner-gone-after-delete: PASS
 CHECK ownership-10850: PASS
 GUARDED_VIOLATIONS=0
 CHECK teardown-clean: PASS
-7 passed, 0 failed in 102s
+7 passed, 0 failed in 106s

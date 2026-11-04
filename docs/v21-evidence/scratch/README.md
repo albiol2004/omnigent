@@ -18,9 +18,10 @@ Overall wall clock is capped at 300 s.
 
 Transcript:
 
-- Without `V21_SCRATCH_TRANSCRIPT`, the script tees into the scratch dir
-  (`/var/tmp/v21s.*/transcript.txt`) and prints `TRANSCRIPT: <path>` (then
-  removes the scratch tree). It does **not** write any tracked file.
+- Without `V21_SCRATCH_TRANSCRIPT`, the script tees into a holder dir
+  (`/var/tmp/v21s.*/transcript.txt`, kept) and prints `TRANSCRIPT: <path>`;
+  the scratch tree itself is removed after teardown unless
+  `V21_KEEP_SCRATCH=1`. It does **not** write any tracked file.
 - To commit a passing run:
 
 ```bash
@@ -140,11 +141,14 @@ exists and a zygote-forked runner launched.
 
 - `trio-broker` → broker register (every trio role bundle) / host-launched
   session / GET one / POST events / GET items / GET list.
-- `runner-gone-after-delete` → DELETE 2xx, then within 60 s the zygote-forked
-  runner (the pid holding the runner log fd, which App Control maps to the
-  session id) and every process whose environ names the session are gone,
-  while scratch server+host stay up. The runner pid must be in the tracked
-  set (its environ is the zygote's, so an environ scan alone misses it).
+- `runner-gone-after-delete` → trioctl's real close sequence (installed
+  release `omnigent/trioctl` `_stop_session_runner`, called just before
+  `_delete_session_checked_detail`): PATCH `archived: true` (the server sends
+  the host `stop_runner`), poll GET until `runner_online` is false (≤20 s),
+  then DELETE 2xx; within 60 s every zygote-forked process holding the
+  session's runner log fd (the runner and the harness process it forks
+  through the zygote), and every process whose environ names the session, is
+  gone, while scratch server+host stay up.
 - `bundle-restrictions-10906` → #10906 4xx for unregistered handler,
   absolute and `..` cwd; unmodified trio role bundles accepted.
 - `ownership-10850` → the same token-less caller (trio's single-user loopback
@@ -155,6 +159,20 @@ exists and a zygote-forked runner launched.
   opener violations.
 
 ## Incompatibilities
+
+- **DELETE alone does not stop the host runner** (upstream behaviour, not a
+  fork regression, no consumer change): with a bare DELETE the session's
+  harness and tmux go, but the runner the host forked (host log `Forked runner
+  via zygote (… runner pid=N)`) stays up until its idle reaper; observed in
+  the Lead's it2 review run (runner alive 61 s after DELETE until teardown
+  SIGTERM). The DELETE route (`omnigent/server/routes/sessions/routes_events.py`
+  `delete_session`) has no fork hunk and never calls
+  `_stop_host_runner_intentionally`; only the archive path does
+  (`omnigent/server/routes/_sessions/orchestration.py`, `_owns_host_runner` →
+  `_stop_host_runner_intentionally`). trioctl already archives before it
+  deletes (comment "DELETE alone does not stop a host-launched session's
+  dedicated runner" in `_prune_broker_sessions`, trioctl:5135), so the check follows that
+  sequence.
 
 (Filled if a CHECK fails because a consumer expectation no longer matches
 v0.21, not because of a harness bug.)

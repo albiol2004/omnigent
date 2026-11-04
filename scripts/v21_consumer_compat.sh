@@ -98,7 +98,7 @@ PY
   if [[ -z "$TRANSCRIPT_COPY" && -n "$TMP_TRANSCRIPT" ]]; then
     echo "TRANSCRIPT: $TMP_TRANSCRIPT"
   fi
-  if [[ -n "$SCRATCH_DIR" && -d "$SCRATCH_DIR" && "$KEEP_SCRATCH" -eq 0 ]]; then
+  if [[ -n "$SCRATCH_DIR" && -d "$SCRATCH_DIR" && "${V21_KEEP_SCRATCH:-0}" != "1" ]]; then
     rm -rf "$SCRATCH_DIR" || true
   fi
   local elapsed=$((SECONDS - START_MONO))

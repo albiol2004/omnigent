@@ -11,7 +11,7 @@ interaction test.
 | input fence | `tests/server/integration/test_input_fence.py::test_verified_fence_rejects_every_input_api_and_persists`, `::test_new_input_racing_a_close_is_refused`, `::test_open_is_runner_first_and_fails_closed`, `::test_injection_after_receipt_fails_verification`, `::test_crash_mid_close_reconciles_on_retry`; `tests/test_cursor_native_completion_receipt.py::test_fenced_pane_refuses_injection_before_touching_tmux`, `::test_fence_close_linearizes_against_concurrent_injections` | runner-first fence |
 | stop-routing + kill escalation (#10251) | `tests/server/test_v21_shared_runner_kill_on_close.py::test_stop_subagent_child_kills_native_harness_without_stopping_shared_host_runner`, `::test_stop_top_level_host_session_stops_owned_host_runner`; `tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_session_on_codex_native_hard_stops_without_marker`, `::test_events_stop_session_on_native_kills_tmux_and_publishes_idle`, `::test_events_stop_session_on_native_returns_503_when_kill_fails`; `tests/runner/test_native_interrupt_runner.py::test_uniform_stop_kills_tears_down_and_goes_idle`, `::test_uniform_stop_kill_failure_returns_503_without_idle`; `tests/tools/builtins/test_sys_session.py::test_close_accepts_child_with_unparsable_title`, `::test_close_marks_closed_and_tombstones_internal_title`; `tests/test_cursor_native_bridge.py::test_kill_session_escalates_live_pane_after_tmux_kill`; `tests/harnesses/codex_native/test_codex_native_bridge.py::test_kill_session_escalates_live_pane_after_tmux_kill`; `tests/harnesses/claude_native/test_claude_native_bridge.py::test_kill_session_escalates_live_pane_after_tmux_kill` | child native kill requested; shared host runner left up |
 | Codex manual compact | `tests/harnesses/codex_native/test_codex_native_manual_compact.py::test_sends_thread_compact_start_and_reports_accepted_not_completed`, `::test_completion_event_resolves_completed`, `::test_missing_completion_times_out_uncertain_without_resend`, `::test_active_turn_is_busy_and_sends_nothing`, `::test_forwarder_live_stream_settles_manual_compact_and_still_mirrors`; `tests/runner/test_app_sessions_native_events_options.py::test_events_compact_on_codex_native_sends_thread_compact_start`, `::test_events_compact_on_codex_native_409_while_turn_active`, `::test_codex_native_compact_failure_clears_spinner_without_completion` | app-server `thread/compact/start` |
-| claude_native hook bridge + hook TMPDIR | `tests/harnesses/claude_native/test_v21_hook_cli_contract.py::test_always_registered_hook_commands_match_hook_cli_parser`, `::test_injected_optional_hook_commands_match_hook_cli_parser`; `tests/harnesses/claude_native/test_claude_native_bridge.py::test_http_ingress_defaults_to_unix_socket`, `::test_http_ingress_advertises_absolute_socket_path`, `::test_http_ingress_refuses_symlinked_socket_root`, `::test_http_ingress_reaps_sockets_of_dead_owners`, `::test_generated_claude_subprocesses_pin_runner_tmpdir`, `::test_augment_claude_args_injects_mcp_and_hooks` | `env TMPDIR=` + `-m omnigent.harnesses.claude_native.hook` + `--bridge-dir` |
+| claude_native hook bridge + hook TMPDIR | `tests/harnesses/claude_native/test_v21_hook_cli_contract.py::test_always_registered_hook_commands_match_hook_cli_parser`, `::test_injected_optional_hook_commands_match_hook_cli_parser`; `tests/harnesses/claude_native/test_claude_native_bridge.py::test_http_ingress_defaults_to_unix_socket`, `::test_http_ingress_refuses_symlinked_socket_root`, `::test_http_ingress_reaps_sockets_of_dead_owners`, `::test_generated_claude_subprocesses_pin_runner_tmpdir`, `::test_augment_claude_args_injects_mcp_and_hooks` | `env TMPDIR=` + `-m omnigent.harnesses.claude_native.hook` + `--bridge-dir` |
 
 <!-- ids:start -->
 # cursor receipt gate
@@ -75,27 +75,35 @@ tests/runner/test_app_sessions_native_events_options.py::test_codex_native_compa
 tests/harnesses/claude_native/test_v21_hook_cli_contract.py::test_always_registered_hook_commands_match_hook_cli_parser
 tests/harnesses/claude_native/test_v21_hook_cli_contract.py::test_injected_optional_hook_commands_match_hook_cli_parser
 tests/harnesses/claude_native/test_claude_native_bridge.py::test_http_ingress_defaults_to_unix_socket
-tests/harnesses/claude_native/test_claude_native_bridge.py::test_http_ingress_advertises_absolute_socket_path
 tests/harnesses/claude_native/test_claude_native_bridge.py::test_http_ingress_refuses_symlinked_socket_root
 tests/harnesses/claude_native/test_claude_native_bridge.py::test_http_ingress_reaps_sockets_of_dead_owners
 tests/harnesses/claude_native/test_claude_native_bridge.py::test_generated_claude_subprocesses_pin_runner_tmpdir
 tests/harnesses/claude_native/test_claude_native_bridge.py::test_augment_claude_args_injects_mcp_and_hooks
 <!-- ids:end -->
 
-## Revert-sanity (task 1)
+## Excluded id (cwd-depth environment artifact)
 
-Temporarily broken, then restored; never committed.
+`tests/harnesses/claude_native/test_claude_native_bridge.py::test_http_ingress_advertises_absolute_socket_path`
+(upstream test) is deliberately not in the id list: it builds a socket root
+with `os.path.relpath` from the cwd, so it fails from checkouts nested deeper
+than the pytest tmp dir (e.g. `.claude/worktrees/...`) on pristine rc1 too
+(Evaluator it1 evidence; `docs/v21-evidence/env-artifacts.txt`). The claude
+hook bridge + TMPDIR behaviour keeps 7 depth-independent ids.
 
-1. `_owns_host_runner` always `True` (treat every child as the runner owner):
-   `test_stop_subagent_child_kills_native_harness_without_stopping_shared_host_runner`
-   failed because `host.stopped_runner_ids` included the parent's shared
-   `runner_id`. Restored.
-2. `_owns_host_runner` always `False` (no session owns its runner):
-   `test_stop_top_level_host_session_stops_owned_host_runner` failed: the host
-   never received `host.stop_runner` (`_serve_one_stop` AssertionError).
-   Restored.
-3. `_stop_session_via_runner_impl` returns `True` without POSTing `stop_session`
-   (kill-on-close forward removed): the child test failed because the recording
-   fake runner saw no `/v1/sessions/<child>/events` `stop_session`. Restored.
+## Revert-sanity (re-checked by the Lead in the it2 review call)
+
+Each mutation was applied to `omnigent/server/routes/_sessions/helpers.py`,
+the test file run, and the file restored with `git checkout`; never committed.
+
+1. `_owns_host_runner` returns `True` for every session (as if #10251 were
+   reverted): `test_stop_subagent_child_kills_native_harness_without_stopping_shared_host_runner`
+   fails (`host_stop.assert_not_awaited()` — the shared host runner would be
+   stopped) → `1 failed, 1 passed`.
+2. `_stop_session_via_runner_impl` returns `True` without POSTing
+   `stop_session` (fork kill-on-close forward removed): both tests fail (no
+   `/v1/sessions/<id>/events` `stop_session` recorded) → `2 failed`.
+3. (builder) `_owns_host_runner` returns `False`:
+   `test_stop_top_level_host_session_stops_owned_host_runner` fails
+   (`host_stop.assert_awaited()`).
 
 No product defect: #10251 and kill-on-close still coexist. No `omnigent/` fix.

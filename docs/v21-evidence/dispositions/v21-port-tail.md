@@ -54,3 +54,19 @@ dependency (diagnosed in `docs/v21-evidence/dispositions/v21-afterport.md`, per-
 capture only; no test skipped or loosened). The ruff step also needed `scripts/v21_compare_suites.py` formatted (fixed in a
 `slice(v21-afterport): fix …` commit). Re-run at the Lead's HEAD with `--capture=sys`:
 `TRIO_TEST: PASS rc=0 passed=695 failed=0 skipped=1 errors=0 dur=88.1s`.
+
+### Order-dependent hang also with `--capture=sys` (found while re-running all targeted checks)
+
+The isocompact targeted check (`--capture=sys`, all files in one process) hung at item 475/519 — the first tests of
+`tests/server/integration/test_sessions_compact.py`, main thread in `asyncio … _read_from_self`, AnyIO worker idle in
+`queue.get()` (the same stack as the fd-capture hang). Reduced:
+
+| tree | command (TMPDIR=/var/tmp/pytest-of-coder, `uv run --frozen --extra all --group dev`) | result |
+|---|---|---|
+| tip | `pytest -q -p no:cacheprovider --capture=sys --timeout=120 tests/runner/test_app_sessions_native_events_options.py tests/server/integration/test_sessions_compact.py` | hang after 120 dots (all options tests passed), `Timeout` stack dump, no summary |
+| tip | same, `tests/server/integration/test_sessions_compact.py` alone | `14 passed` |
+| pristine v0.21.0rc1 (`20e15700f`, detached worktree, own `uv sync`, removed afterwards; run directly, not via trio-test) | same pair as row 1 | `Running 127 items`, `...............F…` then hang after 117 dots (killed by `timeout 580`, rc 124) |
+
+So it is a pre-existing upstream/environment hang that depends on test order, not a port regression. The receipts,
+isocompact and tail targeted checks therefore run their `tests/server/integration/` files in a separate pytest process
+(`--capture=sys`) after the other files (`&&`).

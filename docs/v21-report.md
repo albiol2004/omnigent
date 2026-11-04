@@ -290,8 +290,11 @@ fd-level capture, a request that solves a *sync* FastAPI dependency in the AnyIO
 event loop. With `--capture=sys` (records `pristine-capsys` / `tip-capsys`) every file completes: pristine 21 passed
 (3 files); tip 66 passed, 0 failed (7 files, incl. `test_input_fence` 17 and the cursor receipt e2e files). The compare
 script excuses the group only because every tip hang also occurs on pristine, every fork-added file passes at the tip
-(with `--capture=sys`), and the `tip-capsys` record has no new failure. The port slices' targeted checks that include
-`tests/server/integration/` files therefore run pytest with `--capture=sys`; e.g. the tail slice's check at the Lead's
+(with `--capture=sys`), and the `tip-capsys` record has no new failure. The hang is also order-dependent: with `--capture=sys`,
+`tests/runner/test_app_sessions_native_events_options.py` followed by `test_sessions_compact.py` in one process hangs in
+the first compact test on the tip and on pristine v0.21.0rc1 alike, while the compact file alone passes (14 passed;
+`docs/v21-evidence/dispositions/v21-port-tail.md`). The port slices' targeted checks that include
+`tests/server/integration/` files therefore run those files in their own pytest process with `--capture=sys`; e.g. the tail slice's check at the Lead's
 HEAD: `TRIO_TEST: PASS rc=0 passed=695 failed=0 skipped=1 errors=0`. The trio driver uploads bundles to a real server
 process, not through pytest's in-process ASGI client, so this capture artefact does not apply to it (re-checked
 end-to-end in §6).

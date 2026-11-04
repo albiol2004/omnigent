@@ -94,3 +94,32 @@ files: tests/server/integration/test_routes_sessions_aliases.py
 files: tests/server/integration/test_routes_sessions_title.py
 1 passed in 2.76s
 SUITE_DONE
+== record: final-tip-capsys ==
+rev: 8d00e6eb66e1b3f076326adb78e9e30196672ede
+pristine-vs-v0.21.0rc1: no
+tmpdir: /var/tmp/pytest-of-coder
+note: Lead review call it2, re-recorded at the final tip 8d00e6eb6 with V21_PYTEST_ARGS="--timeout=120 --capture=sys" (V21_TRIO_TEST_ROLE=lead V21_TT_EXCLUDE=docs). omnigent/ and tests/server/integration/ are unchanged since f9fd80cf4 (git diff --quiet), so the pristine/tip default-capture records above still apply; the final-tip default-capture hang is in after-port.txt (sessions-routes PYTEST-TIMEOUT-HANG). Counts equal the tip-capsys record.
+== sessions-routes ==
+files: tests/server/integration/test_sessions_compact.py tests/server/integration/test_input_fence.py tests/server/integration/test_cursor_cold_start_prompt.py tests/server/integration/test_cursor_receipt_binding_e2e.py tests/server/integration/test_cursor_receipt_epoch_clear_e2e.py tests/server/integration/test_routes_sessions_aliases.py tests/server/integration/test_routes_sessions_title.py
+== sessions-routes :: tests/server/integration/test_sessions_compact.py ==
+files: tests/server/integration/test_sessions_compact.py
+14 passed in 7.44s
+== sessions-routes :: tests/server/integration/test_input_fence.py ==
+files: tests/server/integration/test_input_fence.py
+17 passed in 10.35s
+== sessions-routes :: tests/server/integration/test_cursor_cold_start_prompt.py ==
+files: tests/server/integration/test_cursor_cold_start_prompt.py
+6 passed in 31.21s
+== sessions-routes :: tests/server/integration/test_cursor_receipt_binding_e2e.py ==
+files: tests/server/integration/test_cursor_receipt_binding_e2e.py
+14 passed in 135.63s (0:02:15)
+== sessions-routes :: tests/server/integration/test_cursor_receipt_epoch_clear_e2e.py ==
+files: tests/server/integration/test_cursor_receipt_epoch_clear_e2e.py
+5 passed in 5.34s
+== sessions-routes :: tests/server/integration/test_routes_sessions_aliases.py ==
+files: tests/server/integration/test_routes_sessions_aliases.py
+9 passed in 5.85s
+== sessions-routes :: tests/server/integration/test_routes_sessions_title.py ==
+files: tests/server/integration/test_routes_sessions_title.py
+1 passed in 2.09s
+SUITE_DONE

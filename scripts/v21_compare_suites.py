@@ -2,6 +2,7 @@
 """Compare two v21 focused-suite records (baseline vs after-port).
 
 Usage: python3 -I scripts/v21_compare_suites.py BASELINE AFTER [--perfile PATH]
+                                                [--env-artifacts PATH]
 
 Regression = a FAILED/ERROR node id in AFTER that is not in BASELINE, or an
 AFTER group whose summary is TIMEOUT / PYTEST-TIMEOUT-HANG / NO-SUMMARY (or
@@ -12,6 +13,10 @@ tip ==`, optionally `pristine-capsys` / `tip-capsys`) shows that every file
 hanging at the tip also hangs on pristine, every failing id at the tip also
 fails on pristine/baseline, and every file absent on pristine (fork-added)
 passes at the tip.
+A new FAILED/ERROR id listed in the env-artifact allow-list (PATH, default
+docs/v21-evidence/env-artifacts.txt; lines `<node id> | <evidence>`, `#`
+comments) is not counted: it is printed under ENV-ARTIFACT with its evidence,
+never silently dropped. Only exact node ids are honoured (no patterns).
 Exit 0 iff REGRESSIONS == 0; exit 2 on unreadable/incomplete input.
 """
 
@@ -23,6 +28,25 @@ import time
 _T0 = time.monotonic()
 
 BAD = {"timeout", "hang", "nosummary", "missing"}
+
+# exact node id -> evidence, loaded from the env-artifact allow-list in main()
+ENV_ARTIFACTS: dict[str, str] = {}
+
+
+def load_env_artifacts(path):
+    """Parse `<node id> | <evidence>` lines; exit 2 on a malformed line."""
+    out = {}
+    for n, raw in enumerate(load(path), 1):
+        ln = raw.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        nid, sep, why = ln.partition(" | ")
+        nid, why = nid.strip(), why.strip()
+        if not sep or "::" not in nid or not why or any(c in nid for c in "*?[]"):
+            print(f"error: {path}:{n}: expected `<exact node id> | <evidence>`", file=sys.stderr)
+            sys.exit(2)
+        out[nid] = why
+    return out
 
 
 def klass(summary):
@@ -159,7 +183,7 @@ def excused(group, after_sec, base_sec, base_ids, perfile):
         if kls in BAD:
             if klass(pri["summary"]) not in BAD:
                 return False, f"{fil} hangs at the tip but not on pristine"
-        new = sec["failed"] - pri["failed"] - base_ids
+        new = sec["failed"] - pri["failed"] - base_ids - set(ENV_ARTIFACTS)
         if new:
             return False, f"{fil} has failures not on pristine: {sorted(new)[0]}"
     for fil, sec in sorted(tip_cap_files.items()):
@@ -169,6 +193,7 @@ def excused(group, after_sec, base_sec, base_ids, perfile):
         new = (
             sec["failed"]
             - base_ids
+            - set(ENV_ARTIFACTS)
             - (
                 set().union(
                     *[
@@ -188,11 +213,15 @@ def excused(group, after_sec, base_sec, base_ids, perfile):
 def main(argv):
     args = argv[1:]
     perfile_path = None
+    env_path = None
     pos = []
     i = 0
     while i < len(args):
         if args[i] == "--perfile" and i + 1 < len(args):
             perfile_path = args[i + 1]
+            i += 2
+        elif args[i] == "--env-artifacts" and i + 1 < len(args):
+            env_path = args[i + 1]
             i += 2
         else:
             pos.append(args[i])
@@ -206,6 +235,12 @@ def main(argv):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         perfile_path = os.path.join(root, "docs/v21-evidence/after-port-perfile.txt")
     perfile = parse_perfile(perfile_path) if os.path.exists(perfile_path) else None
+    if env_path is None:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env_path = os.path.join(root, "docs/v21-evidence/env-artifacts.txt")
+    if os.path.exists(env_path):
+        ENV_ARTIFACTS.update(load_env_artifacts(env_path))
+    env_hits = []
 
     base_ids = (
         set().union(*[s["failed"] for s in base["sections"].values()])
@@ -250,6 +285,8 @@ def main(argv):
         for fid in sorted(a["failed"]):
             if fid in base_ids:
                 pre.append(fid)
+            elif fid in ENV_ARTIFACTS:
+                env_hits.append(fid)
             else:
                 regressions.append(f"new failure: {fid}")
                 status = "REGRESSION"
@@ -268,6 +305,9 @@ def main(argv):
     print(f"PRE-EXISTING: {len(pre)}")
     for f in pre:
         print(f"  {f}")
+    print(f"ENV-ARTIFACT: {len(env_hits)} (allow-list {env_path})")
+    for f in env_hits:
+        print(f"  {f} -- {ENV_ARTIFACTS[f]}")
     if perfile is not None:
         print(
             f"per-file record: {perfile_path} "

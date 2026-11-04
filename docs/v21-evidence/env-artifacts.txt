@@ -1,0 +1,6 @@
+# v21 environment-artifact allow-list for scripts/v21_compare_suites.py
+# Format: <exact pytest node id> | <evidence>. Exact ids only, no patterns.
+# A listed id that fails at the tip but not in the baseline is printed under
+# ENV-ARTIFACT (not counted as a regression). It still fails loudly in the
+# record, so a human can always see it.
+tests/harnesses/claude_native/test_claude_native_bridge.py::test_http_ingress_advertises_absolute_socket_path | upstream test (the fork does not touch this test function — its only hunks in the file are the kill-escalation test near line 6080 — nor the bridge ingress code) builds its socket root with os.path.relpath from the cwd, so it fails whenever the checkout is nested deeper than the pytest tmp dir: Evaluator it1 (loop/VERDICT.md A4) — fails at the pin from its eval worktree (depth 11), passes on the same code from lead-loop; on a pristine rc1 extract fails at depth 12 and passes from /home/coder

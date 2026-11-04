@@ -18,8 +18,8 @@ All pytest runs in this report used `TMPDIR=/var/tmp/pytest-of-coder` (the drive
 the 108-byte AF_UNIX limit). Server-integration test files (`tests/server/integration/`) hang under pytest's default
 fd-level capture on pristine v0.21.0rc1 as well as at the tip; they are run with `--capture=sys` (§3.3).
 
-Scope of this version (iteration 1): GOAL DoD 1, 2, 3, 6. DoD 4, 5, 7 (behaviour probes, scratch-server consumer
-compatibility, risks/migrations, rebase and install/rollback steps) are §5–§7, pending iteration 2.
+Scope: GOAL DoD 1, 2, 3, 6 (iteration 1, re-recorded at the final tip in iteration 2) and DoD 4, 5, 7 (iteration 2:
+behaviour checks §5, scratch-server consumer compatibility §6, risks/migrations, rebase and install/rollback steps §7).
 
 ## 1. Disposition table (all 90 v17 commits, original order)
 
@@ -325,11 +325,173 @@ on 0.21.
 
 ## 5. Behaviour checks → tests (GOAL DoD 4)
 
-Pending — iteration 2.
+Map: `docs/v21-evidence/behaviour-map.md` (the v17 §4 structure, updated for v0.21.0rc1 paths and class names).
+Runner: `bash scripts/v21_behaviour_check.sh` — collects every listed node id first (a missing id exits 1 naming it),
+then runs them in one pytest process with `TMPDIR=/var/tmp/pytest-of-coder` and prints one `BEHAVIOUR <name>: PASS|FAIL`
+line per behaviour. Record: `docs/v21-evidence/behaviour-check.txt` → `75 passed, 0 failed` (59 listed ids; some are parametrised), all six behaviours PASS.
+
+| behaviour (GOAL DoD 4) | ids | example id | result |
+|---|---|---|---|
+| cursor receipt gate | 10 | `tests/test_cursor_native_completion_receipt.py::test_receipt_binds_prompt_hash_and_counts` | PASS |
+| cursor isolation | 15 | `tests/test_cursor_native_bridge.py::TestSharedMcpScope::test_user_mcp_has_omnigent_server` | PASS |
+| input fence | 7 | `tests/server/integration/test_input_fence.py::test_verified_fence_rejects_every_input_api_and_persists` | PASS |
+| stop-routing + kill escalation (#10251) | 12 | `tests/server/test_v21_shared_runner_kill_on_close.py::test_stop_subagent_child_kills_native_harness_without_stopping_shared_host_runner` | PASS |
+| Codex manual compact | 8 | `tests/harnesses/codex_native/test_codex_native_manual_compact.py::test_sends_thread_compact_start_and_reports_accepted_not_completed` | PASS |
+| claude_native hook bridge + hook TMPDIR | 7 | `tests/harnesses/claude_native/test_v21_hook_cli_contract.py::test_always_registered_hook_commands_match_hook_cli_parser` | PASS |
+
+**#10251 vs kill-on-close** (new test `tests/server/test_v21_shared_runner_kill_on_close.py`): a sub-agent child that
+inherits its parent's host `runner_id` is stopped through the real server teardown helpers
+(`_stop_session_via_runner_impl`, then the #10251 `_owns_host_runner` host gate). The runner receives the child's
+`stop_session` (the fork's native hard-stop / SIGKILL escalation runs runner-side, covered by the
+`test_kill_session_escalates_live_pane_after_tmux_kill` ids for claude/codex/cursor), and the host `stop_runner` is
+**not** sent, so the shared runner stays up for the parent. A top-level host session still stops the runner it owns.
+Revert sanity (Lead, it2 review): `_owns_host_runner` forced `True` → the child test fails (`1 failed, 1 passed`);
+`_stop_session_via_runner_impl` returning without POSTing → both fail (`2 failed`). No product defect, no `omnigent/` change.
+The test re-creates the route's two-step teardown in a helper, not by calling the HTTP route (Known limitation: a later
+upstream change to the route's order would not be seen by it; the runner-side ids above cover the kill itself).
+
+**claude_native hook CLI contract** (new test `tests/harnesses/claude_native/test_v21_hook_cli_contract.py`, also GOAL
+DoD 5c, §6.3): every hook command the bridge injects (`build_hook_settings`, `augment_claude_args` with policy/routing on)
+is `env TMPDIR=<trusted dir> <python> -I -m omnigent.harnesses.claude_native.hook [subcommand] --bridge-dir <abs dir>`
+and parses with the hook module's own argparse (PreCompact plus every always-registered event; `permission-request`,
+`evaluate-policy`, `route-turn`, `observe-tool`).
+
+Excluded id: `test_claude_native_bridge.py::test_http_ingress_advertises_absolute_socket_path` (upstream, cwd-depth
+artifact — `docs/v21-evidence/env-artifacts.txt`); the hook/TMPDIR behaviour keeps 7 depth-independent ids.
+
+All 59 listed node ids (the runner's input, copied from the map):
+
+```text
+# cursor receipt gate
+tests/test_cursor_native_completion_receipt.py::test_receipt_binds_prompt_hash_and_counts
+tests/test_cursor_native_completion_receipt.py::test_turn_end_is_stamped_with_the_store_position
+tests/test_cursor_native_completion_receipt.py::test_matching_stops_bind_a_clean_turn_and_queued_turns
+tests/test_cursor_native_completion_receipt.py::test_skip_is_persisted_before_the_cursor_passes_it
+tests/server/integration/test_input_fence.py::test_reserved_labels_cannot_be_forged
+tests/server/integration/test_input_fence.py::test_receipt_binding_is_stored_in_its_own_label
+tests/server/integration/test_input_fence.py::test_receipt_persisted_for_owner_and_monotonic
+tests/server/integration/test_cursor_receipt_binding_e2e.py::test_queued_repost_verifies_only_after_both_copies_end
+tests/server/integration/test_cursor_receipt_binding_e2e.py::test_single_late_turn_verifies_once_it_ends
+tests/server/integration/test_cursor_receipt_binding_e2e.py::test_restart_mid_pass_keeps_the_lost_row_unacked
+# cursor isolation
+tests/test_cursor_native_bridge.py::TestSharedMcpScope::test_user_mcp_has_omnigent_server
+tests/test_cursor_native_bridge.py::TestSharedMcpScope::test_project_file_aliasing_the_user_file_is_never_written
+tests/test_cursor_native_bridge.py::TestSharedMcpScope::test_account_home_is_never_written
+tests/test_cursor_native_bridge.py::TestHooksConfig::test_write_hooks_config_preserves_existing_hooks
+tests/test_cursor_native_bridge.py::TestCompletionReceiptHookGate::test_write_hooks_config_skips_home_workspace
+tests/test_cursor_native_bridge.py::TestCompletionReceiptHookGate::test_write_hooks_config_skips_account_home
+tests/test_cursor_native_bridge.py::TestCompletionReceiptHookGate::test_arm_refused_drops_stale_epoch_and_keeps_user_hooks
+tests/test_cursor_native_bridge.py::TestCompletionReceiptHookGate::test_workspace_that_is_home_refuses_receipts
+tests/test_cursor_native_bridge.py::TestCompletionReceiptHookGate::test_account_home_is_refused_even_when_home_env_differs
+tests/test_cursor_native_bridge.py::TestCursorLaunchAdmission::test_home_workspace_is_refused
+tests/test_cursor_native_bridge.py::TestCursorLaunchAdmission::test_repo_subfolder_is_refused
+tests/test_cursor_native_bridge.py::TestCursorLaunchAdmission::test_alias_to_a_repo_subfolder_is_refused
+tests/test_cursor_native_bridge.py::TestCursorLaunchAdmission::test_folder_inside_home_repo_is_refused
+tests/test_cursor_native_bridge.py::TestCursorLaunchAdmission::test_own_repo_inside_home_repo_is_admitted
+tests/server/integration/test_cursor_receipt_binding_e2e.py::test_workspace_that_is_home_holds
+# input fence
+tests/server/integration/test_input_fence.py::test_verified_fence_rejects_every_input_api_and_persists
+tests/server/integration/test_input_fence.py::test_new_input_racing_a_close_is_refused
+tests/server/integration/test_input_fence.py::test_open_is_runner_first_and_fails_closed
+tests/server/integration/test_input_fence.py::test_injection_after_receipt_fails_verification
+tests/server/integration/test_input_fence.py::test_crash_mid_close_reconciles_on_retry
+tests/test_cursor_native_completion_receipt.py::test_fenced_pane_refuses_injection_before_touching_tmux
+tests/test_cursor_native_completion_receipt.py::test_fence_close_linearizes_against_concurrent_injections
+# stop-routing + kill escalation (#10251)
+tests/server/test_v21_shared_runner_kill_on_close.py::test_stop_subagent_child_kills_native_harness_without_stopping_shared_host_runner
+tests/server/test_v21_shared_runner_kill_on_close.py::test_stop_top_level_host_session_stops_owned_host_runner
+tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_session_on_codex_native_hard_stops_without_marker
+tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_session_on_native_kills_tmux_and_publishes_idle
+tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_stop_session_on_native_returns_503_when_kill_fails
+tests/runner/test_native_interrupt_runner.py::test_uniform_stop_kills_tears_down_and_goes_idle
+tests/runner/test_native_interrupt_runner.py::test_uniform_stop_kill_failure_returns_503_without_idle
+tests/tools/builtins/test_sys_session.py::test_close_accepts_child_with_unparsable_title
+tests/tools/builtins/test_sys_session.py::test_close_marks_closed_and_tombstones_internal_title
+tests/test_cursor_native_bridge.py::test_kill_session_escalates_live_pane_after_tmux_kill
+tests/harnesses/codex_native/test_codex_native_bridge.py::test_kill_session_escalates_live_pane_after_tmux_kill
+tests/harnesses/claude_native/test_claude_native_bridge.py::test_kill_session_escalates_live_pane_after_tmux_kill
+# Codex manual compact
+tests/harnesses/codex_native/test_codex_native_manual_compact.py::test_sends_thread_compact_start_and_reports_accepted_not_completed
+tests/harnesses/codex_native/test_codex_native_manual_compact.py::test_completion_event_resolves_completed
+tests/harnesses/codex_native/test_codex_native_manual_compact.py::test_missing_completion_times_out_uncertain_without_resend
+tests/harnesses/codex_native/test_codex_native_manual_compact.py::test_active_turn_is_busy_and_sends_nothing
+tests/harnesses/codex_native/test_codex_native_manual_compact.py::test_forwarder_live_stream_settles_manual_compact_and_still_mirrors
+tests/runner/test_app_sessions_native_events_options.py::test_events_compact_on_codex_native_sends_thread_compact_start
+tests/runner/test_app_sessions_native_events_options.py::test_events_compact_on_codex_native_409_while_turn_active
+tests/runner/test_app_sessions_native_events_options.py::test_codex_native_compact_failure_clears_spinner_without_completion
+# claude_native hook bridge + hook TMPDIR
+tests/harnesses/claude_native/test_v21_hook_cli_contract.py::test_always_registered_hook_commands_match_hook_cli_parser
+tests/harnesses/claude_native/test_v21_hook_cli_contract.py::test_injected_optional_hook_commands_match_hook_cli_parser
+tests/harnesses/claude_native/test_claude_native_bridge.py::test_http_ingress_defaults_to_unix_socket
+tests/harnesses/claude_native/test_claude_native_bridge.py::test_http_ingress_refuses_symlinked_socket_root
+tests/harnesses/claude_native/test_claude_native_bridge.py::test_http_ingress_reaps_sockets_of_dead_owners
+tests/harnesses/claude_native/test_claude_native_bridge.py::test_generated_claude_subprocesses_pin_runner_tmpdir
+tests/harnesses/claude_native/test_claude_native_bridge.py::test_augment_claude_args_injects_mcp_and_hooks
+```
 
 ## 6. Consumer compatibility vs a scratch server + host (GOAL DoD 5)
 
-Pending — iteration 2.
+Harness: `bash scripts/v21_consumer_compat.sh` (stack: `scripts/v21_scratch_stack.sh`; checks:
+`docs/v21-evidence/scratch/compat_checks.py`; method and isolation: `docs/v21-evidence/scratch/README.md`). It starts an
+`omnigent server` + `omnigent host` from this tree under `env -i` with an isolated `HOME`, `OMNIGENT_DATA_DIR`,
+`OMNIGENT_CONFIG_HOME`, `TMPDIR` and XDG dirs below a fresh `/var/tmp/v21s.*`, on a random loopback port that is never
+6767/6768/7456/8443; the scratch host connects only to the scratch server. Consumers are imported read-only by path
+(`python -I -B`, no bytecode), with `urlopen`/`OpenerDirector.open` wrapped so any request to another host/port is
+refused and counted. Teardown (always, via trap) kills only the PIDs it started, their descendants, processes whose
+environ carries this run's exact `OMNIGENT_DATA_DIR`, and tmux servers on sockets under its own TMPDIR; then it removes
+the scratch tree. Auth: loopback single-user (no auth flags → `OMNIGENT_LOCAL_SINGLE_USER=1`), exactly how the live
+`omni server` runs and how trio then talks to it (no `OMNIGENT_TOKEN`, no `auth_tokens.json`).
+
+Transcript (Lead it2 review run, port 48623): `docs/v21-evidence/scratch/transcript.txt` → `7 passed, 0 failed`.
+
+| CHECK | result | what it proves |
+|---|---|---|
+| `trio-broker` | PASS | 5a: `broker_http.register_agent_bundle` + `update_agent_bundle` for every installed trio role bundle; `BrokerClient.create_session` host-launches a session; GET one, POST `/events` (202), GET `/items`, GET list (`kind=any`) contain it |
+| `bundle-restrictions-10906` | PASS | 5a/#10906: unregistered `type: function` handler, absolute `os_env.cwd`, `..` cwd → HTTP 400 with the #10906 messages; unmodified trio bundles accepted (`blast_radius` is a registered shim) |
+| `ownership-10850` | PASS | 5a/#10850: the token-less creator owns the session — GET, POST `/events`, GET `/items` and DELETE all succeed |
+| `runner-gone-after-delete` | PASS | 5a: trioctl's close (archive → `runner_online: false` → DELETE) leaves no runner, zygote-forked harness, tmux or session-env process within 60 s, server+host still up |
+| `appcontrol-dev-processes` | PASS | 5b: `dev_processes._zygote_log_session_id` maps the runner's log fd `runner-<32hex>-<YYYYMMDD>-<HHMMSS>-<n>.log` to the API session id; `_read_environ` sees `OMNIGENT_RUNNER_PRIMARY_SESSION_ID`, `OMNIGENT_TERMINAL_LAUNCH_SESSION_ID`, `OMNIGENT_RUNNER_WORKSPACE`; `_is_zygote_proc` + ppid chain reach the scratch host pid; `snapshot()` runs |
+| `appcontrol-titles` | PASS | 5b: `omnigent_titles.http_fetch_one` (`?include_items=false`) and `http_fetch_list` (`limit&sort_by=updated_at&order=desc`) parse to the same id and title as the API |
+| `teardown-clean` | PASS | no live process with the scratch data dir; 0 guarded-opener violations |
+
+### 6.1 (5a) trio broker_http
+
+Evidence: `docs/v21-evidence/scratch/transcript.txt` (rows `trio-broker`, `bundle-restrictions-10906`, `ownership-10850`,
+`runner-gone-after-delete`). Source read: `/home/coder/personal/trio-agent-loop/omnigent/broker_http.py`; bundles:
+`~/.local/share/trio-agent-loop/current/omnigent/trio-omnigent-roles/<role>/config.yaml` (copied into the scratch dir
+before upload). Observations, none needing a consumer change:
+- `/v1/sessions/{id}/events` is POST-only on v0.21 (reads go through `/items` and the `/stream` SSE route); trio only
+  POSTs it (`send_message`, `input_fence`).
+- **DELETE alone does not stop a host-launched session's runner** (upstream behaviour: the `delete_session` route in
+  `omnigent/server/routes/sessions/routes_events.py` has no fork hunk and never calls `_stop_host_runner_intentionally`;
+  only the archive path in `omnigent/server/routes/_sessions/orchestration.py` does). Observed in the Lead's it2 run:
+  the forked runner survived a bare DELETE for 61 s until teardown. trioctl already archives first
+  (installed `omnigent/trioctl` `_prune_broker_sessions` → `_stop_session_runner`, comment at trioctl:5135), so trio is
+  unaffected; any other caller that only DELETEs leaves the runner to its idle reaper.
+- PATCH `permission_mode` on a cursor-native session → 400 (`only supported for claude-native and devin-native`);
+  trio never sends it.
+- In the scratch HOME cursor-agent has no credentials, so `create_session` reports `PromptDeliveryUncertain` for the
+  first prompt (session kept); the session, its runner and harness are real, which is what the checks need.
+
+### 6.2 (5b) App Control parsers
+
+Evidence: `docs/v21-evidence/scratch/transcript.txt` (rows `appcontrol-dev-processes`, `appcontrol-titles`). Source read:
+`/home/coder/personal/agent-platform/template/build/dev_processes.py` (its `_OMNIGENT_SESSIONS` / `_OMNIGENT_SESSION`
+constants point at 6767 and are overridden in memory to the scratch port) and `omnigent_titles.py`. The runner log name
+(`omnigent/host/connect.py` `runner-{session_slug}` + `%Y%m%d-%H%M%S-%f`) still matches App Control's
+`^runner-([0-9a-f]{32})-\d{8}-\d{6}-\d+\.log$`; the fd is held by the zygote-forked runner (argv
+`python -P -m omnigent.runner._zygote`), whose parent is the host's `_zygote` forkserver under `omni host`. The env keys
+sit on the tmux/harness processes, where App Control already reads them. No change needed.
+
+### 6.3 (5c) claude_native hook CLI args
+
+Evidence: `docs/v21-evidence/behaviour-check.txt` (behaviour `claude_native hook bridge + hook TMPDIR`, incl.
+`tests/harnesses/claude_native/test_v21_hook_cli_contract.py::test_always_registered_hook_commands_match_hook_cli_parser`
+and `::test_injected_optional_hook_commands_match_hook_cli_parser`), described in §5. The runner-injected argv
+(`env TMPDIR=<dir> <python> -I -m omnigent.harnesses.claude_native.hook [subcommand] --bridge-dir <abs dir>`) parses with
+the hook CLI. No change needed.
+
+Incompatibilities requiring a fork or consumer change: **none** (no `KNOWN-INCOMPAT:` line).
 
 ## 7. Risks, migrations, not-verifiable items, rebase to final v0.21.0, install/rollback (GOAL DoD 7)
 

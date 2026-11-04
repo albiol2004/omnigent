@@ -174,13 +174,14 @@ it. This report's table is authoritative.
 | 83fc04a14 | slice(v21-port-stop): README for v0.21.0rc1 | adaptation (README) |
 | f0813e6d6 | slice(v21-port-isocompact): give the manual-compact forwarder fake the v0.21 is_subscribed_to_thread probe | adaptation (test fake) |
 | 6c7541a83 | slice(v21-port-tail): fix ruff at the ported tip — drop BLE001 noqa that v0.21 per-file ignores make unused (RUF100), one blank line in native_controls | adaptation (lint only) |
-| 61cc99c4d, f46002565, 1efc4a8f1, 4cfe3a3d7, 1b0283bd6, cee4eaf0f, 0bf3e94ec | slice(v21-port-*): disposition notes (+ binding's pristine-proven deselect, stop note fix) | evidence (`docs/v21-evidence/dispositions/`, `deselects/`) |
+| 61cc99c4d, f46002565, 1efc4a8f1, 4cfe3a3d7, 1b0283bd6, cee4eaf0f | slice(v21-port-*): disposition notes (+ binding's pristine-proven deselect, stop note fix) | evidence (`docs/v21-evidence/dispositions/`, `deselects/`) |
 | 00930adbe | evidence: keep run-1 port-tail deselect args | evidence (`docs/v21-evidence/deselects/v21-port-tail.args`) |
 | 4554fa9b8 | slice(v21-patch): child-reasoning-effort patch for v0.21.0rc1 | patch (`patches/child-reasoning-effort.v0.21.0rc1.patch`, `docs/v21-evidence/patch-check.txt`) |
 | 1a8cdb8db, afc642cd7, f9fd80cf4 | slice(v21-afterport): add opt-in V21_PER_FILE / V21_TT_FRESH / V21_PYTEST_ARGS knobs to the focused-suite runner | evidence tooling (`scripts/v21_focused_suite.sh`) |
 | 9256be8f4 | slice(v21-afterport): after-port suite, suite comparison and upstream-overlap check | evidence (`after-port*.txt`, `overlap-*.txt`, `scripts/v21_compare_suites.py`, `scripts/v21_overlap_check.sh`) |
-| c902b4b1e | slice(v21-afterport): fix ruff format/check of v21_compare_suites.py | evidence tooling (lint only) |
-| (this commit) | slice(v21-report): v0.21.0rc1 re-port report §1–4 and disposition checker | this report + `scripts/v21_disposition_check.sh` |
+| c902b4b1e, be6bb75ac | slice(v21-afterport): fix ruff format/check of v21_compare_suites.py; print a pytest-shaped counts line | evidence tooling (lint / output only) |
+| 0bf3e94ec, 76e88481b | slice(v21-port-tail): disposition notes for v17 #68-78 (Lead take-over) + order-dependent hang evidence | evidence (`docs/v21-evidence/dispositions/v21-port-tail.md`) |
+| d36535047, 91c6e04c4, 8c1acf729 (+ the §1.2 fix commit after them) | slice(v21-report): report §1–4, disposition checker, its counts line, §3.3 | this report + `scripts/v21_disposition_check.sh` |
 
 Worker merge commits on this branch: `f2541b6d3`, `1608dac98`, `00019b87e`, `7ef68e8eb`, `6aa37f3cf` (`merge(worker): …`).
 

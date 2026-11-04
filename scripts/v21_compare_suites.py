@@ -18,6 +18,9 @@ Exit 0 iff REGRESSIONS == 0; exit 2 on unreadable/incomplete input.
 import os
 import re
 import sys
+import time
+
+_T0 = time.monotonic()
 
 BAD = {"timeout", "hang", "nosummary", "missing"}
 
@@ -273,6 +276,10 @@ def main(argv):
     for r in regressions:
         print(f"REGRESSION: {r}")
     print(f"REGRESSIONS: {len(regressions)}")
+    # pytest-shaped counts line for trio-test's summary parser: one "passed" per group compared
+    # without regression, one "failed" per regression
+    n_ok = sum(1 for r in rows if r[3] != "REGRESSION")
+    print(f"{n_ok} passed, {len(regressions)} failed in {time.monotonic() - _T0:.2f}s")
     return 0 if not regressions else 1
 
 

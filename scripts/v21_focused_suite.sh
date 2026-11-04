@@ -10,6 +10,8 @@
 # V21_PER_FILE=1 runs one pytest process per file inside each group (section
 # header `== <group> :: <file> ==`); default output is unchanged.
 # V21_TRIO_TEST_ROLE=<role> sets the trio-test --role label (default builder).
+# V21_TT_EXCLUDE=<pathspec> (e.g. docs) leaves that path out of trio-test's tree key,
+# so editing docs while a recording runs does not void it (pytest never reads docs/).
 # V21_PYTEST_ARGS="--timeout=60 --capture=sys" appends extra pytest args (split on
 # whitespace; empty by default).
 # Runs 11 pytest groups (one process each), prints/records per-group summary
@@ -67,7 +69,7 @@ run_group() {
     # Inside a Trio loop: run each group's targeted pytest through trio-test
     # (resume with `trio-test wait` on exit 75) and copy its full log.
     tt_out="$LOGDIR/v21-suite-$tag.tt"
-    trio-test run --label "v21-suite-$tag" ${V21_TT_FRESH:+--fresh} --role "${V21_TRIO_TEST_ROLE:-builder}" --foreground-s 600 -- \
+    trio-test run --label "v21-suite-$tag" ${V21_TT_FRESH:+--fresh} ${V21_TT_EXCLUDE:+--exclude "$V21_TT_EXCLUDE"} --role "${V21_TRIO_TEST_ROLE:-builder}" --foreground-s 600 -- \
       timeout 2400 uv run --frozen pytest -q -p no:cacheprovider -rfE ${V21_PYTEST_ARGS:-} "$@" > "$tt_out" 2>&1
     rc=$?
     while [ "$rc" -eq 75 ]; do

@@ -1,0 +1,4 @@
+# Upstream lines the fork deliberately dropped (v0.21 overlap check).
+# Format (tab separated): <pr>\t<path>\t<stripped line>\t<reason>
+# The reason must name the fork commit that replaces the line and the test that keeps the behaviour.
+# Empty at the v0.21.0rc1 port: every checked upstream line is still present in its file at the tip.

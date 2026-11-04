@@ -1,0 +1,96 @@
+# Per-file breakdown of the sessions-routes group (the only TIMEOUT/HANG/NO-SUMMARY group), recorded with V21_PER_FILE=1 V21_ONLY=sessions-routes.
+# Records: pristine/tip use the default pytest capture plus --timeout=60 (fast hang detection); pristine-capsys/tip-capsys add --capture=sys --timeout=120 to show the tests themselves pass.
+== record: pristine ==
+rev: 20e15700f2fadc5f511e4582ce6b048faf6059b9
+pristine-vs-v0.21.0rc1: yes
+tmpdir: /var/tmp/pytest-of-coder
+note: pristine v0.21.0rc1 worktree, V21_PYTEST_ARGS="--timeout=60" (default fd-level capture)
+== sessions-routes ==
+ABSENT tests/server/integration/test_input_fence.py
+files: tests/server/integration/test_sessions_compact.py tests/server/integration/test_routes_sessions_aliases.py tests/server/integration/test_routes_sessions_title.py
+== sessions-routes :: tests/server/integration/test_sessions_compact.py ==
+files: tests/server/integration/test_sessions_compact.py
+PYTEST-TIMEOUT-HANG (per-test timeout killed the run; see /var/tmp/pytest-of-coder/v21-suite-sessions-routes--test_sessions_compact.log)
+== sessions-routes :: tests/server/integration/test_routes_sessions_aliases.py ==
+files: tests/server/integration/test_routes_sessions_aliases.py
+PYTEST-TIMEOUT-HANG (per-test timeout killed the run; see /var/tmp/pytest-of-coder/v21-suite-sessions-routes--test_routes_sessions_aliases.log)
+== sessions-routes :: tests/server/integration/test_routes_sessions_title.py ==
+files: tests/server/integration/test_routes_sessions_title.py
+PYTEST-TIMEOUT-HANG (per-test timeout killed the run; see /var/tmp/pytest-of-coder/v21-suite-sessions-routes--test_routes_sessions_title.log)
+SUITE_DONE
+== record: tip ==
+rev: f9fd80cf430cc916a0563fa30f1bf3677f755ed5
+pristine-vs-v0.21.0rc1: no
+tmpdir: /var/tmp/pytest-of-coder
+note: port tip, V21_PYTEST_ARGS="--timeout=60" (default fd-level capture)
+== sessions-routes ==
+files: tests/server/integration/test_sessions_compact.py tests/server/integration/test_input_fence.py tests/server/integration/test_cursor_cold_start_prompt.py tests/server/integration/test_cursor_receipt_binding_e2e.py tests/server/integration/test_cursor_receipt_epoch_clear_e2e.py tests/server/integration/test_routes_sessions_aliases.py tests/server/integration/test_routes_sessions_title.py
+== sessions-routes :: tests/server/integration/test_sessions_compact.py ==
+files: tests/server/integration/test_sessions_compact.py
+PYTEST-TIMEOUT-HANG (per-test timeout killed the run; see /var/tmp/pytest-of-coder/v21-suite-sessions-routes--test_sessions_compact.log)
+== sessions-routes :: tests/server/integration/test_input_fence.py ==
+files: tests/server/integration/test_input_fence.py
+PYTEST-TIMEOUT-HANG (per-test timeout killed the run; see /var/tmp/pytest-of-coder/v21-suite-sessions-routes--test_input_fence.log)
+== sessions-routes :: tests/server/integration/test_cursor_cold_start_prompt.py ==
+files: tests/server/integration/test_cursor_cold_start_prompt.py
+6 passed in 31.36s
+== sessions-routes :: tests/server/integration/test_cursor_receipt_binding_e2e.py ==
+files: tests/server/integration/test_cursor_receipt_binding_e2e.py
+PYTEST-TIMEOUT-HANG (per-test timeout killed the run; see /var/tmp/pytest-of-coder/v21-suite-sessions-routes--test_cursor_receipt_binding_e2e.log)
+== sessions-routes :: tests/server/integration/test_cursor_receipt_epoch_clear_e2e.py ==
+files: tests/server/integration/test_cursor_receipt_epoch_clear_e2e.py
+PYTEST-TIMEOUT-HANG (per-test timeout killed the run; see /var/tmp/pytest-of-coder/v21-suite-sessions-routes--test_cursor_receipt_epoch_clear_e2e.log)
+== sessions-routes :: tests/server/integration/test_routes_sessions_aliases.py ==
+files: tests/server/integration/test_routes_sessions_aliases.py
+PYTEST-TIMEOUT-HANG (per-test timeout killed the run; see /var/tmp/pytest-of-coder/v21-suite-sessions-routes--test_routes_sessions_aliases.log)
+== sessions-routes :: tests/server/integration/test_routes_sessions_title.py ==
+files: tests/server/integration/test_routes_sessions_title.py
+PYTEST-TIMEOUT-HANG (per-test timeout killed the run; see /var/tmp/pytest-of-coder/v21-suite-sessions-routes--test_routes_sessions_title.log)
+SUITE_DONE
+== record: pristine-capsys ==
+rev: 20e15700f2fadc5f511e4582ce6b048faf6059b9
+pristine-vs-v0.21.0rc1: yes
+tmpdir: /var/tmp/pytest-of-coder
+note: pristine v0.21.0rc1 worktree, V21_PYTEST_ARGS="--timeout=120 --capture=sys"
+== sessions-routes ==
+ABSENT tests/server/integration/test_input_fence.py
+files: tests/server/integration/test_sessions_compact.py tests/server/integration/test_routes_sessions_aliases.py tests/server/integration/test_routes_sessions_title.py
+== sessions-routes :: tests/server/integration/test_sessions_compact.py ==
+files: tests/server/integration/test_sessions_compact.py
+11 passed in 7.49s
+== sessions-routes :: tests/server/integration/test_routes_sessions_aliases.py ==
+files: tests/server/integration/test_routes_sessions_aliases.py
+9 passed in 6.90s
+== sessions-routes :: tests/server/integration/test_routes_sessions_title.py ==
+files: tests/server/integration/test_routes_sessions_title.py
+1 passed in 2.87s
+SUITE_DONE
+== record: tip-capsys ==
+rev: f9fd80cf430cc916a0563fa30f1bf3677f755ed5
+pristine-vs-v0.21.0rc1: no
+tmpdir: /var/tmp/pytest-of-coder
+note: port tip, V21_PYTEST_ARGS="--timeout=120 --capture=sys"
+== sessions-routes ==
+files: tests/server/integration/test_sessions_compact.py tests/server/integration/test_input_fence.py tests/server/integration/test_cursor_cold_start_prompt.py tests/server/integration/test_cursor_receipt_binding_e2e.py tests/server/integration/test_cursor_receipt_epoch_clear_e2e.py tests/server/integration/test_routes_sessions_aliases.py tests/server/integration/test_routes_sessions_title.py
+== sessions-routes :: tests/server/integration/test_sessions_compact.py ==
+files: tests/server/integration/test_sessions_compact.py
+14 passed in 8.09s
+== sessions-routes :: tests/server/integration/test_input_fence.py ==
+files: tests/server/integration/test_input_fence.py
+17 passed in 11.17s
+== sessions-routes :: tests/server/integration/test_cursor_cold_start_prompt.py ==
+files: tests/server/integration/test_cursor_cold_start_prompt.py
+6 passed in 31.32s
+== sessions-routes :: tests/server/integration/test_cursor_receipt_binding_e2e.py ==
+files: tests/server/integration/test_cursor_receipt_binding_e2e.py
+14 passed in 136.66s (0:02:16)
+== sessions-routes :: tests/server/integration/test_cursor_receipt_epoch_clear_e2e.py ==
+files: tests/server/integration/test_cursor_receipt_epoch_clear_e2e.py
+5 passed in 6.07s
+== sessions-routes :: tests/server/integration/test_routes_sessions_aliases.py ==
+files: tests/server/integration/test_routes_sessions_aliases.py
+9 passed in 6.71s
+== sessions-routes :: tests/server/integration/test_routes_sessions_title.py ==
+files: tests/server/integration/test_routes_sessions_title.py
+1 passed in 2.76s
+SUITE_DONE

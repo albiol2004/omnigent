@@ -6,7 +6,11 @@
 # tests/server/integration/test_input_fence.py and test_cursor_*.py are ABSENT
 # on pristine rc1 and reported as such).
 # Env knobs: V21_USE_TRIO_TEST=1 runs each group's pytest through trio-test
-# (needed inside a Trio loop); V21_ONLY="g1 g2" restricts to named groups.
+# (needed inside a Trio loop; V21_TT_FRESH=1 adds --fresh to skip result reuse); V21_ONLY="g1 g2" restricts to named groups.
+# V21_PER_FILE=1 runs one pytest process per file inside each group (section
+# header `== <group> :: <file> ==`); default output is unchanged.
+# V21_PYTEST_ARGS="--timeout=60 --capture=sys" appends extra pytest args (split on
+# whitespace; empty by default).
 # Runs 11 pytest groups (one process each), prints/records per-group summary
 # lines and FAILED/ERROR node ids. Always exits 0; last line is SUITE_DONE.
 set -u
@@ -53,6 +57,52 @@ GROUPS_SPEC=(
   "sessions-routes|tests/server/integration/test_sessions_compact.py tests/server/integration/test_input_fence.py tests/server/integration/test_cursor_*.py tests/server/integration/test_routes_sessions_*.py"
 )
 
+# run_group TAG FILE... : run one pytest process over FILE... and emit its
+# summary line plus FAILED/ERROR node ids (log/label name derives from TAG).
+run_group() {
+  local tag="$1"; shift
+  log="$LOGDIR/v21-suite-$tag.log"
+  if [ "${V21_USE_TRIO_TEST:-0}" = "1" ] && command -v trio-test >/dev/null 2>&1; then
+    # Inside a Trio loop: run each group's targeted pytest through trio-test
+    # (resume with `trio-test wait` on exit 75) and copy its full log.
+    tt_out="$LOGDIR/v21-suite-$tag.tt"
+    trio-test run --label "v21-suite-$tag" ${V21_TT_FRESH:+--fresh} --role builder --foreground-s 600 -- \
+      timeout 2400 uv run --frozen pytest -q -p no:cacheprovider -rfE ${V21_PYTEST_ARGS:-} "$@" > "$tt_out" 2>&1
+    rc=$?
+    while [ "$rc" -eq 75 ]; do
+      handle="$(grep -oE 'handle=[^ ]+' "$tt_out" | tail -n1 | cut -d= -f2)"
+      trio-test wait "$handle" > "$tt_out" 2>&1
+      rc=$?
+    done
+    ttlog="$(grep -oE 'log=[^ ]+' "$tt_out" | tail -n1 | cut -d= -f2)"
+    if [ -n "$ttlog" ] && [ -f "$ttlog" ]; then cp "$ttlog" "$log"; else : > "$log"; fi
+  else
+    timeout 2400 uv run --frozen pytest -q -p no:cacheprovider -rfE ${V21_PYTEST_ARGS:-} "$@" > "$log" 2>&1
+    rc=$?
+  fi
+
+  if [ "$rc" -eq 124 ]; then
+    emit "TIMEOUT after 2400s"
+  else
+    summary="$(grep -E '^(=+ )?[0-9]+ (failed|passed|skipped|error|errors|xfailed|xpassed|warnings?|deselected)|^(=+ )?no tests ran' "$log" | tail -n1 | sed -E 's/^=+ //; s/ =+$//')"
+    if [ -z "$summary" ] && grep -q '^+\{5,\} Timeout +\{5,\}' "$log"; then
+      summary="PYTEST-TIMEOUT-HANG (per-test timeout killed the run; see $log)"
+    fi
+    if [ -z "$summary" ]; then
+      summary="NO-SUMMARY (pytest exit $rc; see $log)"
+    fi
+    emit "$summary"
+  fi
+
+  # Failed/error node ids from the -rfE short summary, message stripped.
+  # Only the section after "short test summary info" (captured log lines can
+  # also start with "ERROR "); node ids never contain spaces, so a single
+  # space after the keyword excludes "ERROR    logger:..." log lines.
+  awk '/short test summary info/ {s=1; next} s' "$log" | grep -E '^(FAILED|ERROR) [^ ]' | sed -E 's/ - .*$//' | sort -u | while IFS= read -r line; do
+    emit "$line"
+  done
+}
+
 for spec in "${GROUPS_SPEC[@]}"; do
   name="${spec%%|*}"
   patterns="${spec#*|}"
@@ -96,46 +146,16 @@ for spec in "${GROUPS_SPEC[@]}"; do
 
   emit "files: ${files[*]}"
 
-  log="$LOGDIR/v21-suite-$name.log"
-  if [ "${V21_USE_TRIO_TEST:-0}" = "1" ] && command -v trio-test >/dev/null 2>&1; then
-    # Inside a Trio loop: run each group's targeted pytest through trio-test
-    # (resume with `trio-test wait` on exit 75) and copy its full log.
-    tt_out="$LOGDIR/v21-suite-$name.tt"
-    trio-test run --label "v21-suite-$name" --role builder --foreground-s 600 -- \
-      timeout 2400 uv run --frozen pytest -q -p no:cacheprovider -rfE "${files[@]}" > "$tt_out" 2>&1
-    rc=$?
-    while [ "$rc" -eq 75 ]; do
-      handle="$(grep -oE 'handle=[^ ]+' "$tt_out" | tail -n1 | cut -d= -f2)"
-      trio-test wait "$handle" > "$tt_out" 2>&1
-      rc=$?
+  if [ "${V21_PER_FILE:-0}" = "1" ]; then
+    # Opt-in: one pytest process per file; header `== <group> :: <file> ==`.
+    for f in "${files[@]}"; do
+      emit "== $name :: $f =="
+      emit "files: $f"
+      run_group "$name--$(basename "$f" .py)" "$f"
     done
-    ttlog="$(grep -oE 'log=[^ ]+' "$tt_out" | tail -n1 | cut -d= -f2)"
-    if [ -n "$ttlog" ] && [ -f "$ttlog" ]; then cp "$ttlog" "$log"; else : > "$log"; fi
   else
-    timeout 2400 uv run --frozen pytest -q -p no:cacheprovider -rfE "${files[@]}" > "$log" 2>&1
-    rc=$?
+    run_group "$name" "${files[@]}"
   fi
-
-  if [ "$rc" -eq 124 ]; then
-    emit "TIMEOUT after 2400s"
-  else
-    summary="$(grep -E '^(=+ )?[0-9]+ (failed|passed|skipped|error|errors|xfailed|xpassed|warnings?|deselected)|^(=+ )?no tests ran' "$log" | tail -n1 | sed -E 's/^=+ //; s/ =+$//')"
-    if [ -z "$summary" ] && grep -q '^+\{5,\} Timeout +\{5,\}' "$log"; then
-      summary="PYTEST-TIMEOUT-HANG (per-test timeout killed the run; see $log)"
-    fi
-    if [ -z "$summary" ]; then
-      summary="NO-SUMMARY (pytest exit $rc; see $log)"
-    fi
-    emit "$summary"
-  fi
-
-  # Failed/error node ids from the -rfE short summary, message stripped.
-  # Only the section after "short test summary info" (captured log lines can
-  # also start with "ERROR "); node ids never contain spaces, so a single
-  # space after the keyword excludes "ERROR    logger:..." log lines.
-  awk '/short test summary info/ {s=1; next} s' "$log" | grep -E '^(FAILED|ERROR) [^ ]' | sed -E 's/ - .*$//' | sort -u | while IFS= read -r line; do
-    emit "$line"
-  done
 done
 
 emit "SUITE_DONE"

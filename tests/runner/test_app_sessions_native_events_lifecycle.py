@@ -3606,11 +3606,17 @@ async def test_events_codex_native_stop_after_completed_turn_is_noop_not_503(
         f"codex-native {event_type} on an already-ended turn must be a 204 "
         f"no-op; got {stop_resp.status_code}: {stop_resp.text}"
     )
-    # 2) The runner actually attempted the recorded-turn interrupt (so this is
-    # the stale-turn reconcile path, not an idle no-op short-circuit).
-    assert fake_client.requests == [
-        ("turn/interrupt", {"threadId": "thread_codex_ended", "turnId": "turn_codex_ended"}),
-    ], f"must attempt the recorded-turn interrupt; got {fake_client.requests!r}."
+    # 2) Interrupt attempts the recorded-turn interrupt (so this is the
+    # stale-turn reconcile path, not an idle no-op short-circuit). Fork:
+    # stop_session is a hard stop (tmux kill) and never uses the app-server.
+    expected_requests = (
+        [("turn/interrupt", {"threadId": "thread_codex_ended", "turnId": "turn_codex_ended"})]
+        if event_type == "interrupt"
+        else []
+    )
+    assert fake_client.requests == expected_requests, (
+        f"{event_type} app-server requests mismatch; got {fake_client.requests!r}."
+    )
     # 3) The stale turn id is dropped so repeated controls and the next turn
     # are not confused by it.
     state = codex_native_bridge.read_bridge_state(bridge_dir)
@@ -3993,11 +3999,11 @@ async def test_events_codex_native_repeated_stop_after_completed_turn_stays_204(
 
     assert first.status_code == 204, first.text
     assert second.status_code == 204, second.text
-    # Only the first Stop reached the app-server; the second short-circuited on
-    # the now-empty active turn id.
-    assert fake_client.requests == [
-        ("turn/interrupt", {"threadId": "thread_codex_repeat", "turnId": "turn_codex_repeat"}),
-    ], f"the second Stop must not reopen the app-server connection; got {fake_client.requests!r}."
+    # Fork: stop_session is a hard stop (tmux kill), so neither Stop reaches
+    # the app-server.
+    assert fake_client.requests == [], (
+        f"hard Stop must not open the app-server connection; got {fake_client.requests!r}."
+    )
     state = codex_native_bridge.read_bridge_state(bridge_dir)
     assert state is not None and state.active_turn_id is None
 

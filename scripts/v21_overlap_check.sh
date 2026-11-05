@@ -2,7 +2,7 @@
 # Upstream-overlap line-presence check (v0.21 re-port).
 # Usage: scripts/v21_overlap_check.sh
 # For each upstream PR commit, takes every non-trivial '+' line the commit added
-# that is still present in the same file at tag v0.21.0rc1, and counts how many
+# that is still present in the same file at tag v0.21.0, and counts how many
 # are absent from that file at HEAD. A line absent from its file but found
 # elsewhere in the HEAD tree (git grep -F; docs/v17-evidence, docs/v21-evidence
 # and docs/*-report.md excluded) is "moved".
@@ -15,7 +15,7 @@ cd "$(git rev-parse --show-toplevel)" || exit 2
 
 PRS="10251:7a682c4b6 12200:cdb863459 12153:f7d67db5b 12150:34960c7ad 9908:7eee19341 10861:64dc6d4a4 11485:4f796ba44 11816:ac1737e1c 11821:98967aa31 10850:f93be3274 10906:60a5f61f7 9844:d2e077a1e"
 
-PRS="$PRS" TAG="v0.21.0rc1" ALLOW="docs/v21-evidence/overlap-allow.txt" python3 -I - <<'PY'
+PRS="$PRS" TAG="v0.21.0" ALLOW="docs/v21-evidence/overlap-allow.txt" python3 -I - <<'PY'
 import os
 import subprocess
 import sys

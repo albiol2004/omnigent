@@ -2,9 +2,9 @@
 # Focused v0.21 regression suite recorder (copied from the v17 runner).
 # Usage: scripts/v21_focused_suite.sh [OUTFILE]
 # Group patterns are identical to v17; every pattern was verified against the
-# v0.21.0rc1 test tree (no upstream test moves; fork-only files such as
+# v0.21.0 test tree (no upstream test moves; fork-only files such as
 # tests/server/integration/test_input_fence.py and test_cursor_*.py are ABSENT
-# on pristine rc1 and reported as such).
+# on pristine v0.21.0 and reported as such).
 # Env knobs: V21_USE_TRIO_TEST=1 runs each group's pytest through trio-test
 # (needed inside a Trio loop; V21_TT_FRESH=1 adds --fresh to skip result reuse); V21_ONLY="g1 g2" restricts to named groups.
 # V21_PER_FILE=1 runs one pytest process per file inside each group (section
@@ -39,10 +39,10 @@ emit() {
 }
 
 emit "rev: $(git rev-parse HEAD)"
-if git diff --quiet v0.21.0rc1 HEAD -- . ':!loop' ':!scripts/v21_focused_suite.sh' ':!docs/v21-evidence' 2>/dev/null; then
-  emit "pristine-vs-v0.21.0rc1: yes"
+if git diff --quiet v0.21.0 HEAD -- . ':!loop' ':!scripts/v21_focused_suite.sh' ':!docs/v21-evidence' 2>/dev/null; then
+  emit "pristine-vs-v0.21.0: yes"
 else
-  emit "pristine-vs-v0.21.0rc1: no"
+  emit "pristine-vs-v0.21.0: no"
 fi
 emit "tmpdir: ${TMPDIR:-}"
 

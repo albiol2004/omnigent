@@ -4,7 +4,7 @@
 # Exit 0 iff every v17 commit in v0.17.0..v17/trio-v0.17.0-fixes has exactly one row (in order),
 # every product commit carries 0 or 1 `-x` trailers on HEAD, picks are in v17 order, every
 # ported/adapted row's new sha is on HEAD and carries that row's trailer, and every dropped row
-# cites an upstream commit that is an ancestor of v0.21.0rc1. Exit 1 on any failure (each printed).
+# cites an upstream commit that is an ancestor of v0.21.0. Exit 1 on any failure (each printed).
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 REPORT="${1:-docs/v21-report.md}"
@@ -16,7 +16,7 @@ import time
 
 T0 = time.monotonic()
 
-BASE, SRC_FROM, SRC_TO = "v0.21.0rc1", "v0.17.0", "v17/trio-v0.17.0-fixes"
+BASE, SRC_FROM, SRC_TO = "v0.21.0", "v0.17.0", "v17/trio-v0.17.0-fixes"
 
 
 def git(*a, ok=False):

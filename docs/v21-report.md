@@ -1,6 +1,6 @@
 # Omnigent fork re-port onto v0.21.0rc1 — report
 
-Branch: `trio/loop` → lands on `trio-v0.21.0-fixes` (base: upstream tag `v0.21.0rc1` = `20e15700f`, first release
+Branch: `trio/loop` → lands on `trio-v0.21.0rc1-fixes` (base: upstream tag `v0.21.0rc1` = `20e15700f`, first release
 candidate of 0.21, tagged 2026-11-03; the loop's mailbox-only base commit is `1b72ac3af`, `loop: mailbox for v0.21.0rc1
 re-port`). Port source: `v17/trio-v0.17.0-fixes` (tip `2e62ffd54`), range `v0.17.0..v17/trio-v0.17.0-fixes` =
 **90 commits** (`git rev-list v0.17.0..v17/trio-v0.17.0-fixes | wc -l`): 78 product commits, 9 worker merge commits,
@@ -634,9 +634,9 @@ Scratch-server checks (other slices, isolated HOME/port ≠ 6767) cannot show:
 ### 7.4 Rebase onto final v0.21.0
 
 Chosen method: **new branch + `git cherry-pick -x`** of
-`v0.21.0rc1..trio-v0.21.0-fixes`, skipping `loop/`-only commits. Justification:
+`v0.21.0rc1..trio-v0.21.0rc1-fixes`, skipping `loop/`-only commits. Justification:
 this port already used `-x` in original v17 order; `git rebase --onto v0.21.0
-v0.21.0rc1 trio-v0.21.0-fixes` would rewrite those commits and re-open the
+v0.21.0rc1 trio-v0.21.0rc1-fixes` would rewrite those commits and re-open the
 version/lock conflicts the Lead resolved by keeping upstream. Cherry-pick
 keeps trailers and lets `loop/`-only commits stay dropped.
 
@@ -646,9 +646,9 @@ Exact commands (documentation; this slice does not run them):
 git fetch upstream --tags
 git rev-parse v0.21.0^{}          # verify the tag object
 git merge-base --is-ancestor v0.21.0rc1 v0.21.0   # expect 0 if rc1 is ancestor
-git switch -c trio-v0.21.0-final v0.21.0
+git switch -c trio-v0.21.0-fixes v0.21.0
 # product commits only (exclude paths that are only loop/ / loop-archive-*):
-git log --reverse --pretty=%H v0.21.0rc1..trio-v0.21.0-fixes |
+git log --reverse --pretty=%H v0.21.0rc1..trio-v0.21.0rc1-fixes |
   while read -r c; do
     paths=$(git diff-tree --no-commit-id --name-only -r "$c")
     echo "$paths" | grep -qvE '^(loop/|loop-archive)' || continue
@@ -729,7 +729,7 @@ sqlite3 "$B/chat.db" "select version_num from alembic_version"   # expect mm1a2b
 **Install (human; or `CONFIRM_LIVE_UPGRADE=1 docs/v21-evidence/upgrade-to-0.21.sh`)**
 
 Stop services → snapshot (script uses `sqlite3 .backup`) → switch live
-checkout to the verified `trio-v0.21.0-fixes` tip → `uv tool install --editable`
+checkout to the verified `trio-v0.21.0rc1-fixes` tip → `uv tool install --editable`
 → start; first start migrates `mm1a2b3c4d5e` → `d0a1f879a01d`.
 
 **Verify**
@@ -748,9 +748,9 @@ code hits the "schema is newer" guard (§7.1) on a DB stamped `d0a1f879a01d`.
 
 ## 8. Final v0.21.0 rebase
 
-Branch `trio-v0.21.0-final` = tag `v0.21.0` (`2f636330c`) + `cherry-pick -x` of the first-parent line of
-`v0.21.0rc1..trio-v0.21.0-fixes` (merges with `-m 1`, `loop/`-only commits skipped). Product diff vs
-`trio-v0.21.0-fixes` (outside `loop/`) is exactly upstream's `v0.21.0rc1..v0.21.0` (#12711/#12712, 15 files).
+Branch `trio-v0.21.0-fixes` = tag `v0.21.0` (`2f636330c`) + `cherry-pick -x` of the first-parent line of
+`v0.21.0rc1..trio-v0.21.0rc1-fixes` (merges with `-m 1`, `loop/`-only commits skipped). Product diff vs
+`trio-v0.21.0rc1-fixes` (outside `loop/`) is exactly upstream's `v0.21.0rc1..v0.21.0` (#12711/#12712, 15 files).
 Literal retarget (§7.4 table) is commit `bb7e446fc`. Evidence: `docs/v21-evidence/final-v0.21.0/`.
 
 **Test environment correction.** The agent shell that ran these checks sits inside a live Omnigent runner terminal and
@@ -766,7 +766,7 @@ inherited, both fail on pristine v0.21.0 too — re-checked).
 |---|---|
 | focused suite, pristine `v0.21.0` (`baseline-v0.21.0.txt`) vs tip `bb7e446fc` (`after-port-v0.21.0.txt`) | `REGRESSIONS: 2` (`final-v0.21.0/compare.txt`); PRE-EXISTING 2 (`test_claude_native_model_options_*`); no hang, no timeout in any group |
 | `v21_overlap_check.sh` (TAG `v0.21.0`) | exit 0, absent 0, moved 0 |
-| `v21_disposition_check.sh` (BASE `v0.21.0`) | exit 1 — expected: §1 "new sha" column names `trio-v0.21.0-fixes` commits, which this branch re-picked |
+| `v21_disposition_check.sh` (BASE `v0.21.0`) | exit 1 — expected: §1 "new sha" column names `trio-v0.21.0rc1-fixes` commits, which this branch re-picked |
 | `v21_final_remap_check.py` (§1 row → fixes sha → final pick, incl. `-m 1` merge squash) | 77/78 rows mapped (20 via squashed slice merges); row #71 (`c2bedad97` → `b87d0cf23`) has no pick: it is an empty commit (ruff-format already applied), dropped by cherry-pick — no code lost |
 | patch `child-reasoning-effort.v0.21.0rc1.patch` on `v0.21.0` (read-tree `--cached`) and on the tip | exit 0 / exit 0 (no patched file changed rc1→final); copied to `patches/child-reasoning-effort.v0.21.0.patch`; applied: `76 passed`, reversed |
 | behaviour checks (§5) | `75 passed, 0 failed`, all six PASS |
@@ -796,5 +796,5 @@ the two upstream tests on the fork or list them.
 - *`expand_env` for single-file executor auth*: HTTP-uploaded bundles now load with `expand_env=False`; trio bundles
   have no `executor.auth` / `${VAR}`, so nothing changes for them.
 
-Live switch: nothing here was installed; §7.5 still applies with `trio-v0.21.0-final` in place of
-`trio-v0.21.0-fixes`.
+Live switch: nothing here was installed; §7.5 still applies with `trio-v0.21.0-fixes` in place of
+`trio-v0.21.0rc1-fixes`.

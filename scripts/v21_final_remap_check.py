@@ -1,9 +1,9 @@
-"""Map docs/v21-report.md §1 ported/adapted rows (new sha on trio-v0.21.0-fixes) onto trio-v0.21.0-final.
+"""Map docs/v21-report.md §1 ported/adapted rows (new sha on trio-v0.21.0rc1-fixes) onto trio-v0.21.0-fixes.
 A row maps if HEAD (v0.21.0..HEAD) has a commit whose -x trailer names the row's fixes sha, or names the
-first-parent merge of trio-v0.21.0-fixes that brought it in (cherry-pick -m 1 squashes the merge)."""
+first-parent merge of trio-v0.21.0rc1-fixes that brought it in (cherry-pick -m 1 squashes the merge)."""
 import re, subprocess, sys
 def git(*a): return subprocess.run(["git",*a],capture_output=True,text=True,check=True).stdout
-FIX="trio-v0.21.0-fixes"
+FIX="trio-v0.21.0rc1-fixes"
 fp=git("rev-list","--first-parent","--reverse",f"v0.21.0rc1..{FIX}").split()
 fpset=set(fp)
 trail={}

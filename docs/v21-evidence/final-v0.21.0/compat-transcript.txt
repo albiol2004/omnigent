@@ -1,0 +1,47 @@
+Checked 173 packages in 3ms
+SCRATCH_PORT: 48293
+SCRATCH_DIR: /var/tmp/v21s.6iVEHk
+SERVER_PID: 80792
+HOST_PID: 82716
+STATE_FILE: /var/tmp/v21s.TFp73e/stack.env
+create_session exception: PromptDeliveryUncertain: first prompt on 0ce6f35ceb694f55aec23467d256fcb0: the posted copy is unaccounted for after 20s; not re-posting, session kept
+events: POST /events -> 202
+CHECK trio-broker: PASS
+trio-session-policies: policies=[]
+CHECK trio-session-policies: PASS
+unregistered-fn: status=400 body=POST http://127.0.0.1:48293/v1/sessions failed with HTTP 400: {"error":{"code":"invalid_input","message":"Policy 'blast_radius': handler 'os.system' is not a registered policy handler. Uploaded agent bundles may only use handlers from the policy registry; a server admin must add custom handlers via the 'policy_modules' config."}}
+cwd-abs: status=400 body=POST http://127.0.0.1:48293/v1/sessions failed with HTTP 400: {"error":{"code":"invalid_input","message":"agent os_env.cwd must be a relative path within the workspace (no absolute paths or '..'); got '/tmp'"}}
+cwd-dotdot: status=400 body=POST http://127.0.0.1:48293/v1/sessions failed with HTTP 400: {"error":{"code":"invalid_input","message":"agent os_env.cwd must be a relative path within the workspace (no absolute paths or '..'); got '../x'"}}
+CHECK bundle-restrictions-10906: PASS
+broker_http has no permission_mode helper; PATCH as owner
+PATCH permission_mode=plan -> BrokerHttpError status=400 PATCH http://127.0.0.1:48293/v1/sessions/0ce6f35ceb694f55aec23467d256fcb0 failed with HTTP 400: {"error":{"code":"invalid_input","message":"permission_mode is only supported for claude-native and devin-native sessions"}}
+runner_pid=86867 session_id=0ce6f35ceb694f55aec23467d256fcb0
+session pid=86863 argv=['tmux', '-S', '/var/tmp/v21s.6iVEHk/tmp/omnigent-terminal-lb6dr83k/tmux.sock', '-f', '/dev/null', 'set-option', '-g', 'history-limit'] ppid=82716
+  fds=['/dev/null', '/dev/null', '/dev/null', 'pipe:[2861021552]', 'pipe:[2861021552]', '/dev/pts/ptmx', 'socket:[2861021553]']
+  _zygote_log_session_id(86863)=None
+session pid=86867 argv=['/usr/local/bin/cursor-agent', '--use-system-ca', '/usr/local/share/cursor-agent/versions/2026.10.22-27dcf5f/index.js', '--yolo', '--approve-mcps', '--model', 'glm-5.2-max'] ppid=86863
+  fds=['/dev/pts/10', '/dev/pts/10', 'anon_inode:[eventpoll]', 'anon_inode:[io_uring]', 'pipe:[2861024607]', 'pipe:[2861024607]', 'anon_inode:[eventfd]', 'anon_inode:[eventpoll]', 'anon_inode:[io_uring]', 'pipe:[2861013808]', 'pipe:[2861013808]', 'anon_inode:[eventfd]', '/dev/pts/10', '/dev/pts/10', '/dev/null', '/dev/pts/10', '/dev/pts/10', 'anon_inode:[eventpoll]', 'anon_inode:[eventfd]', 'anon_inode:[eventpoll]', 'socket:[2861013976]', 'socket:[2861013977]', 'socket:[2861013976]', 'anon_inode:[eventpoll]']
+  _zygote_log_session_id(86867)=None
+scratch-host zygote pids=[83319, 84254, 84338]
+  zygote 83319 log_hex=None ppid=82716
+  zygote 84254 log_hex='0ce6f35ceb694f55aec23467d256fcb0' ppid=83319
+  zygote 84338 log_hex='0ce6f35ceb694f55aec23467d256fcb0' ppid=83319
+_zygote_log_session_id chosen='0ce6f35ceb694f55aec23467d256fcb0' runner_pid=84338
+log hex relation: equal to API session id 0ce6f35ceb694f55aec23467d256fcb0
+_read_environ(86863)={'OMNIGENT_RUNNER_WORKSPACE': '/var/tmp/v21s.6iVEHk/ws', 'OMNIGENT_RUNNER_LAUNCH_HARNESS': 'cursor-native', 'OMNIGENT_RUNNER_PRIMARY_SESSION_ID': '0ce6f35ceb694f55aec23467d256fcb0', 'OMNIGENT_TERMINAL_LAUNCH_SESSION_ID': '0ce6f35ceb694f55aec23467d256fcb0'}
+_read_environ chosen pid=86863 {'OMNIGENT_RUNNER_WORKSPACE': '/var/tmp/v21s.6iVEHk/ws', 'OMNIGENT_RUNNER_LAUNCH_HARNESS': 'cursor-native', 'OMNIGENT_RUNNER_PRIMARY_SESSION_ID': '0ce6f35ceb694f55aec23467d256fcb0', 'OMNIGENT_TERMINAL_LAUNCH_SESSION_ID': '0ce6f35ceb694f55aec23467d256fcb0'}
+session-linked pids=[86863, 86867]
+snapshot type=dict
+runner log basenames=['runner-0ce6f35ceb694f55aec23467d256fcb0-20261105-183118-140639.connected', 'runner-0ce6f35ceb694f55aec23467d256fcb0-20261105-183118-140639.log']
+runner logs matching App Control regex=['runner-0ce6f35ceb694f55aec23467d256fcb0-20261105-183118-140639.log']
+CHECK appcontrol-dev-processes: PASS
+http_fetch_one={'id': '0ce6f35ceb694f55aec23467d256fcb0', 'title': 'v21-scratch-builder', 'status': 'failed', 'agent_name': 'trio-omnigent-builder', 'harness': 'cursor-native', 'workspace': '/var/tmp/v21s.6iVEHk/ws', 'parent_session_id': None, 'archived': False, 'sub_agent_name': None, 'updated_at': 1793903530} list_hit={'id': '0ce6f35ceb694f55aec23467d256fcb0', 'title': 'v21-scratch-builder', 'status': 'failed', 'agent_name': 'trio-omnigent-builder', 'harness': 'cursor-native', 'workspace': '/var/tmp/v21s.6iVEHk/ws', 'archived': False, 'updated_at': 1793903530} api_title='v21-scratch-builder'
+CHECK appcontrol-titles: PASS
+pre-delete session pids=[86863, 86867, 84338, 84254] (runner pid=84338, session zygotes=[84254, 84338])
+archive -> ok=True runner_online=False
+post-delete leftover=[] runner_pid=84338
+CHECK runner-gone-after-delete: PASS
+CHECK ownership-10850: PASS
+GUARDED_VIOLATIONS=0
+CHECK teardown-clean: PASS
+8 passed, 0 failed in 115s

@@ -1,0 +1,28 @@
+baseline rev: 2f636330cc6e28bfe1d22f741eda6db34a192d39
+after    rev: bb7e446fcc7c722c27afb9709f3fe75b4c1a5fa6
+note: recorded with every inherited OMNIGENT_*/TMUX* variable unset (scratch cleanenv wrapper; this agent runs inside a live Omnigent runner terminal whose OMNIGENT_RUNNER_ZYGOTE_HARNESS_FD=15 etc. ot
+
+| group | baseline | after-port | status |
+|---|---|---|---|
+| dispatch | 313 passed, 1 skipped in 41.67s | 317 passed, 1 skipped in 41.09s | ok |
+| interrupt | 25 passed in 1.36s | 28 passed in 1.26s | ok |
+| runner-native | 2 failed, 753 passed in 1657.81s (0:27:37) | 4 failed, 830 passed in 1662.48s (0:27:42) | REGRESSION |
+| sys-session | 60 passed in 84.92s (0:01:24) | 61 passed in 82.27s (0:01:22) | ok |
+| terminals | 177 passed, 2 skipped in 36.66s | 188 passed, 2 skipped in 36.37s | ok |
+| claude-native | 2328 passed, 1 skipped, 10 warnings in 408.69s (0:06:48) | 2331 passed, 1 skipped, 10 warnings in 409.72s (0:06:49) | ok |
+| codex-native | 1895 passed, 2 warnings in 92.26s (0:01:32) | 1925 passed, 2 warnings in 104.26s (0:01:44) | ok |
+| cursor-native | 267 passed in 12.70s | 561 passed in 31.73s | ok |
+| inner-proc | 45 passed, 8 skipped in 3.24s | 46 passed, 8 skipped in 5.13s | ok |
+| host | 408 passed, 99 warnings in 70.09s (0:01:10) | 409 passed, 100 warnings in 61.93s (0:01:01) | ok |
+| sessions-routes | 21 passed in 12.41s | 66 passed in 197.66s (0:03:17) | ok |
+
+FIXED BY PORT: 0
+PRE-EXISTING: 2
+  tests/runner/test_app_sessions_native_events_lifecycle.py::test_claude_native_model_options_serves_probe_rows_after_pending
+  tests/runner/test_app_sessions_native_events_lifecycle.py::test_claude_native_model_options_use_session_launch_catalog[False]
+ENV-ARTIFACT: 0 (allow-list /home/coder/omnigent-v21/docs/v21-evidence/env-artifacts.txt)
+REGRESSION: new failure: tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_codex_native_repeated_stop_after_completed_turn_stays_204
+REGRESSION: new failure: tests/runner/test_app_sessions_native_events_lifecycle.py::test_events_codex_native_stop_after_completed_turn_is_noop_not_503[stop_session]
+REGRESSIONS: 2
+10 passed, 2 failed in 0.00s
+exit 1

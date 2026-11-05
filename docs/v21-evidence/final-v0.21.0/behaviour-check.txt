@@ -1,0 +1,7 @@
+BEHAVIOUR cursor receipt gate: PASS
+BEHAVIOUR cursor isolation: PASS
+BEHAVIOUR input fence: PASS
+BEHAVIOUR stop-routing + kill escalation (#10251): PASS
+BEHAVIOUR Codex manual compact: PASS
+BEHAVIOUR claude_native hook bridge + hook TMPDIR: PASS
+75 passed, 0 failed in 89.97s

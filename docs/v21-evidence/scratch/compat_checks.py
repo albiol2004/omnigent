@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -377,6 +378,31 @@ def main() -> int:
         if not (agent_ids_ok and session_id and get_ok and events_ok and items_ok and list_ok)
         else "",
     )
+
+    # v0.21.0 final (#12711/#12712): ask_on_os_tools now also gates sys_terminal_*.
+    # Record which policies a trio-launched session actually runs under (admin +
+    # store via GET /v1/sessions/{id}/policies, plus GET /v1/policies defaults);
+    # PASS iff neither lists the file & shell approval policy.
+    pol_ok = False
+    pol_note = "no session"
+    if session_id:
+        try:
+            names: list[str] = []
+            for path in (f"/v1/sessions/{session_id}/policies", "/v1/policies"):
+                with urllib.request.urlopen(base + path, timeout=15) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
+                for row in body.get("data", []) if isinstance(body, dict) else []:
+                    if isinstance(row, dict):
+                        names.append(
+                            f"{path.rsplit('/', 1)[-1]}:{row.get('source', '')}:"
+                            f"{row.get('name', '')}:{row.get('handler', '')}"
+                        )
+            pol_note = f"policies={names!r}"
+            pol_ok = not any("ask_on_os_tools" in n or "File & Shell" in n for n in names)
+        except Exception as exc:  # noqa: BLE001
+            pol_note = f"{type(exc).__name__}: {exc}"
+    print(f"trio-session-policies: {pol_note}", flush=True)
+    emit("trio-session-policies", pol_ok, "" if pol_ok else pol_note)
 
     # --- bundle-restrictions-10906 ---
     def expect_4xx(label: str, cfg: Path) -> tuple[bool, str]:

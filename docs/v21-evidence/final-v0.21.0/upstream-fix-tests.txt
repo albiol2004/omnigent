@@ -1,0 +1,3 @@
++    0.1 MB  (now    119.1 MB)  tests/inner/test_copy_on_write.py::test_agent_parser_rejects_unshared_harness[True-codex-native]
+228 passed in 4.01s
+29 passed, 797 deselected in 23.67s

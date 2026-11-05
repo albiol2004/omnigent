@@ -745,3 +745,56 @@ stop services; restore the snapshot `chat.db` (replace live `chat.db` +
 `-wal`/`-shm`); restore tool-env and git `trio-v0.17.0-fixes` + working-tree
 diff; start. Do **not** switch the branch without restoring the DB: v0.17.0
 code hits the "schema is newer" guard (§7.1) on a DB stamped `d0a1f879a01d`.
+
+## 8. Final v0.21.0 rebase
+
+Branch `trio-v0.21.0-final` = tag `v0.21.0` (`2f636330c`) + `cherry-pick -x` of the first-parent line of
+`v0.21.0rc1..trio-v0.21.0-fixes` (merges with `-m 1`, `loop/`-only commits skipped). Product diff vs
+`trio-v0.21.0-fixes` (outside `loop/`) is exactly upstream's `v0.21.0rc1..v0.21.0` (#12711/#12712, 15 files).
+Literal retarget (§7.4 table) is commit `bb7e446fc`. Evidence: `docs/v21-evidence/final-v0.21.0/`.
+
+**Test environment correction.** The agent shell that ran these checks sits inside a live Omnigent runner terminal and
+inherits `OMNIGENT_RUNNER_ZYGOTE_HARNESS_FD=15`, `OMNIGENT_RUNNER_WORKSPACE`, `TMUX` and ~15 more `OMNIGENT_*` vars.
+With them set, `tests/runner/test_runner_dispatch.py` hangs (runner tests talk to the stray fd 15 in
+`_harness_zygote_client._exchange_blocking`) on pristine and tip alike. Both records below were therefore taken with every
+`OMNIGENT_*`/`TMUX*` variable unset. In that clean environment **the rc1 report's §3.2 pre-existing failures (except 2)
+and the §3.3 sessions-routes fd-capture hang do not occur**: host 408/409 passed, sessions-routes 21 / 66 passed with
+default capture. They were artefacts of the same inherited env, which also masked the 2 ids below (with the env
+inherited, both fail on pristine v0.21.0 too — re-checked).
+
+| check | result |
+|---|---|
+| focused suite, pristine `v0.21.0` (`baseline-v0.21.0.txt`) vs tip `bb7e446fc` (`after-port-v0.21.0.txt`) | `REGRESSIONS: 2` (`final-v0.21.0/compare.txt`); PRE-EXISTING 2 (`test_claude_native_model_options_*`); no hang, no timeout in any group |
+| `v21_overlap_check.sh` (TAG `v0.21.0`) | exit 0, absent 0, moved 0 |
+| `v21_disposition_check.sh` (BASE `v0.21.0`) | exit 1 — expected: §1 "new sha" column names `trio-v0.21.0-fixes` commits, which this branch re-picked |
+| `v21_final_remap_check.py` (§1 row → fixes sha → final pick, incl. `-m 1` merge squash) | 77/78 rows mapped (20 via squashed slice merges); row #71 (`c2bedad97` → `b87d0cf23`) has no pick: it is an empty commit (ruff-format already applied), dropped by cherry-pick — no code lost |
+| patch `child-reasoning-effort.v0.21.0rc1.patch` on `v0.21.0` (read-tree `--cached`) and on the tip | exit 0 / exit 0 (no patched file changed rc1→final); copied to `patches/child-reasoning-effort.v0.21.0.patch`; applied: `76 passed`, reversed |
+| behaviour checks (§5) | `75 passed, 0 failed`, all six PASS |
+| consumer compat (§6), scratch server+host port 48293 | `8 passed, 0 failed` (the 7 rc1 checks + new `trio-session-policies`) |
+| upstream fix tests (`test_safety.py`, `test_single_file_executor_auth_env.py`, `test_copy_on_write.py`; bridge `-k relay`) | `228 passed`; `29 passed` |
+
+**The 2 regressions** (`tests/runner/test_app_sessions_native_events_lifecycle.py`):
+`test_events_codex_native_repeated_stop_after_completed_turn_stays_204` and
+`test_events_codex_native_stop_after_completed_turn_is_noop_not_503[stop_session]`. Upstream tests that expect
+`stop_session` to send `turn/interrupt` for a stale recorded turn; the fork's codex Stop is a hard stop (tmux kill,
+no `turn/interrupt`, pinned by `test_events_stop_session_on_codex_native_hard_stops_without_marker`, ported in the
+`v21-port-stop` slice). Both return 204 at the tip; only the request-list assertion fails (`got []`). The `[interrupt]`
+parameter still passes. Intended divergence of test expectation, not a behaviour defect; a human decides whether to adapt
+the two upstream tests on the fork or list them.
+
+**Upstream #12711/#12712 vs trio / the fork:**
+- *claude-native relay runs only advertised tools* (`start_tool_relay._execute_current_tool`): the only `/tool` client
+  is the bridge's own MCP server (`_call_mcp_tool` → `_call_relay_tool`), which already relays only names from
+  `tool_relay.json`. No fork hunk touches the relay; trio (`broker_http`, trioctl) and App Control never POST `/tool`.
+  Hook routes (`/hook/*`, `/policies/evaluate`) are not gated. No impact.
+- *`ask_on_os_tools` now also asks before `sys_terminal_launch/send/read/close`*: that policy runs only when attached
+  (policy registry / `sys_add_policy` / default-policy store). Trio role bundles declare only `blast_radius`
+  (`omnigent.inner.nessie.policies`, which imports `orchestration`/`NATIVE_WRITE_TOOLS`, unchanged); the scratch check
+  `trio-session-policies` shows a trio-launched session has no admin/store/default policies; the live `chat.db`
+  `policies` table (read-only) has 0 rows and the live server runs without `--config`. Trio Cursor (yolo) and Codex
+  sessions are unaffected; a user who attaches the policy will now also get asks for terminal tools.
+- *`expand_env` for single-file executor auth*: HTTP-uploaded bundles now load with `expand_env=False`; trio bundles
+  have no `executor.auth` / `${VAR}`, so nothing changes for them.
+
+Live switch: nothing here was installed; §7.5 still applies with `trio-v0.21.0-final` in place of
+`trio-v0.21.0-fixes`.

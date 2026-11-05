@@ -1,0 +1,7 @@
+$ GIT_INDEX_FILE=$I git read-tree v0.21.0 && GIT_INDEX_FILE=$I git apply --check --cached patches/child-reasoning-effort.v0.21.0rc1.patch   # pristine v0.21.0
+exit 0
+$ git apply --check patches/child-reasoning-effort.v0.21.0rc1.patch   # final tip (HEAD bb7e446fcc)
+exit 0
+$ git apply --check patches/child-reasoning-effort.v0.21.0.patch && git apply patches/child-reasoning-effort.v0.21.0.patch && pytest tests/tools/builtins/test_child_reasoning_effort.py tests/tools/builtins/test_sys_session.py tests/runtime/test_reasoning_effort_validation.py; git apply -R patches/child-reasoning-effort.v0.21.0.patch   # final tip, clean env
+76 passed in 82.63s (0:01:22)
+reversed rc=0

@@ -1,0 +1,165 @@
+$ bash scripts/v21_disposition_check.sh
+FAIL: row #1 (v17 4f1fc58f8): no -x pick on HEAD but disposition 'ported' (expect 'dropped')
+FAIL: row #2 (v17 8f7f924c2): no -x pick on HEAD but disposition 'adapted' (expect 'dropped')
+FAIL: row #3 (v17 fb38228b0): no -x pick on HEAD but disposition 'ported' (expect 'dropped')
+FAIL: row #4 (v17 033e6837e): no -x pick on HEAD but disposition 'adapted' (expect 'dropped')
+FAIL: row #5 (v17 561681c55): no -x pick on HEAD but disposition 'ported' (expect 'dropped')
+FAIL: row #6 (v17 669e05bfd): no -x pick on HEAD but disposition 'ported' (expect 'dropped')
+FAIL: row #7 (v17 ab9d2c7cb): no -x pick on HEAD but disposition 'ported' (expect 'dropped')
+FAIL: row #8 (v17 2eed26a21): no -x pick on HEAD but disposition 'ported' (expect 'dropped')
+FAIL: row #9 (v17 2f74c179a): no -x pick on HEAD but disposition 'ported' (expect 'dropped')
+FAIL: row #10 (v17 88344b862): no -x pick on HEAD but disposition 'ported' (expect 'dropped')
+FAIL: row #11 (v17 b1c8373de): no -x pick on HEAD but disposition 'ported' (expect 'dropped')
+FAIL: row #12 (v17 30764d7e9): no -x pick on HEAD but disposition 'adapted' (expect 'dropped')
+FAIL: row #13 (v17 150efd6ff): no -x pick on HEAD but disposition 'adapted' (expect 'dropped')
+FAIL: row #14 (v17 a526deb64): no -x pick on HEAD but disposition 'adapted' (expect 'dropped')
+FAIL: row #15 (v17 958ee4c24): no -x pick on HEAD but disposition 'adapted' (expect 'dropped')
+FAIL: row #16 (v17 54f5172bf): no -x pick on HEAD but disposition 'adapted' (expect 'dropped')
+FAIL: row #17 (v17 c69e6e76f): no -x pick on HEAD but disposition 'ported' (expect 'dropped')
+FAIL: row #18 (v17 7e50a304d): no -x pick on HEAD but disposition 'ported' (expect 'dropped')
+FAIL: row #19 (v17 477b2e2e8): no -x pick on HEAD but disposition 'ported' (expect 'dropped')
+FAIL: row #20 (v17 3c16f63ee): no -x pick on HEAD but disposition 'ported' (expect 'dropped')
+FAIL: row #21 (v17 9d7976a0d): new sha 58fd53ffb is not on HEAD
+FAIL: row #22 (v17 48757757d): new sha 9bbbc9552 is not on HEAD
+FAIL: row #23 (v17 b110581d4): new sha f43bf418e is not on HEAD
+FAIL: row #24 (v17 0a0489d45): new sha db3580761 is not on HEAD
+FAIL: row #25 (v17 6dfb7d57c): new sha e89407bd7 is not on HEAD
+FAIL: row #26 (v17 966a8e8ee): new sha 05774790e is not on HEAD
+FAIL: row #27 (v17 e0849ba33): new sha 4b2b72d26 is not on HEAD
+FAIL: row #28 (v17 e90741969): new sha cf37c9605 is not on HEAD
+FAIL: row #29 (v17 c2d486a61): new sha b0ec78f26 is not on HEAD
+FAIL: row #30 (v17 f824ffc1d): new sha c41d695ba is not on HEAD
+FAIL: row #31 (v17 74ee1aa8b): new sha b6850163c is not on HEAD
+FAIL: row #32 (v17 cdff1f729): new sha d2e81b624 is not on HEAD
+FAIL: row #33 (v17 68355aa71): new sha 6b9bf6bf1 is not on HEAD
+FAIL: row #34 (v17 5ce00dcde): new sha 610e8fa07 is not on HEAD
+FAIL: row #35 (v17 cf7e01b4a): new sha 173de1e84 is not on HEAD
+FAIL: row #36 (v17 c34b373b0): new sha 0a60a0f50 is not on HEAD
+FAIL: row #37 (v17 c91564c23): new sha 2291b0b23 is not on HEAD
+FAIL: row #38 (v17 4a5f7c704): new sha 7039bb81c is not on HEAD
+FAIL: row #39 (v17 1363b3692): new sha 61aab49ac is not on HEAD
+FAIL: row #40 (v17 e4877b51d): new sha c159ff675 is not on HEAD
+FAIL: row #41 (v17 fd369ae8c): new sha a9b417e3f is not on HEAD
+FAIL: row #42 (v17 913919d7f): new sha 7d3d30ad3 is not on HEAD
+FAIL: row #43 (v17 f1676480c): new sha c9de4f254 is not on HEAD
+FAIL: row #44 (v17 c52ecff7b): new sha fb268f6de is not on HEAD
+FAIL: row #45 (v17 d0a486bd2): new sha 01890d219 is not on HEAD
+FAIL: row #46 (v17 6fd4ca632): new sha bde75aed4 is not on HEAD
+FAIL: row #47 (v17 604ab387b): new sha b4f61eb59 is not on HEAD
+FAIL: row #48 (v17 f5f90ca43): new sha f5df68e41 is not on HEAD
+FAIL: row #49 (v17 9f7220a42): new sha c8251c6e6 is not on HEAD
+FAIL: row #50 (v17 24508959a): new sha 78893d289 is not on HEAD
+FAIL: row #51 (v17 433df86ae): new sha 2dc5c82e1 is not on HEAD
+FAIL: row #52 (v17 197a2cb17): new sha c9c439770 is not on HEAD
+FAIL: row #53 (v17 b6962e4af): new sha 47b2acb05 is not on HEAD
+FAIL: row #54 (v17 3c7252f3a): new sha a99ce6d28 is not on HEAD
+FAIL: row #55 (v17 a4269368c): new sha 975d358fd is not on HEAD
+FAIL: row #56 (v17 bab692622): new sha 6dcba7ce0 is not on HEAD
+FAIL: row #57 (v17 10ce2b158): new sha 38fabe41f is not on HEAD
+FAIL: row #58 (v17 1ee4c7d22): new sha 413f52e4e is not on HEAD
+FAIL: row #59 (v17 4596497c7): new sha a42a212a1 is not on HEAD
+FAIL: row #60 (v17 af4c6a098): new sha 9e468428a is not on HEAD
+FAIL: row #61 (v17 cec186bc5): new sha 229bc198f is not on HEAD
+FAIL: row #62 (v17 69b9e324d): new sha 39981432e is not on HEAD
+FAIL: row #63 (v17 7c66bd251): new sha e629e50d6 is not on HEAD
+FAIL: row #64 (v17 66471010f): new sha 1f3426fd3 is not on HEAD
+FAIL: row #65 (v17 e64f72d1b): new sha 2656897c6 is not on HEAD
+FAIL: row #66 (v17 0cd5d45b4): new sha 978ba26b6 is not on HEAD
+FAIL: row #67 (v17 06aa68a25): new sha 31e97ccbb is not on HEAD
+FAIL: row #68 (v17 31236382c): new sha 0c9333f73 is not on HEAD
+FAIL: row #69 (v17 bf6c3a8d2): new sha f2e33720e is not on HEAD
+FAIL: row #70 (v17 2d5655b6b): new sha 1c2cbdc73 is not on HEAD
+FAIL: row #71 (v17 c2bedad97): no -x pick on HEAD but disposition 'adapted' (expect 'dropped')
+FAIL: row #72 (v17 8001e9de9): new sha c11e2c181 is not on HEAD
+FAIL: row #73 (v17 250f4c3e5): new sha 491f01e85 is not on HEAD
+FAIL: row #74 (v17 7470ce929): new sha 4957673f4 is not on HEAD
+FAIL: row #75 (v17 c813e0b82): new sha c25404f26 is not on HEAD
+FAIL: row #76 (v17 7c04ae6a5): new sha d29c61e72 is not on HEAD
+FAIL: row #77 (v17 503a80a41): new sha 11a604d98 is not on HEAD
+FAIL: row #78 (v17 2e62ffd54): new sha 4dddf165d is not on HEAD
+DISPOSITION: 78 product commits — ported+adapted=57, dropped=0, p+d=57; trailers in v17 order: yes
+12 passed, 78 failed in 2.25s
+TARGETED_CHECK: FAILED 78 failure(s)
+exit 1
+
+$ python3 -I scripts/v21_final_remap_check.py
+OK row #1 v17 4f1fc58f8 -> fixes 8493f640c -> final bbe0b87558 (via merge 1608dac987)
+OK row #2 v17 8f7f924c2 -> fixes ba43bd520 -> final bbe0b87558 (via merge 1608dac987)
+OK row #3 v17 fb38228b0 -> fixes d56bf2d8e -> final bbe0b87558 (via merge 1608dac987)
+OK row #4 v17 033e6837e -> fixes 177b7a77f -> final bbe0b87558 (via merge 1608dac987)
+OK row #5 v17 561681c55 -> fixes cb5c7c492 -> final bbe0b87558 (via merge 1608dac987)
+OK row #6 v17 669e05bfd -> fixes c366fd184 -> final bbe0b87558 (via merge 1608dac987)
+OK row #7 v17 ab9d2c7cb -> fixes c1ab67984 -> final bbe0b87558 (via merge 1608dac987)
+OK row #8 v17 2eed26a21 -> fixes 9d4b414e8 -> final bbe0b87558 (via merge 1608dac987)
+OK row #9 v17 2f74c179a -> fixes 2837f48a0 -> final bbe0b87558 (via merge 1608dac987)
+OK row #10 v17 88344b862 -> fixes 7ab19d2e1 -> final bbe0b87558 (via merge 1608dac987)
+OK row #11 v17 b1c8373de -> fixes 5f1b63f04 -> final bbe0b87558 (via merge 1608dac987)
+OK row #12 v17 30764d7e9 -> fixes 46480dd27 -> final 6081508238 (via merge 00019b87e2)
+OK row #13 v17 150efd6ff -> fixes 665c6ce2c -> final 6081508238 (via merge 00019b87e2)
+OK row #14 v17 a526deb64 -> fixes 3093f32b4 -> final 6081508238 (via merge 00019b87e2)
+OK row #15 v17 958ee4c24 -> fixes 0bb8d876b -> final 6081508238 (via merge 00019b87e2)
+OK row #16 v17 54f5172bf -> fixes e21133d27 -> final 6081508238 (via merge 00019b87e2)
+OK row #17 v17 c69e6e76f -> fixes 230289c25 -> final 6081508238 (via merge 00019b87e2)
+OK row #18 v17 7e50a304d -> fixes 0dfc26c9c -> final 6081508238 (via merge 00019b87e2)
+OK row #19 v17 477b2e2e8 -> fixes d173a98d0 -> final 6081508238 (via merge 00019b87e2)
+OK row #20 v17 3c16f63ee -> fixes 2bc192c1f -> final 6081508238 (via merge 00019b87e2)
+OK row #21 v17 9d7976a0d -> fixes 58fd53ffb -> final d9f63b0432
+OK row #22 v17 48757757d -> fixes 9bbbc9552 -> final 8a05c051dd
+OK row #23 v17 b110581d4 -> fixes f43bf418e -> final 4213e91b5b
+OK row #24 v17 0a0489d45 -> fixes db3580761 -> final 5e58b2d929
+OK row #25 v17 6dfb7d57c -> fixes e89407bd7 -> final c3654b02cf
+OK row #26 v17 966a8e8ee -> fixes 05774790e -> final 5f28e58463
+OK row #27 v17 e0849ba33 -> fixes 4b2b72d26 -> final f7256a48f8
+OK row #28 v17 e90741969 -> fixes cf37c9605 -> final 95bf45f8b2
+OK row #29 v17 c2d486a61 -> fixes b0ec78f26 -> final fed9bd6249
+OK row #30 v17 f824ffc1d -> fixes c41d695ba -> final 281c220106
+OK row #31 v17 74ee1aa8b -> fixes b6850163c -> final c1083b63f9
+OK row #32 v17 cdff1f729 -> fixes d2e81b624 -> final 60fefafd7f
+OK row #33 v17 68355aa71 -> fixes 6b9bf6bf1 -> final ea29e0c787
+OK row #34 v17 5ce00dcde -> fixes 610e8fa07 -> final a4a9f7b448
+OK row #35 v17 cf7e01b4a -> fixes 173de1e84 -> final abadc0ea73
+OK row #36 v17 c34b373b0 -> fixes 0a60a0f50 -> final d97d49f989
+OK row #37 v17 c91564c23 -> fixes 2291b0b23 -> final 90eef40ea8
+OK row #38 v17 4a5f7c704 -> fixes 7039bb81c -> final 5d02cee2c2
+OK row #39 v17 1363b3692 -> fixes 61aab49ac -> final f4d0dc00aa
+OK row #40 v17 e4877b51d -> fixes c159ff675 -> final 867cc0c511
+OK row #41 v17 fd369ae8c -> fixes a9b417e3f -> final 727e9d250b
+OK row #42 v17 913919d7f -> fixes 7d3d30ad3 -> final a78268b361
+OK row #43 v17 f1676480c -> fixes c9de4f254 -> final bbf648cac0
+OK row #44 v17 c52ecff7b -> fixes fb268f6de -> final 3fa2580a7a
+OK row #45 v17 d0a486bd2 -> fixes 01890d219 -> final f20b332bd3
+OK row #46 v17 6fd4ca632 -> fixes bde75aed4 -> final cb004c51cd
+OK row #47 v17 604ab387b -> fixes b4f61eb59 -> final d6d125ba8d
+OK row #48 v17 f5f90ca43 -> fixes f5df68e41 -> final c83e9847fc
+OK row #49 v17 9f7220a42 -> fixes c8251c6e6 -> final 54c8581beb
+OK row #50 v17 24508959a -> fixes 78893d289 -> final d5806907dd
+OK row #51 v17 433df86ae -> fixes 2dc5c82e1 -> final 2b1e1fc403
+OK row #52 v17 197a2cb17 -> fixes c9c439770 -> final 177a7678fd
+OK row #53 v17 b6962e4af -> fixes 47b2acb05 -> final a7c59f1314
+OK row #54 v17 3c7252f3a -> fixes a99ce6d28 -> final e03c84c05f
+OK row #55 v17 a4269368c -> fixes 975d358fd -> final 189b2db4c3
+OK row #56 v17 bab692622 -> fixes 6dcba7ce0 -> final 4464bbf242
+OK row #57 v17 10ce2b158 -> fixes 38fabe41f -> final 13b9d2466e
+OK row #58 v17 1ee4c7d22 -> fixes 413f52e4e -> final 36193bc3be
+OK row #59 v17 4596497c7 -> fixes a42a212a1 -> final 9db8493d8d
+OK row #60 v17 af4c6a098 -> fixes 9e468428a -> final 34a4c475a5
+OK row #61 v17 cec186bc5 -> fixes 229bc198f -> final ac75dbd7c3
+OK row #62 v17 69b9e324d -> fixes 39981432e -> final 1fb5990d15
+OK row #63 v17 7c66bd251 -> fixes e629e50d6 -> final 63347f9724
+OK row #64 v17 66471010f -> fixes 1f3426fd3 -> final 99a43a3894
+OK row #65 v17 e64f72d1b -> fixes 2656897c6 -> final 7578b51099
+OK row #66 v17 0cd5d45b4 -> fixes 978ba26b6 -> final e1bfdcb19f
+OK row #67 v17 06aa68a25 -> fixes 31e97ccbb -> final 2e39f161c4
+OK row #68 v17 31236382c -> fixes 0c9333f73 -> final cb1843baf9
+OK row #69 v17 bf6c3a8d2 -> fixes f2e33720e -> final 58bd30db62
+OK row #70 v17 2d5655b6b -> fixes 1c2cbdc73 -> final 40b63eab1b
+FAIL row #71 v17 c2bedad97 fixes b87d0cf23: carrier=b87d0cf238 hits=0
+OK row #72 v17 8001e9de9 -> fixes c11e2c181 -> final e8ba973c7f
+OK row #73 v17 250f4c3e5 -> fixes 491f01e85 -> final 6964c7e59a
+OK row #74 v17 7470ce929 -> fixes 4957673f4 -> final e855eca194
+OK row #75 v17 c813e0b82 -> fixes c25404f26 -> final 81f04b6c77
+OK row #76 v17 7c04ae6a5 -> fixes d29c61e72 -> final 4da5f8b6db
+OK row #77 v17 503a80a41 -> fixes 11a604d98 -> final da00ac258a
+OK row #78 v17 2e62ffd54 -> fixes 4dddf165d -> final ce4b3e3edd
+REMAP: rows ok=77 fail=1 (via merge squash: 20); fixes first-parent product commits without exactly one pick on final: 1 b87d0cf238
+exit 1

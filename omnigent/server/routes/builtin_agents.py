@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -234,6 +235,44 @@ def _config_headers(response: Response, agent: Agent) -> None:
     response.headers["Access-Control-Expose-Headers"] = "ETag"
 
 
+def _valid_if_match(request: Request) -> bool:
+    """Accept no precondition or one strong configuration tag; wildcard is unsupported."""
+    values = request.headers.getlist("if-match")
+    return not values or (
+        len(values) == 1 and re.fullmatch(r'"[0-9a-f]{64}"', values[0]) is not None
+    )
+
+
+def _install_user_agent_if_match(
+    agent_store: AgentStore,
+    artifact_store: ArtifactStore,
+    agent_cache: AgentCache,
+    *,
+    owner: str | None,
+    name: str,
+    bundle_bytes: bytes,
+    expected_etag: str,
+) -> Agent | None:
+    agent_id = installed_agent_id(owner, name)
+    current = agent_store.get(agent_id)
+    if current is None or current.kind != "user" or current.created_by != owner:
+        return None
+    if _config_etag(current) != expected_etag:
+        return None
+    if agent_store.get_by_name(name) is not None:
+        raise OmnigentError(
+            f"{name!r} is a server agent; rename your agent to install it.",
+            code=ErrorCode.CONFLICT,
+        )
+    location = content_bundle_location(agent_id, bundle_bytes)
+    artifact_store.put(location, bundle_bytes)
+    # The CAS pins every ETag column plus owner and kind, so the tag still matches at write.
+    updated = agent_store.update_configuration(current, location, description=None)
+    if updated is not None:
+        agent_cache.evict(agent_id)
+    return updated
+
+
 def install_user_agent(
     agent_store: AgentStore,
     artifact_store: ArtifactStore,
@@ -406,9 +445,7 @@ def create_builtin_agents_router(
         """Patch only supplied fields; optionally check the ETag from GET /agents/{id}/config."""
         agent = await editable_agent(request, agent_id)
         if if_match is not None:
-            if len(request.headers.getlist("if-match")) != 1 or not (
-                len(if_match) == 66 and if_match.startswith('"') and if_match.endswith('"')
-            ):
+            if not _valid_if_match(request):
                 return _config_error(400, "invalid_input", "Supply one strong configuration ETag")
             if if_match != _config_etag(agent):
                 return _config_error(
@@ -532,8 +569,24 @@ def create_builtin_agents_router(
         return AgentDetailObject(**summary.model_dump(), user_owned=agent.kind == "user")
 
     # Multipart is CORS-safelisted, so a cross-site form post needs the Origin check.
-    @router.post("/agents", dependencies=[Depends(require_trusted_origin)])
-    async def install_agent(request: Request) -> AgentObject:
+    @router.post(
+        "/agents",
+        response_model=AgentObject,
+        dependencies=[Depends(require_trusted_origin)],
+        responses={
+            200: {"headers": {"ETag": {"schema": {"type": "string"}}}},
+            400: {"model": ErrorResponse, "description": "Invalid If-Match header"},
+            412: {"model": ErrorResponse, "description": "Agent changed; reload before saving"},
+            501: {"description": "Agent configuration editing unavailable"},
+        },
+    )
+    async def install_agent(
+        request: Request,
+        response: Response,
+        if_match: str | None = Header(
+            default=None, description="One strong configuration ETag; wildcard is unsupported."
+        ),
+    ) -> AgentObject | JSONResponse:
         """Install (or reinstall) the caller's user agent from a bundle.
 
         Multipart form with one ``bundle`` part: a gzipped tarball, the same
@@ -545,6 +598,10 @@ def create_builtin_agents_router(
         """
         user_id = _require_user(request, auth_provider)
         require_user_agents()
+        if not _valid_if_match(request):
+            return _config_error(400, "invalid_input", "Supply one strong configuration ETag")
+        if if_match is not None and not agent_store.supports_config_edit:
+            raise HTTPException(status_code=501, detail="Agent configuration editing unavailable")
         if artifact_store is None:
             raise OmnigentError("artifact store is not configured", code=ErrorCode.INTERNAL_ERROR)
         length = request.headers.get("content-length", "")
@@ -563,15 +620,31 @@ def create_builtin_agents_router(
         )
         if spec.name is None:  # validate_agent_bundle rejects this; narrows the type
             raise OmnigentError("agent spec has no name", code=ErrorCode.INVALID_INPUT)
-        agent = await asyncio.to_thread(
-            install_user_agent,
-            agent_store,
-            artifact_store,
-            agent_cache,
-            owner=user_id,
-            name=spec.name,
-            bundle_bytes=bundle_bytes,
-        )
+        if if_match is None:
+            agent = await asyncio.to_thread(
+                install_user_agent,
+                agent_store,
+                artifact_store,
+                agent_cache,
+                owner=user_id,
+                name=spec.name,
+                bundle_bytes=bundle_bytes,
+            )
+        else:
+            agent = await asyncio.to_thread(
+                _install_user_agent_if_match,
+                agent_store,
+                artifact_store,
+                agent_cache,
+                owner=user_id,
+                name=spec.name,
+                bundle_bytes=bundle_bytes,
+                expected_etag=if_match,
+            )
+        if agent is None:
+            return _config_error(412, "precondition_failed", "Agent changed; reload before saving")
+        if if_match is not None:
+            _config_headers(response, agent)
         # Loads (extracts) the just-written bundle; keep it off the event loop.
         return await asyncio.to_thread(_to_agent_object, agent, agent_cache)
 

@@ -8,10 +8,12 @@ deployed server.
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import io
 import json
 import tarfile
+import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -141,6 +143,132 @@ async def test_reinstall_updates_in_place(client) -> None:
     assert second["version"] == first["version"] + 1
     assert second["description"] == "v2", "reinstall must show the new bundle's description"
     assert [row["description"] for row in (await _mine(client, ALICE))["data"]] == ["v2"]
+
+
+async def test_conditional_install_and_stale_tag(client):
+    # Catch stale uploads overwriting a newer configuration.
+    agent = (await _install(client, ALICE, "orion")).json()
+    path = f"/v1/agents/{agent['id']}/config"
+    before = await client.get(path, headers=ALICE)
+    headers = {**ALICE, "If-Match": before.headers["etag"]}
+    changed = await _install(client, headers, "orion", "v2")
+    assert changed.status_code == 200, changed.text
+    after = await client.get(path, headers=ALICE)
+    assert changed.headers["etag"] == after.headers["etag"] != before.headers["etag"]
+    assert changed.headers["access-control-expose-headers"] == "ETag"
+    stale = await _install(client, headers, "orion", "stale")
+    assert stale.status_code == 412
+    assert stale.json() == {
+        "error": {"code": "precondition_failed", "message": "Agent changed; reload before saving"}
+    }
+    latest = await client.get(path, headers=ALICE)
+    assert latest.headers["etag"] == after.headers["etag"] and latest.json() == after.json()
+
+
+@pytest.mark.parametrize(
+    "values", [["unquoted"], ['W/"' + "a" * 64 + '"'], ["*"], ['"' + "a" * 64 + '"'] * 2]
+)
+async def test_conditional_install_rejects_malformed_header(client, values):
+    # Catch malformed or ambiguous preconditions being accepted.
+    headers = list(ALICE.items()) + [("If-Match", value) for value in values]
+    result = await client.post(
+        "/v1/agents",
+        headers=headers,
+        files={"bundle": ("bundle.tar.gz", build_agent_bundle("orion"), "application/gzip")},
+    )
+    assert result.status_code == 400
+    assert result.json() == {
+        "error": {"code": "invalid_input", "message": "Supply one strong configuration ETag"}
+    }
+
+
+async def test_conditional_install_missing_or_other_owner(client, agent_store):
+    # Catch a conditional upload creating or replacing an inaccessible agent.
+    alice = (await _install(client, ALICE, "orion")).json()
+    tag = (await client.get(f"/v1/agents/{alice['id']}/config", headers=ALICE)).headers["etag"]
+    missing = await _install(client, {**BOB, "If-Match": tag}, "orion")
+    assert missing.status_code == 412
+    agent_store.create_user_agent(
+        installed_agent_id("bob@example.com", "vega"), "vega", "unused", owner="alice@example.com"
+    )
+    inaccessible = await _install(client, {**BOB, "If-Match": tag}, "vega")
+    assert inaccessible.status_code == 412
+
+
+async def test_conditional_install_requires_config_edit_store(client, monkeypatch):
+    # Catch conditional writes silently bypassing an unsupported compare-and-swap.
+    agent = (await _install(client, ALICE, "orion")).json()
+    tag = (await client.get(f"/v1/agents/{agent['id']}/config", headers=ALICE)).headers["etag"]
+    monkeypatch.setattr(SqlAlchemyAgentStore, "supports_config_edit", property(lambda self: False))
+    result = await _install(client, {**ALICE, "If-Match": tag}, "orion", "v2")
+    assert result.status_code == 501
+    assert result.json() == {"detail": "Agent configuration editing unavailable"}
+
+
+@pytest.mark.parametrize("other_method", ["post", "patch"])
+async def test_conditional_install_races_use_database_cas(
+    client, agent_store, monkeypatch, other_method
+):
+    # Catch two writers both succeeding after observing the same revision.
+    agent = (await _install(client, ALICE, "orion")).json()
+    path = f"/v1/agents/{agent['id']}"
+    tag = (await client.get(path + "/config", headers=ALICE)).headers["etag"]
+    headers = {**ALICE, "If-Match": tag}
+    barrier = threading.Barrier(2)
+    original = agent_store.update_configuration
+
+    def synchronized(*args, **kwargs):
+        barrier.wait()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(agent_store, "update_configuration", synchronized)
+    other = (
+        _install(client, headers, "orion", "v3")
+        if other_method == "post"
+        else client.patch(path, headers=headers, json={"description": "v3"})
+    )
+    results = await asyncio.gather(_install(client, headers, "orion", "v2"), other)
+    assert sorted(response.status_code for response in results) == [200, 412]
+
+
+@pytest.mark.parametrize("field", ["policy", "reasoning"])
+async def test_conditional_install_etag_covers_policy_and_reasoning(client, field):
+    # Catch bundle-only configuration changes retaining a stale ETag.
+    before_bundle = build_agent_bundle("orion")
+    changed_bundle = (
+        build_agent_bundle(
+            "orion",
+            guardrails={
+                "policies": {
+                    "review": {
+                        "type": "function",
+                        "function": {
+                            "path": "omnigent.policies.builtins.safety.max_tool_calls_per_session",
+                            "arguments": {"limit": 5},
+                        },
+                    }
+                }
+            },
+        )
+        if field == "policy"
+        else build_agent_bundle("orion", executor={"type": "omnigent", "reasoning_effort": "high"})
+    )
+    if field == "reasoning":
+        before_bundle = build_agent_bundle("orion", executor={"type": "omnigent"})
+
+    async def post(bundle, headers):
+        return await client.post(
+            "/v1/agents",
+            headers=headers,
+            files={"bundle": ("bundle.tar.gz", bundle, "application/gzip")},
+        )
+
+    installed = await post(before_bundle, ALICE)
+    assert installed.status_code == 200, installed.text
+    config = await client.get(f"/v1/agents/{installed.json()['id']}/config", headers=ALICE)
+    updated = await post(changed_bundle, {**ALICE, "If-Match": config.headers["etag"]})
+    assert updated.status_code == 200, updated.text
+    assert updated.headers["etag"] != config.headers["etag"]
 
 
 @pytest.mark.parametrize("with_etag", [True, False])

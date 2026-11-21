@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import re
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -224,7 +223,7 @@ def _config_error(status: int, code: str, message: str) -> JSONResponse:
 
 
 def _config_etag(agent: Agent) -> str:
-    # ponytail: identical same-second reinstalls share a tag; add a generation column if needed.
+    # Same-second recreation can reuse a tag; identical configuration loses no edit.
     revision = f"{agent.id}:{agent.created_at}:{agent.version}:{agent.bundle_location}"
     return '"' + hashlib.sha256(revision.encode()).hexdigest() + '"'
 
@@ -239,7 +238,10 @@ def _valid_if_match(request: Request) -> bool:
     """Accept no precondition or one strong configuration tag; wildcard is unsupported."""
     values = request.headers.getlist("if-match")
     return not values or (
-        len(values) == 1 and re.fullmatch(r'"[0-9a-f]{64}"', values[0]) is not None
+        len(values) == 1
+        and len(values[0]) == 66
+        and values[0].startswith('"')
+        and values[0].endswith('"')
     )
 
 
@@ -265,9 +267,10 @@ def _install_user_agent_if_match(
             code=ErrorCode.CONFLICT,
         )
     location = content_bundle_location(agent_id, bundle_bytes)
-    artifact_store.put(location, bundle_bytes)
+    if not artifact_store.exists(location):
+        artifact_store.put(location, bundle_bytes)
     # The CAS pins every ETag column plus owner and kind, so the tag still matches at write.
-    updated = agent_store.update_configuration(current, location, description=None)
+    updated = agent_store.update_configuration(current, location, description=None, bump=True)
     if updated is not None:
         agent_cache.evict(agent_id)
     return updated
@@ -455,7 +458,9 @@ def create_builtin_agents_router(
         if len(bundle) > MAX_INSTALL_BUNDLE_BYTES:
             raise _too_large()
         assert artifact_store is not None
-        if location != agent.bundle_location:
+        if location != agent.bundle_location and not await asyncio.to_thread(
+            artifact_store.exists, location
+        ):
             await asyncio.to_thread(artifact_store.put, location, bundle)
         description = agent.description
         if (
@@ -465,7 +470,11 @@ def create_builtin_agents_router(
         ):
             description = spec.description
         updated = await asyncio.to_thread(
-            agent_store.update_configuration, agent, location, description=description
+            agent_store.update_configuration,
+            agent,
+            location,
+            description=description,
+            bump=if_match is not None,
         )
         if updated is None:
             # A concurrent identical edit may reference this same content-addressed artifact.
@@ -577,6 +586,18 @@ def create_builtin_agents_router(
             200: {"headers": {"ETag": {"schema": {"type": "string"}}}},
             400: {"model": ErrorResponse, "description": "Invalid If-Match header"},
             412: {"model": ErrorResponse, "description": "Agent changed; reload before saving"},
+            422: {
+                "description": "Missing multipart bundle",
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {"detail": {"type": "string"}},
+                            "required": ["detail"],
+                        }
+                    }
+                },
+            },
             501: {"description": "Agent configuration editing unavailable"},
         },
     )

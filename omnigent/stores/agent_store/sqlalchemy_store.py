@@ -403,6 +403,7 @@ class SqlAlchemyAgentStore(AgentStore):
         *,
         description: str | None,
         created_by: str | None = None,
+        bump: bool = False,
     ) -> Agent | None:
         """Atomically compare the observed revision and replace its configuration.
 
@@ -429,7 +430,7 @@ class SqlAlchemyAgentStore(AgentStore):
         updated_at = now_epoch()
 
         def write(session: Session) -> SqlAgent | None:
-            if unchanged:
+            if unchanged and not bump:
                 return session.execute(
                     select(SqlAgent).where(*matches).with_for_update()
                 ).scalar_one_or_none()

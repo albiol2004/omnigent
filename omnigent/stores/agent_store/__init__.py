@@ -186,6 +186,7 @@ class AgentStore(ABC):
         *,
         description: str | None,
         created_by: str | None = None,
+        bump: bool = False,
     ) -> Agent | None:
         """Replace configuration only if the observed agent revision still matches.
 
@@ -199,6 +200,7 @@ class AgentStore(ABC):
         :param description: Replacement description; ``None`` clears it.
         :param created_by: Claim an unowned user agent on a successful comparison;
             never replace an existing owner or claim a server agent.
+        :param bump: Consume the revision even when configuration is unchanged.
         :returns: The current or updated agent, or ``None`` on a failed comparison.
         :raises NotImplementedError: When atomic configuration edits are unsupported.
         """

@@ -205,7 +205,7 @@ async def test_conditional_install_requires_config_edit_store(client, monkeypatc
     assert result.json() == {"detail": "Agent configuration editing unavailable"}
 
 
-@pytest.mark.parametrize("other_method", ["post", "patch"])
+@pytest.mark.parametrize("other_method", ["post", "patch", "identical_post", "empty_patch"])
 async def test_conditional_install_races_use_database_cas(
     client, agent_store, monkeypatch, other_method
 ):
@@ -214,21 +214,129 @@ async def test_conditional_install_races_use_database_cas(
     path = f"/v1/agents/{agent['id']}"
     tag = (await client.get(path + "/config", headers=ALICE)).headers["etag"]
     headers = {**ALICE, "If-Match": tag}
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(2, timeout=30)
     original = agent_store.update_configuration
+    calls = 0
+    lock = threading.Lock()
 
     def synchronized(*args, **kwargs):
+        nonlocal calls
+        with lock:
+            calls += 1
         barrier.wait()
         return original(*args, **kwargs)
 
+    async def guarded(request):
+        try:
+            return await request
+        finally:
+            with lock:
+                if calls < 2:
+                    barrier.abort()
+
     monkeypatch.setattr(agent_store, "update_configuration", synchronized)
-    other = (
-        _install(client, headers, "orion", "v3")
-        if other_method == "post"
-        else client.patch(path, headers=headers, json={"description": "v3"})
+    first_description = "v1" if other_method in ("identical_post", "empty_patch") else "v2"
+    if other_method in ("post", "identical_post"):
+        other = _install(
+            client, headers, "orion", "v1" if other_method == "identical_post" else "v3"
+        )
+    else:
+        other = client.patch(
+            path,
+            headers=headers,
+            json={} if other_method == "empty_patch" else {"description": "v3"},
+        )
+    results = await asyncio.gather(
+        guarded(_install(client, headers, "orion", first_description)), guarded(other)
     )
-    results = await asyncio.gather(_install(client, headers, "orion", "v2"), other)
+    assert calls == 2
     assert sorted(response.status_code for response in results) == [200, 412]
+
+
+async def test_conditional_upload_mode_race_keeps_winner_bundle(
+    client, agent_store, artifact_store, monkeypatch
+):
+    # Catch a rejected upload replacing the winning bundle under the same content key.
+    installed = (await _install(client, ALICE, "orion")).json()
+    tag = (await client.get(f"/v1/agents/{installed['id']}/config", headers=ALICE)).headers["etag"]
+    source = build_agent_bundle("orion")
+
+    def with_mode(mode):
+        output = io.BytesIO()
+        with (
+            tarfile.open(fileobj=io.BytesIO(source), mode="r:*") as src,
+            tarfile.open(fileobj=output, mode="w:gz") as dst,
+        ):
+            for member in src:
+                if member.isfile():
+                    member.mode = mode
+                dst.addfile(member, src.extractfile(member) if member.isfile() else None)
+        return output.getvalue()
+
+    barrier = threading.Barrier(2, timeout=30)
+    original = agent_store.update_configuration
+    original_put = artifact_store.put
+    lock = threading.Lock()
+    first_writer_done = threading.Event()
+    writers = []
+    calls = 0
+
+    def record_put(*args, **kwargs):
+        with lock:
+            original_put(*args, **kwargs)
+            writers.append(threading.get_ident())
+
+    def synchronized(*args, **kwargs):
+        nonlocal calls
+        with lock:
+            calls += 1
+        barrier.wait()
+        if threading.get_ident() == writers[0]:
+            try:
+                return original(*args, **kwargs)
+            finally:
+                first_writer_done.set()
+        assert first_writer_done.wait(timeout=30)
+        return original(*args, **kwargs)
+
+    async def upload(mode):
+        try:
+            return await client.post(
+                "/v1/agents",
+                headers={**ALICE, "If-Match": tag},
+                files={"bundle": ("bundle.tar.gz", with_mode(mode), "application/gzip")},
+            )
+        finally:
+            with lock:
+                if calls < 2:
+                    barrier.abort()
+
+    monkeypatch.setattr(agent_store, "update_configuration", synchronized)
+    monkeypatch.setattr(artifact_store, "put", record_put)
+    results = await asyncio.gather(upload(0o700), upload(0o755))
+    assert calls == 2
+    assert sorted(result.status_code for result in results) == [200, 412]
+    winning_mode = (0o700, 0o755)[
+        next(index for index, result in enumerate(results) if result.status_code == 200)
+    ]
+    agent = agent_store.get(installed["id"])
+    with tarfile.open(
+        fileobj=io.BytesIO(artifact_store.get(agent.bundle_location)), mode="r:*"
+    ) as tar:
+        assert all(member.mode == winning_mode for member in tar if member.isfile())
+
+
+@pytest.mark.parametrize("method", ["post", "patch"])
+async def test_non_hex_if_match_is_stale_not_malformed(client, method):
+    # Catch rejecting historically accepted quoted tags before comparing them.
+    agent = (await _install(client, ALICE, "orion")).json()
+    headers = {**ALICE, "If-Match": '"' + "z" * 64 + '"'}
+    response = await (
+        _install(client, headers, "orion")
+        if method == "post"
+        else client.patch(f"/v1/agents/{agent['id']}", headers=headers, json={})
+    )
+    assert response.status_code == 412
 
 
 @pytest.mark.parametrize("field", ["policy", "reasoning"])
@@ -286,15 +394,19 @@ async def test_config_patch_preserves_identity_and_omitted_fields(
     for patch in ({}, {"description": "v1"}):
         no_op = await client.patch(path, headers=headers, json=patch)
         assert no_op.status_code == 200, no_op.text
-        assert no_op.headers["etag"] == config.headers["etag"]
-        assert agent_store.get(installed["id"]) == before
+        if with_etag:
+            assert no_op.headers["etag"] != headers["If-Match"]
+            headers["If-Match"] = no_op.headers["etag"]
+        else:
+            assert no_op.headers["etag"] == config.headers["etag"]
+            assert agent_store.get(installed["id"]) == before
 
     changed = await client.patch(path, headers=headers, json={"description": "updated"})
     assert changed.status_code == 200, changed.text
     assert changed.json() == {
         **config.json(),
         "description": "updated",
-        "version": installed["version"] + 1,
+        "version": installed["version"] + (3 if with_etag else 1),
     }
     assert changed.headers["etag"] != config.headers["etag"]
     stale = await client.patch(
@@ -370,9 +482,11 @@ async def test_config_patch_preserves_effective_stored_description(client, agent
         json={"description": config.json()["description"]},
     )
     assert patched.status_code == 200, patched.text
-    assert patched.json() == config.json()
-    assert patched.headers["etag"] == config.headers["etag"]
-    assert agent_store.get(agent.id) == before
+    assert patched.json() == {**config.json(), "version": config.json()["version"] + 1}
+    assert patched.headers["etag"] != config.headers["etag"]
+    after = agent_store.get(agent.id)
+    assert after.description == before.description
+    assert after.bundle_location == before.bundle_location
 
 
 async def test_config_read_reports_unsupported_format_and_missing_bundle(

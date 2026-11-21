@@ -246,14 +246,14 @@ def bundle_content_digest(bundle_bytes: bytes) -> str | None:
     Tarballs of the same files hash alike even when their timestamps, owners, or
     member order differ (the CLI re-tars on every run), so this identifies an
     upload's content where :func:`bundle_location`'s byte hash cannot. Covers
-    each entry's path, type, executable bit, and content or link target; a
+    each entry's path, type, permissions, and content or link target; a
     later entry for a path replaces an earlier one, as extraction does.
 
     :param bundle_bytes: Tarball already checked by :func:`validate_agent_bundle`.
     :returns: A 64-char hex digest, or ``None`` when the archive can't be read
         or holds an entry other than a file, directory, or link.
     """
-    entries: dict[str, tuple[str, str]] = {}
+    entries: dict[str, tuple[str, int, str]] = {}
     try:
         with tarfile.open(fileobj=io.BytesIO(bundle_bytes), mode="r:*") as tar:
             for member in tar:
@@ -264,12 +264,19 @@ def bundle_content_digest(bundle_bytes: bytes) -> str | None:
                     data = tar.extractfile(member)
                     if data is None:
                         return None
-                    kind = "x" if member.mode & 0o111 else "f"
-                    entries[path] = (kind, hashlib.sha256(data.read()).hexdigest())
+                    entries[path] = (
+                        "f",
+                        member.mode & 0o777,
+                        hashlib.sha256(data.read()).hexdigest(),
+                    )
                 elif member.isdir():
-                    entries[path] = ("d", "")
+                    entries[path] = ("d", member.mode & 0o777, "")
                 elif member.issym() or member.islnk():
-                    entries[path] = ("s" if member.issym() else "h", member.linkname)
+                    entries[path] = (
+                        "s" if member.issym() else "h",
+                        member.mode & 0o777,
+                        member.linkname,
+                    )
                 else:
                     return None
     except (tarfile.TarError, OSError, EOFError, zlib.error):

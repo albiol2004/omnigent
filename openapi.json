@@ -11244,11 +11244,19 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "detail"
+                  ],
+                  "type": "object"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "Missing multipart bundle"
           },
           "501": {
             "description": "Agent configuration editing unavailable"

@@ -515,7 +515,7 @@ def test_content_digest_ignores_how_the_files_were_tarred() -> None:
 
     first = _tar([("codex.yaml", *_SPEC), ("tools", None, 0o755)], mtime=1, owner="a")
     again = _tar(
-        [("./tools/", None, 0o700), ("./codex.yaml", _SPEC[0], 0o600)], mtime=2, owner="b"
+        [("./tools/", None, 0o755), ("./codex.yaml", _SPEC[0], 0o644)], mtime=2, owner="b"
     )
     assert first != again
     assert bundle_content_digest(first) == bundle_content_digest(again) is not None
@@ -527,9 +527,10 @@ def test_content_digest_ignores_how_the_files_were_tarred() -> None:
         [("codex.yaml", b"name: codex\nexecutor:\n  harness: pi\n", 0o644)],
         [("other.yaml", *_SPEC)],
         [("codex.yaml", _SPEC[0], 0o755)],
+        [("codex.yaml", _SPEC[0], 0o600)],
         [("codex.yaml", *_SPEC), ("tools", None, 0o755)],
     ],
-    ids=["content", "path", "executable", "extra-entry"],
+    ids=["content", "path", "executable", "permissions", "extra-entry"],
 )
 def test_content_digest_tells_different_files_apart(changed: list) -> None:
     from omnigent.server.bundles import bundle_content_digest

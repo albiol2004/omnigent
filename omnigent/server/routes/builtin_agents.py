@@ -242,7 +242,10 @@ def _valid_if_match(request: Request) -> bool:
         and len(values[0]) == 66
         and values[0].startswith('"')
         and values[0].endswith('"')
-        and all(char == "!" or "#" <= char <= "~" for char in values[0][1:-1])
+        and all(
+            char == "!" or "#" <= char <= "~" or "\x80" <= char <= "\xff"
+            for char in values[0][1:-1]
+        )
     )
 
 

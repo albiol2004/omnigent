@@ -223,7 +223,7 @@ async def test_conditional_install_races_use_database_cas(
     path = f"/v1/agents/{agent['id']}"
     tag = (await client.get(path + "/config", headers=ALICE)).headers["etag"]
     headers = {**ALICE, "If-Match": tag}
-    barrier = threading.Barrier(2, timeout=30)
+    barrier = threading.Barrier(2)
     original = agent_store.update_configuration
     calls = 0
     lock = threading.Lock()
@@ -282,7 +282,7 @@ async def test_conditional_upload_mode_race_keeps_winner_bundle(
                 dst.addfile(member, src.extractfile(member) if member.isfile() else None)
         return output.getvalue()
 
-    barrier = threading.Barrier(2, timeout=30)
+    barrier = threading.Barrier(2)
     original = agent_store.update_configuration
     lock = threading.Lock()
     calls = 0
@@ -322,10 +322,11 @@ async def test_conditional_upload_mode_race_keeps_winner_bundle(
 
 
 @pytest.mark.parametrize("method", ["post", "patch"])
-async def test_non_hex_if_match_is_stale_not_malformed(client, method):
+@pytest.mark.parametrize("tag", [b'"' + b"z" * 64 + b'"', b'"' + b"\xe9" * 64 + b'"'])
+async def test_non_hex_if_match_is_stale_not_malformed(client, method, tag):
     # Catch rejecting historically accepted quoted tags before comparing them.
     agent = (await _install(client, ALICE, "orion")).json()
-    headers = {**ALICE, "If-Match": '"' + "z" * 64 + '"'}
+    headers = [(b"X-Forwarded-Email", b"alice@example.com"), (b"If-Match", tag)]
     response = await (
         _install(client, headers, "orion")
         if method == "post"

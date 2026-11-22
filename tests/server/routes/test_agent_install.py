@@ -14,7 +14,7 @@ import io
 import json
 import tarfile
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -102,7 +102,10 @@ async def app_client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
 
 
 async def _install(
-    client: httpx.AsyncClient, headers: dict[str, str], name: str, description: str = "v1"
+    client: httpx.AsyncClient,
+    headers: Mapping[str, str] | Sequence[tuple[bytes, bytes]],
+    name: str,
+    description: str = "v1",
 ) -> httpx.Response:
     bundle = build_agent_bundle(name, description=description)
     return await client.post(

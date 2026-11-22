@@ -8,7 +8,7 @@ import logging
 import os
 import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from filelock import FileLock
@@ -297,7 +297,14 @@ class AgentCache:
         workdir = self._cache_path(agent_id)
         self._specs.pop(agent_id, None)
         if workdir.is_dir():
-            shutil.rmtree(workdir)
+
+            def handle_removal_error(
+                function: Callable[..., object], path: str, error: BaseException
+            ) -> None:
+                if not isinstance(error, FileNotFoundError):
+                    raise error
+
+            shutil.rmtree(workdir, onexc=handle_removal_error)
 
     def _staging_root(self) -> Path:
         """Return the reserved staging namespace on the cache filesystem."""

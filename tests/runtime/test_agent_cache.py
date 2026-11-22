@@ -6,6 +6,7 @@ import concurrent.futures
 import errno
 import io
 import logging
+import os
 import tarfile
 import threading
 from pathlib import Path
@@ -399,6 +400,38 @@ def test_evict_clears_both_tiers(
     artifact_store.delete(loc)
     with pytest.raises(KeyError):
         agent_cache.load("agent-4", loc)
+
+
+def test_evict_tolerates_concurrent_removal(
+    agent_cache: AgentCache,
+    artifact_store: LocalArtifactStore,
+    cache_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loc = "agent-race/abc123"
+    _store_bundle(artifact_store, loc)
+    agent_cache.load("agent-race", loc)
+    workdir = cache_dir / "agent-race"
+    (workdir / "extra.txt").write_text("extra")
+    real_unlink = os.unlink
+    removed = False
+
+    def concurrent_removal(path: str | bytes, *, dir_fd: int | None = None) -> None:
+        nonlocal removed
+        real_unlink(path, dir_fd=dir_fd)
+        if not removed:
+            removed = True
+            # A missing child must not leave a partially evicted cache directory.
+            raise FileNotFoundError("concurrent removal")
+
+    monkeypatch.setattr(os, "unlink", concurrent_removal)
+    agent_cache.evict("agent-race")
+
+    assert removed
+    assert not workdir.exists()
+    artifact_store.delete(loc)
+    with pytest.raises(KeyError):
+        agent_cache.load("agent-race", loc)
 
 
 def test_evict_noop_for_uncached_agent(

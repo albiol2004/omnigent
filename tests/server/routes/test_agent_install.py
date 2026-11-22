@@ -9,6 +9,7 @@ deployed server.
 from __future__ import annotations
 
 import asyncio
+import errno
 import gzip
 import io
 import json
@@ -167,6 +168,33 @@ async def test_conditional_install_and_stale_tag(client):
     }
     latest = await client.get(path, headers=ALICE)
     assert latest.headers["etag"] == after.headers["etag"] and latest.json() == after.json()
+
+
+@pytest.mark.parametrize("method", ["conditional_post", "post", "patch"])
+async def test_committed_write_survives_cache_eviction_failure(client, monkeypatch, method):
+    # Catch committed writes returning 500 when cache eviction races with a reader.
+    agent = (await _install(client, ALICE, "orion")).json()
+    path = f"/v1/agents/{agent['id']}"
+    before = await client.get(f"{path}/config", headers=ALICE)
+
+    def fail_evict(self, agent_id):
+        raise OSError(errno.ENOTEMPTY, "cache directory not empty")
+
+    monkeypatch.setattr(AgentCache, "evict", fail_evict)
+    headers = {**ALICE, "If-Match": before.headers["etag"]}
+    if method == "patch":
+        changed = await client.patch(path, headers=headers, json={"description": "v2"})
+    else:
+        changed = await _install(
+            client, headers if method == "conditional_post" else ALICE, "orion", "v2"
+        )
+    assert changed.status_code == 200, changed.text
+    after = await client.get(f"{path}/config", headers=ALICE)
+    assert after.status_code == 200, after.text
+    assert after.headers["etag"] != before.headers["etag"]
+    if method != "post":
+        assert changed.headers["etag"] == after.headers["etag"]
+    assert after.json()["description"] == "v2"
 
 
 @pytest.mark.parametrize(

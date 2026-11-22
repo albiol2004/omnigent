@@ -249,6 +249,13 @@ def _valid_if_match(request: Request) -> bool:
     )
 
 
+def _evict_after_commit(agent_cache: AgentCache, agent_id: str) -> None:
+    try:
+        agent_cache.evict(agent_id)
+    except OSError as exc:
+        _logger.warning("Could not evict agent cache for %s: %s", agent_id, exc)
+
+
 def _install_user_agent_if_match(
     agent_store: AgentStore,
     artifact_store: ArtifactStore,
@@ -277,7 +284,7 @@ def _install_user_agent_if_match(
     # The CAS pins every ETag column plus owner and kind, so the tag still matches at write.
     updated = agent_store.update_configuration(current, location, description=None, bump=True)
     if updated is not None:
-        agent_cache.evict(agent_id)
+        _evict_after_commit(agent_cache, agent_id)
     return updated
 
 
@@ -337,7 +344,7 @@ def install_user_agent(
         updated = agent_store.update(agent_id, location, description=None)
     else:
         updated = agent_store.update(agent_id, location)
-    agent_cache.evict(agent_id)
+    _evict_after_commit(agent_cache, agent_id)
     if updated is None:  # removed concurrently
         raise OmnigentError(f"Agent not found: {agent_id!r}", code=ErrorCode.NOT_FOUND)
     return updated
@@ -482,7 +489,7 @@ def create_builtin_agents_router(
         if updated is None:
             # A concurrent identical edit may reference this same content-addressed artifact.
             return _config_error(412, "precondition_failed", "Agent changed; reload before saving")
-        agent_cache.evict(agent.id)
+        _evict_after_commit(agent_cache, agent.id)
         _config_headers(response, updated)
         return agent_config_object(updated, spec)
 

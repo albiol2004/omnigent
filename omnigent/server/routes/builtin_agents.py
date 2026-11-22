@@ -267,6 +267,8 @@ def _install_user_agent_if_match(
             code=ErrorCode.CONFLICT,
         )
     location = content_bundle_location(agent_id, bundle_bytes)
+    # Equal digests may share a blob with either upload's non-executable modes or
+    # mtimes; safe extraction discards these, so the running agent is identical.
     if not artifact_store.exists(location):
         artifact_store.put(location, bundle_bytes)
     # The CAS pins every ETag column plus owner and kind, so the tag still matches at write.

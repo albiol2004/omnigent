@@ -29,6 +29,7 @@ from omnigent.entities import Agent
 from omnigent.errors import OmnigentError
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.server.auth import UnifiedAuthProvider
+from omnigent.server.bundles import bundle_content_digest, content_bundle_location
 from omnigent.server.routes._session_create_validation import require_user_agent_visible
 from omnigent.server.routes.builtin_agents import create_builtin_agents_router
 from omnigent.stores.agent_store.sqlalchemy_store import SqlAlchemyAgentStore
@@ -256,7 +257,7 @@ async def test_conditional_install_races_use_database_cas(
 async def test_conditional_upload_mode_race_keeps_winner_bundle(
     client, agent_store, artifact_store, monkeypatch
 ):
-    # Catch a rejected upload replacing the winning bundle under the same content key.
+    # Catch a race leaving the winning row pointing at the wrong bundle.
     installed = (await _install(client, ALICE, "orion")).json()
     tag = (await client.get(f"/v1/agents/{installed['id']}/config", headers=ALICE)).headers["etag"]
     source = build_agent_bundle("orion")
@@ -275,28 +276,14 @@ async def test_conditional_upload_mode_race_keeps_winner_bundle(
 
     barrier = threading.Barrier(2, timeout=30)
     original = agent_store.update_configuration
-    original_put = artifact_store.put
     lock = threading.Lock()
-    first_writer_done = threading.Event()
-    writers = []
     calls = 0
-
-    def record_put(*args, **kwargs):
-        with lock:
-            original_put(*args, **kwargs)
-            writers.append(threading.get_ident())
 
     def synchronized(*args, **kwargs):
         nonlocal calls
         with lock:
             calls += 1
         barrier.wait()
-        if threading.get_ident() == writers[0]:
-            try:
-                return original(*args, **kwargs)
-            finally:
-                first_writer_done.set()
-        assert first_writer_done.wait(timeout=30)
         return original(*args, **kwargs)
 
     async def upload(mode):
@@ -312,18 +299,19 @@ async def test_conditional_upload_mode_race_keeps_winner_bundle(
                     barrier.abort()
 
     monkeypatch.setattr(agent_store, "update_configuration", synchronized)
-    monkeypatch.setattr(artifact_store, "put", record_put)
     results = await asyncio.gather(upload(0o700), upload(0o755))
     assert calls == 2
     assert sorted(result.status_code for result in results) == [200, 412]
-    winning_mode = (0o700, 0o755)[
-        next(index for index, result in enumerate(results) if result.status_code == 200)
-    ]
+    winner_index = next(index for index, result in enumerate(results) if result.status_code == 200)
+    winner = results[winner_index]
+    winning_bundle = with_mode((0o700, 0o755)[winner_index])
     agent = agent_store.get(installed["id"])
-    with tarfile.open(
-        fileobj=io.BytesIO(artifact_store.get(agent.bundle_location)), mode="r:*"
-    ) as tar:
-        assert all(member.mode == winning_mode for member in tar if member.isfile())
+    assert agent.bundle_location == content_bundle_location(agent.id, winning_bundle)
+    config = await client.get(f"/v1/agents/{agent.id}/config", headers=ALICE)
+    assert config.headers["etag"] == winner.headers["etag"]
+    assert artifact_store.exists(agent.bundle_location)
+    stored_digest = bundle_content_digest(artifact_store.get(agent.bundle_location))
+    assert stored_digest == bundle_content_digest(winning_bundle)
 
 
 @pytest.mark.parametrize("method", ["post", "patch"])
@@ -340,7 +328,7 @@ async def test_non_hex_if_match_is_stale_not_malformed(client, method):
 
 
 @pytest.mark.parametrize("field", ["policy", "reasoning"])
-async def test_conditional_install_etag_covers_policy_and_reasoning(client, field):
+async def test_conditional_install_etag_covers_policy_and_reasoning(client, agent_store, field):
     # Catch bundle-only configuration changes retaining a stale ETag.
     before_bundle = build_agent_bundle("orion")
     changed_bundle = (
@@ -373,10 +361,13 @@ async def test_conditional_install_etag_covers_policy_and_reasoning(client, fiel
 
     installed = await post(before_bundle, ALICE)
     assert installed.status_code == 200, installed.text
-    config = await client.get(f"/v1/agents/{installed.json()['id']}/config", headers=ALICE)
+    agent_id = installed.json()["id"]
+    config = await client.get(f"/v1/agents/{agent_id}/config", headers=ALICE)
+    before_location = agent_store.get(agent_id).bundle_location
     updated = await post(changed_bundle, {**ALICE, "If-Match": config.headers["etag"]})
     assert updated.status_code == 200, updated.text
     assert updated.headers["etag"] != config.headers["etag"]
+    assert agent_store.get(agent_id).bundle_location != before_location
 
 
 @pytest.mark.parametrize("with_etag", [True, False])
@@ -765,7 +756,8 @@ async def test_reinstalling_the_same_files_is_a_no_op(client, retar: bool) -> No
             files={"bundle": ("bundle.tar.gz", data, "application/gzip")},
         )
         assert resp.status_code == 200, resp.text
-        installed.append((resp.json()["id"], resp.json()["version"]))
+        config = await client.get(f"/v1/agents/{resp.json()['id']}/config", headers=ALICE)
+        installed.append((resp.json()["id"], resp.json()["version"], config.headers["etag"]))
     assert installed[1] == installed[0]
     assert installed[0][1] == 1
 

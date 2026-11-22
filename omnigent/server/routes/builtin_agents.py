@@ -242,6 +242,7 @@ def _valid_if_match(request: Request) -> bool:
         and len(values[0]) == 66
         and values[0].startswith('"')
         and values[0].endswith('"')
+        and all(char == "!" or "#" <= char <= "~" for char in values[0][1:-1])
     )
 
 
@@ -267,10 +268,9 @@ def _install_user_agent_if_match(
             code=ErrorCode.CONFLICT,
         )
     location = content_bundle_location(agent_id, bundle_bytes)
-    # Equal digests may share a blob with either upload's non-executable modes or
-    # mtimes; safe extraction discards these, so the running agent is identical.
-    if not artifact_store.exists(location):
-        artifact_store.put(location, bundle_bytes)
+    # Keys use bundle_content_digest: a 412 loser writing the same key preserves
+    # paths, contents, link targets and exec bits; only other mode bits or mtimes differ.
+    artifact_store.put(location, bundle_bytes)
     # The CAS pins every ETag column plus owner and kind, so the tag still matches at write.
     updated = agent_store.update_configuration(current, location, description=None, bump=True)
     if updated is not None:
@@ -460,9 +460,7 @@ def create_builtin_agents_router(
         if len(bundle) > MAX_INSTALL_BUNDLE_BYTES:
             raise _too_large()
         assert artifact_store is not None
-        if location != agent.bundle_location and not await asyncio.to_thread(
-            artifact_store.exists, location
-        ):
+        if location != agent.bundle_location:
             await asyncio.to_thread(artifact_store.put, location, bundle)
         description = agent.description
         if (

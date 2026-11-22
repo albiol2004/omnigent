@@ -167,7 +167,15 @@ async def test_conditional_install_and_stale_tag(client):
 
 
 @pytest.mark.parametrize(
-    "values", [["unquoted"], ['W/"' + "a" * 64 + '"'], ["*"], ['"' + "a" * 64 + '"'] * 2]
+    "values",
+    [
+        ["unquoted"],
+        ['W/"' + "a" * 64 + '"'],
+        ["*"],
+        ['"' + "a" * 64 + '"'] * 2,
+        ['"' + "a" * 31 + '"' + "a" * 32 + '"'],
+        ['"' + "a" * 30 + '","' + "b" * 31 + '"'],
+    ],
 )
 async def test_conditional_install_rejects_malformed_header(client, values):
     # Catch malformed or ambiguous preconditions being accepted.
@@ -309,7 +317,6 @@ async def test_conditional_upload_mode_race_keeps_winner_bundle(
     assert agent.bundle_location == content_bundle_location(agent.id, winning_bundle)
     config = await client.get(f"/v1/agents/{agent.id}/config", headers=ALICE)
     assert config.headers["etag"] == winner.headers["etag"]
-    assert artifact_store.exists(agent.bundle_location)
     stored_digest = bundle_content_digest(artifact_store.get(agent.bundle_location))
     assert stored_digest == bundle_content_digest(winning_bundle)
 

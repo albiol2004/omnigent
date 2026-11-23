@@ -14,6 +14,7 @@ import hashlib
 import logging
 import os
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -23,7 +24,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from filelock import FileLock
+from filelock import FileLock, Timeout
 
 from omnigent.debug_logging import debug_event
 from omnigent.entities import LoadedAgent
@@ -39,6 +40,9 @@ _MAX_MEMORY_VERSIONS = 128
 _holds: weakref.WeakSet[_Hold] = weakref.WeakSet()
 _holds_lock = threading.Lock()
 _TOUCH_INTERVAL = 3600
+_heartbeat_lock = threading.Lock()
+_heartbeat_pid: int | None = None
+_heartbeat_roots: dict[Path, tuple[weakref.ReferenceType[AgentCache], Callable[[], float]]] = {}
 
 
 def _cleanup_staging_dir(path: Path) -> None:
@@ -220,6 +224,9 @@ class AgentCache:
                         _logger.exception("Could not inspect agent cache version %s", path)
             except FileNotFoundError:
                 return set()
+            except OSError:
+                _logger.exception("Could not list agent cache directory %s", parent)
+                return set()
             entries.sort(key=lambda item: (item[0], item[1].name), reverse=True)
             current = None
             if self._current_location is not None:
@@ -260,7 +267,11 @@ class AgentCache:
             candidates = list(parent.iterdir())
         except FileNotFoundError:
             return
-        renamed: list[tuple[Path, Path]] = []
+        except OSError:
+            _logger.exception("Could not list agent cache directory %s", parent)
+            return
+        current = None
+        rechecked = False
         for entry in candidates:
             try:
                 if (
@@ -270,24 +281,19 @@ class AgentCache:
                     or not eligible(entry)
                 ):
                     continue
-                trash = self._cache_dir / ".versions" / ".trash"
-                trash.mkdir(parents=True, exist_ok=True)
+                trash = self._cache_dir.resolve(strict=False) / ".versions" / ".trash"
+                if not self._safe_trash(trash):
+                    return
                 destination = trash / f"{int(self._clock() * 1_000_000_000)}-{uuid.uuid4().hex}"
                 entry.rename(destination)
-                renamed.append((entry, destination))
-            except FileNotFoundError:
-                continue
-            except OSError:
-                _logger.exception("Could not collect agent cache version %s", entry)
-        current = None
-        if renamed:
-            try:
-                current = self._current_location(agent_id) if self._current_location else None
-            except Exception:
-                _logger.exception("Could not resolve current agent cache location")
-        for entry, destination in renamed:
-            try:
-                # A cold reader may briefly observe this directory missing until restore.
+                if not rechecked:
+                    rechecked = True
+                    try:
+                        current = (
+                            self._current_location(agent_id) if self._current_location else None
+                        )
+                    except Exception:
+                        _logger.exception("Could not resolve current agent cache location")
                 if self._candidate_protected(entry, destination, current) or not eligible(
                     entry, destination
                 ):
@@ -301,6 +307,13 @@ class AgentCache:
                     continue
                 self._marker(entry).unlink(missing_ok=True)
                 shutil.rmtree(destination)
+                self._last_touches.pop(entry, None)
+                lock = self._lock(agent_id, entry.name)
+                try:
+                    with lock.acquire(timeout=0):
+                        Path(lock.lock_file).unlink(missing_ok=True)
+                except Timeout:
+                    pass
             except FileNotFoundError:
                 continue
             except OSError:
@@ -356,40 +369,62 @@ class AgentCache:
             self._last_sweep = now
 
     @staticmethod
-    def _start_heartbeat(cache_ref: weakref.ReferenceType[AgentCache]) -> None:
+    def _start_heartbeat(
+        cache_ref: weakref.ReferenceType[AgentCache],
+        *,
+        waiter: Callable[[float], bool] = threading.Event().wait,
+    ) -> None:
         cache = cache_ref()
         if cache is None:
             return
         root = cache._cache_dir.resolve(strict=False) / ".versions"
-        clock = cache._clock
-
-        def schedule() -> None:
-            timer = threading.Timer(_TOUCH_INTERVAL, heartbeat)
-            timer.daemon = True
-            timer.start()
-
-        def heartbeat() -> None:
-            with _holds_lock:
-                held = [hold.workdir for hold in _holds if hold.workdir.parent.parent == root]
-            if not held and cache_ref() is None:
+        global _heartbeat_pid
+        with _heartbeat_lock:
+            _heartbeat_roots[root] = (cache_ref, cache._clock)
+            if _heartbeat_pid == os.getpid():
                 return
-            try:
-                schedule()
-            except Exception:
-                _logger.exception("Could not reschedule agent cache heartbeat")
-                cache = cache_ref()
-                if cache is not None:
-                    cache._heartbeat_started = False
-            for workdir in held:
-                try:
-                    marker = AgentCache._marker(workdir)
-                    marker.touch(exist_ok=True)
-                    now = clock()
-                    os.utime(marker, (now, now))
-                except OSError:
-                    _logger.warning("Could not touch agent cache marker", exc_info=True)
 
-        schedule()
+            def heartbeat() -> None:
+                while True:
+                    try:
+                        with _heartbeat_lock:
+                            roots = list(_heartbeat_roots.items())
+                        with _holds_lock:
+                            held = [hold.workdir for hold in _holds]
+                        for cache_root, (ref, clock) in roots:
+                            paths = [path for path in held if path.parent.parent == cache_root]
+                            if not paths and ref() is None:
+                                with _heartbeat_lock:
+                                    if _heartbeat_roots.get(cache_root) == (ref, clock):
+                                        _heartbeat_roots.pop(cache_root, None)
+                                continue
+                            for workdir in paths:
+                                try:
+                                    marker = AgentCache._marker(workdir)
+                                    marker.touch(exist_ok=True)
+                                    now = clock()
+                                    os.utime(marker, (now, now))
+                                except Exception:
+                                    _logger.exception("Could not refresh agent cache heartbeat")
+                    except Exception:
+                        _logger.exception("Could not refresh agent cache heartbeat")
+                    if waiter(_TOUCH_INTERVAL):
+                        return
+
+            threading.Thread(target=heartbeat, daemon=True).start()
+            _heartbeat_pid = os.getpid()
+
+    def _safe_trash(self, trash: Path) -> bool:
+        try:
+            trash.mkdir(exist_ok=True)
+            expected = self._cache_dir.resolve(strict=False) / ".versions" / ".trash"
+            if stat.S_ISDIR(trash.lstat().st_mode) and trash.resolve(strict=False) == expected:
+                return True
+        except OSError:
+            _logger.warning("Could not inspect agent cache trash %s", trash, exc_info=True)
+            return False
+        _logger.warning("Unsafe agent cache trash directory %s", trash)
+        return False
 
     def _run_sweep(self) -> None:
         try:
@@ -398,29 +433,46 @@ class AgentCache:
             _logger.exception("Agent cache sweep failed")
 
     def _sweep(self) -> None:
-        root = self._cache_dir / ".versions"
-        if not root.is_dir():
+        root = self._cache_dir.resolve(strict=False) / ".versions"
+        try:
+            if not stat.S_ISDIR(root.lstat().st_mode) or root.resolve(strict=False) != root:
+                return
+        except FileNotFoundError:
+            return
+        except OSError:
+            _logger.exception("Could not inspect agent cache root %s", root)
             return
         trash = root / ".trash"
-        if trash.is_dir():
-            for entry in trash.iterdir():
-                try:
-                    timestamp, separator, suffix = entry.name.partition("-")
-                    if separator and suffix and timestamp.isascii() and timestamp.isdigit():
-                        renamed_at = int(timestamp) / 1_000_000_000
-                    else:
-                        renamed_at = entry.lstat().st_mtime
-                    if self._clock() - renamed_at <= self._trash_grace:
-                        continue
-                    if entry.is_dir() and not entry.is_symlink():
-                        shutil.rmtree(entry)
-                    else:
-                        entry.unlink(missing_ok=True)
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    _logger.exception("Could not remove agent cache trash entry %s", entry)
-        for parent in root.iterdir():
+        if not self._safe_trash(trash):
+            return
+        try:
+            trash_entries = list(trash.iterdir())
+        except OSError:
+            _logger.exception("Could not list agent cache trash %s", trash)
+            trash_entries = []
+        for entry in trash_entries:
+            try:
+                timestamp, separator, suffix = entry.name.partition("-")
+                if separator and suffix and timestamp.isascii() and timestamp.isdigit():
+                    renamed_at = int(timestamp) / 1_000_000_000
+                else:
+                    renamed_at = entry.lstat().st_mtime
+                if self._clock() - renamed_at <= self._trash_grace:
+                    continue
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                _logger.exception("Could not remove agent cache trash entry %s", entry)
+        try:
+            parents = list(root.iterdir())
+        except OSError:
+            _logger.exception("Could not list agent cache root %s", root)
+            return
+        for parent in parents:
             if parent.is_dir() and not parent.is_symlink() and not parent.name.startswith("."):
                 for marker in parent.glob("*.last_used"):
                     try:

@@ -1414,54 +1414,43 @@ def test_marker_cleanup_respects_current_retention_and_deleted_agents(artifact_s
 def test_held_version_heartbeat_prevents_collection_for_weeks(
     artifact_store, cache_dir, monkeypatch
 ):
-    """A blocked sweep and a collected cache must not stop held marker refreshes."""
+    """A failed tick must not stop a held version being refreshed for eight days."""
     now = [1000.0]
-    callbacks = []
-
-    class FakeTimer:
-        def __init__(self, interval, callback):
-            self.callback = callback
-            self.daemon = False
-
-        def start(self):
-            callbacks.append(self.callback)
-
-    monkeypatch.setattr(agent_cache_module.threading, "Timer", FakeTimer)
-    started, release = threading.Event(), threading.Event()
-
-    def blocked_resolver(_):
-        started.set()
-        release.wait()
-        return set()
-
-    cache = AgentCache(
-        artifact_store,
-        cache_dir,
-        clock=lambda: now[0],
-        sweep_ttl=7 * 86400,
-        current_location=blocked_resolver,
-    )
+    cache = AgentCache(artifact_store, cache_dir, clock=lambda: now[0])
     monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
     _store_bundle(artifact_store, "agent/old")
     loaded = cache.load("agent", "agent/old")
     cache.evict("agent")
-    agent_cache_module.AgentCache._start_heartbeat(weakref.ref(cache))
-    marker = loaded.workdir.with_name(loaded.workdir.name + ".last_used")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        sweep = pool.submit(cache._sweep)
-        started.wait()
-        try:
-            for _ in range(8 * 24):
-                now[0] += 3600
-                callbacks.pop(0)()
-            assert marker.stat().st_mtime == now[0]
-        finally:
-            release.set()
-        sweep.result()
-    del cache
-    now[0] += 3600
-    callbacks.pop(0)()
-    assert marker.stat().st_mtime == now[0]
+    marker = cache._marker(loaded.workdir)
+    original = agent_cache_module.os.utime
+    calls = [0]
+
+    def flaky(*args, **kwargs):
+        calls[0] += 1
+        if calls[0] == 1:
+            raise RuntimeError("failed tick")
+        return original(*args, **kwargs)
+
+    targets = []
+
+    class InlineThread:
+        def __init__(self, *, target, daemon):
+            targets.append(target)
+
+        def start(self):
+            pass
+
+    def wait(_):
+        now[0] += 3600
+        return calls[0] >= 193
+
+    monkeypatch.setattr(agent_cache_module, "_heartbeat_pid", None)
+    monkeypatch.setattr(agent_cache_module, "_heartbeat_roots", {})
+    monkeypatch.setattr(agent_cache_module.os, "utime", flaky)
+    monkeypatch.setattr(agent_cache_module.threading, "Thread", InlineThread)
+    AgentCache._start_heartbeat(weakref.ref(cache), waiter=wait)
+    targets[0]()
+    assert marker.stat().st_mtime == now[0] - 3600
     collector = AgentCache(
         artifact_store,
         cache_dir,
@@ -1731,35 +1720,21 @@ def test_warm_hits_do_not_touch_marker_more_than_hourly(artifact_store, cache_di
     assert marker.stat().st_mtime == 8200
 
 
-def test_heartbeat_reschedule_failure_restarts_on_next_load(
-    artifact_store, cache_dir, monkeypatch
-):
-    """A failed timer reschedule must not permanently disable heartbeat refreshes."""
-    callbacks = []
-    starts = [0]
+def test_heartbeat_start_failure_retries_on_next_load(artifact_store, cache_dir, monkeypatch):
+    """A failed thread start must not permanently disable heartbeat refreshes."""
+    starts = []
 
-    class FakeTimer:
-        def __init__(self, interval, callback):
-            self.callback = callback
-            self.daemon = False
+    def start(cache_ref):
+        starts.append(1)
+        if len(starts) == 1:
+            raise RuntimeError("thread failed")
 
-        def start(self):
-            starts[0] += 1
-            if starts[0] == 2:
-                raise RuntimeError("timer failed")
-            callbacks.append(self.callback)
-
-    monkeypatch.setattr(agent_cache_module.threading, "Timer", FakeTimer)
-    now = [1000.0]
-    cache = AgentCache(artifact_store, cache_dir, clock=lambda: now[0])
+    monkeypatch.setattr(AgentCache, "_start_heartbeat", staticmethod(start))
+    cache = AgentCache(artifact_store, cache_dir)
     _store_bundle(artifact_store, "agent/v1")
     loaded = cache.load("agent", "agent/v1")
-    if cache._sweep_thread:
-        cache._sweep_thread.join()
-    callbacks.pop(0)()
-    now[0] += 3600
     cache.load("agent", "agent/v1")
-    assert starts[0] == 3
+    assert len(starts) == 2
     assert loaded.workdir.exists()
 
 
@@ -1821,3 +1796,105 @@ def test_sweep_continues_after_trash_removal_permission_error(
     cache._sweep()
     assert blocked.exists()
     assert not path.exists()
+
+
+def test_sweep_rejects_trash_symlink_to_outside(artifact_store, cache_dir, tmp_path, caplog):
+    """A redirected trash directory must never delete files outside the cache."""
+    root = cache_dir / ".versions"
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    old = outside / "1-old"
+    old.mkdir()
+    (root / ".trash").symlink_to(outside, target_is_directory=True)
+    AgentCache(artifact_store, cache_dir)._sweep()
+    assert old.is_dir()
+    assert "unsafe agent cache trash" in caplog.text.lower()
+
+
+def test_sweep_unlinks_trash_symlink_without_following(artifact_store, cache_dir, tmp_path):
+    """A trash symlink must be unlinked without removing its target."""
+    trash = cache_dir / ".versions" / ".trash"
+    trash.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = trash / "1-old"
+    link.symlink_to(outside, target_is_directory=True)
+    AgentCache(artifact_store, cache_dir)._sweep()
+    assert not link.is_symlink()
+    assert outside.is_dir()
+
+
+def test_sweep_continues_after_listing_error(artifact_store, cache_dir, monkeypatch, caplog):
+    """A failed trash or agent listing must not prevent collecting other agents."""
+    now = [1000.0]
+    cache = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=10,
+        current_location=lambda _: set(),
+    )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    for agent in ("blocked", "other"):
+        _store_bundle(artifact_store, f"{agent}/v1")
+        cache.load(agent, f"{agent}/v1")
+        cache.evict(agent)
+    trash = cache_dir / ".versions" / ".trash"
+    trash.mkdir()
+    original = Path.iterdir
+
+    def listing(path):
+        if path == trash or path.name == "blocked":
+            raise PermissionError("blocked listing")
+        return original(path)
+
+    monkeypatch.setattr(Path, "iterdir", listing)
+    now[0] += 20
+    cache._sweep()
+    assert not any((cache_dir / ".versions" / "other").glob("*"))
+    assert "blocked listing" in caplog.text
+
+
+def test_collected_versions_remove_touch_and_lock_metadata(artifact_store, cache_dir, monkeypatch):
+    """Collected versions must not leak timestamps or unlocked lock files."""
+    now = [1000.0]
+    cache = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=10,
+        current_location=lambda _: set(),
+    )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    paths = []
+    for index in range(4):
+        location = f"agent/{index}"
+        _store_bundle(artifact_store, location)
+        paths.append(cache.load("agent", location).workdir)
+    cache.evict("agent")
+    now[0] += 20
+    cache._sweep()
+    assert all(path not in cache._last_touches for path in paths)
+    assert all(not Path(cache._lock("agent", path.name).lock_file).exists() for path in paths)
+
+
+def test_heartbeat_uses_one_thread_for_multiple_caches(artifact_store, cache_dir, monkeypatch):
+    """Multiple cache instances must not create an unbounded number of heartbeat threads."""
+    starts = []
+
+    class FakeThread:
+        def __init__(self, *, target, daemon):
+            assert daemon
+
+        def start(self):
+            starts.append(1)
+
+    monkeypatch.setattr(agent_cache_module, "_heartbeat_pid", None)
+    monkeypatch.setattr(agent_cache_module, "_heartbeat_roots", {})
+    monkeypatch.setattr(agent_cache_module.threading, "Thread", FakeThread)
+    first = AgentCache(artifact_store, cache_dir / "first")
+    second = AgentCache(artifact_store, cache_dir / "second")
+    AgentCache._start_heartbeat(weakref.ref(first))
+    AgentCache._start_heartbeat(weakref.ref(second))
+    assert len(starts) == 1

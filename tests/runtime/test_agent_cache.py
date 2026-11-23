@@ -1711,3 +1711,113 @@ def test_loader_publishes_when_collector_restores_during_fetch(
     monkeypatch.setattr(Path, "rename", load_after_rename)
     cache._sweep()
     assert loaded and loaded[0].workdir.is_dir()
+
+
+def test_warm_hits_do_not_touch_marker_more_than_hourly(artifact_store, cache_dir, monkeypatch):
+    """Warm hits must not write a marker on every load."""
+    now = [1000.0]
+    cache = AgentCache(artifact_store, cache_dir, clock=lambda: now[0])
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    _store_bundle(artifact_store, "agent/v1")
+    path = cache.load("agent", "agent/v1").workdir
+    marker = cache._marker(path)
+    now[0] += 3600
+    for offset in (0, 1, 2):
+        now[0] += offset
+        cache.load("agent", "agent/v1")
+        assert marker.stat().st_mtime == 4600
+    now[0] = 8200
+    cache.load("agent", "agent/v1")
+    assert marker.stat().st_mtime == 8200
+
+
+def test_heartbeat_reschedule_failure_restarts_on_next_load(
+    artifact_store, cache_dir, monkeypatch
+):
+    """A failed timer reschedule must not permanently disable heartbeat refreshes."""
+    callbacks = []
+    starts = [0]
+
+    class FakeTimer:
+        def __init__(self, interval, callback):
+            self.callback = callback
+            self.daemon = False
+
+        def start(self):
+            starts[0] += 1
+            if starts[0] == 2:
+                raise RuntimeError("timer failed")
+            callbacks.append(self.callback)
+
+    monkeypatch.setattr(agent_cache_module.threading, "Timer", FakeTimer)
+    now = [1000.0]
+    cache = AgentCache(artifact_store, cache_dir, clock=lambda: now[0])
+    _store_bundle(artifact_store, "agent/v1")
+    loaded = cache.load("agent", "agent/v1")
+    if cache._sweep_thread:
+        cache._sweep_thread.join()
+    callbacks.pop(0)()
+    now[0] += 3600
+    cache.load("agent", "agent/v1")
+    assert starts[0] == 3
+    assert loaded.workdir.exists()
+
+
+def test_sweep_resolves_current_location_at_most_twice_per_agent(
+    artifact_store, cache_dir, monkeypatch
+):
+    """Collecting many versions must not resolve current location per version."""
+    now = [1000.0]
+    calls = []
+    cache = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=10,
+        current_location=lambda agent: calls.append(agent) or set(),
+    )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    paths = []
+    for index in range(4):
+        location = f"agent/{index}"
+        _store_bundle(artifact_store, location)
+        paths.append(cache.load("agent", location).workdir)
+    cache.evict("agent")
+    now[0] += 20
+    cache._sweep()
+    assert calls == ["agent", "agent"]
+    assert all(not path.exists() for path in paths)
+
+
+def test_sweep_continues_after_trash_removal_permission_error(
+    artifact_store, cache_dir, monkeypatch
+):
+    """One undeletable trash entry must not prevent collecting unrelated versions."""
+    now = [1000.0]
+    cache = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=10,
+        current_location=lambda _: set(),
+    )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    _store_bundle(artifact_store, "agent/v1")
+    path = cache.load("agent", "agent/v1").workdir
+    cache.evict("agent")
+    trash = cache_dir / ".versions" / ".trash"
+    trash.mkdir()
+    blocked = trash / "1-blocked"
+    blocked.mkdir()
+    original = agent_cache_module.shutil.rmtree
+
+    def remove(path, *args, **kwargs):
+        if path == blocked:
+            raise PermissionError("blocked")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(agent_cache_module.shutil, "rmtree", remove)
+    now[0] += 4000
+    cache._sweep()
+    assert blocked.exists()
+    assert not path.exists()

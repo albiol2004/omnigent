@@ -1,4 +1,10 @@
-"""Two-tier agent cache — disk + in-memory — backed by ArtifactStore."""
+"""Two-tier agent cache — disk + in-memory — backed by ArtifactStore.
+
+A cold load of a version unused for seven days can touch and verify it between
+collection's eligibility check and rename. Its directory can then be missing
+briefly until restored; a collector crash in that window leaves it in trash
+until the one-hour grace expires, and the reader must reload.
+"""
 
 from __future__ import annotations
 
@@ -175,9 +181,13 @@ class AgentCache:
 
     def _touch(self, workdir: Path, *, force: bool = False) -> None:
         now = self._clock()
-        if not force and now - self._last_touches.get(workdir, float("-inf")) < _TOUCH_INTERVAL:
+        scheduled_at = self._schedule_clock()
+        if (
+            not force
+            and scheduled_at - self._last_touches.get(workdir, float("-inf")) < _TOUCH_INTERVAL
+        ):
             return
-        self._last_touches[workdir] = now
+        self._last_touches[workdir] = scheduled_at
         try:
             marker = self._marker(workdir)
             marker.touch(exist_ok=True)
@@ -206,6 +216,8 @@ class AgentCache:
                             entries.append((published, path))
                     except FileNotFoundError:
                         continue
+                    except OSError:
+                        _logger.exception("Could not inspect agent cache version %s", path)
             except FileNotFoundError:
                 return set()
             entries.sort(key=lambda item: (item[0], item[1].name), reverse=True)
@@ -248,25 +260,35 @@ class AgentCache:
             candidates = list(parent.iterdir())
         except FileNotFoundError:
             return
+        renamed: list[tuple[Path, Path]] = []
         for entry in candidates:
-            if (
-                entry in protected
-                or entry.is_symlink()
-                or not entry.is_dir()
-                or not eligible(entry)
-            ):
-                continue
             try:
+                if (
+                    entry in protected
+                    or entry.is_symlink()
+                    or not entry.is_dir()
+                    or not eligible(entry)
+                ):
+                    continue
                 trash = self._cache_dir / ".versions" / ".trash"
                 trash.mkdir(parents=True, exist_ok=True)
                 destination = trash / f"{int(self._clock() * 1_000_000_000)}-{uuid.uuid4().hex}"
                 entry.rename(destination)
-                # A touch before this check is visible; a later loader sees the
-                # missing directory and republishes before returning it.
-                # A collector stalled beyond trash grace may lose the restore; a
-                # loader seeing the missing directory republishes the version.
-                # Rank the trashed candidate without exposing it to loaders.
-                if self._candidate_protected(agent_id, entry, destination) or not eligible(
+                renamed.append((entry, destination))
+            except FileNotFoundError:
+                continue
+            except OSError:
+                _logger.exception("Could not collect agent cache version %s", entry)
+        current = None
+        if renamed:
+            try:
+                current = self._current_location(agent_id) if self._current_location else None
+            except Exception:
+                _logger.exception("Could not resolve current agent cache location")
+        for entry, destination in renamed:
+            try:
+                # A cold reader may briefly observe this directory missing until restore.
+                if self._candidate_protected(entry, destination, current) or not eligible(
                     entry, destination
                 ):
                     try:
@@ -286,12 +308,9 @@ class AgentCache:
         with contextlib.suppress(OSError):
             parent.rmdir()
 
-    def _candidate_protected(self, agent_id: str, entry: Path, destination: Path) -> bool:
-        try:
-            current = self._current_location(agent_id) if self._current_location else None
-        except Exception:
-            _logger.exception("Could not resolve current agent cache location")
-            current = None
+    def _candidate_protected(
+        self, entry: Path, destination: Path, current: set[str] | None
+    ) -> bool:
         if current is not None and _published_location(destination) in current:
             return True
         if current == set():
@@ -316,6 +335,13 @@ class AgentCache:
     def _schedule_sweep(self) -> None:
         now = self._schedule_clock()
         with self._memory_lock:
+            if not self._heartbeat_started:
+                self._heartbeat_started = True
+                try:
+                    self._start_heartbeat(weakref.ref(self))
+                except Exception:
+                    self._heartbeat_started = False
+                    _logger.exception("Could not start agent cache heartbeat")
             if now - self._last_sweep < min(_TOUCH_INTERVAL, self._grace_age / 4):
                 return
             if self._sweep_thread is not None and self._sweep_thread.is_alive():
@@ -328,12 +354,6 @@ class AgentCache:
                 return
             self._sweep_thread = thread
             self._last_sweep = now
-            if not self._heartbeat_started:
-                try:
-                    self._start_heartbeat(weakref.ref(self))
-                    self._heartbeat_started = True
-                except Exception:
-                    _logger.exception("Could not start agent cache heartbeat")
 
     @staticmethod
     def _start_heartbeat(cache_ref: weakref.ReferenceType[AgentCache]) -> None:
@@ -353,7 +373,13 @@ class AgentCache:
                 held = [hold.workdir for hold in _holds if hold.workdir.parent.parent == root]
             if not held and cache_ref() is None:
                 return
-            schedule()
+            try:
+                schedule()
+            except Exception:
+                _logger.exception("Could not reschedule agent cache heartbeat")
+                cache = cache_ref()
+                if cache is not None:
+                    cache._heartbeat_started = False
             for workdir in held:
                 try:
                     marker = AgentCache._marker(workdir)
@@ -392,6 +418,8 @@ class AgentCache:
                         entry.unlink(missing_ok=True)
                 except FileNotFoundError:
                     pass
+                except OSError:
+                    _logger.exception("Could not remove agent cache trash entry %s", entry)
         for parent in root.iterdir():
             if parent.is_dir() and not parent.is_symlink() and not parent.name.startswith("."):
                 for marker in parent.glob("*.last_used"):
@@ -404,7 +432,12 @@ class AgentCache:
                             marker.unlink(missing_ok=True)
                     except FileNotFoundError:
                         pass
-                self._collect(parent.name)
+                    except OSError:
+                        _logger.exception("Could not remove agent cache marker %s", marker)
+                try:
+                    self._collect(parent.name)
+                except OSError:
+                    _logger.exception("Could not sweep agent cache directory %s", parent)
 
     def load(
         self, agent_id: str, bundle_location: str, *, expand_env: bool = False
@@ -415,7 +448,7 @@ class AgentCache:
         with self._memory_lock:
             cached = self._specs.get(key)
         if cached is not None:
-            self._touch(cached.workdir, force=True)
+            self._touch(cached.workdir)
             if cached.workdir.is_dir() and _published_location(cached.workdir) == bundle_location:
                 return cached.loaded()
         return self._load_or_publish(agent_id, bundle_location, None, expand_env=expand_env)

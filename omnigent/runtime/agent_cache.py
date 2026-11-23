@@ -34,6 +34,9 @@ _logger = logging.getLogger(__name__)
 # Written into each published directory: the bundle location it was extracted from.
 _LOCATION_MARKER = ".omnigent-bundle-location"
 _MAX_MEMORY_VERSIONS = 128
+_MAX_LEASED_ENTRIES = 32
+_lease_support_lock = threading.RLock()
+_lease_support_failed = False
 
 
 def _cleanup_staging_dir(path: Path) -> None:
@@ -60,12 +63,19 @@ class _Lease:
     def __del__(self) -> None:
         os.close(self.fd)
 
+    def __deepcopy__(self, memo: dict[int, object]) -> _Lease:
+        return self
+
+    def __reduce__(self):
+        return (type(None), ())
+
 
 @dataclass(frozen=True)
 class _Entry:
     spec: AgentSpec
     workdir: Path
     lease: _Lease | None
+    last_hit: float = 0
 
     def loaded(self) -> LoadedAgent:
         return LoadedAgent(spec=self.spec, workdir=self.workdir, _lease=self.lease)
@@ -111,9 +121,11 @@ class AgentCache:
         self._retained_versions = retained_versions
         self._specs: dict[tuple[str, str], _Entry] = {}
         self._memory_lock = threading.Lock()
-        self._lease_warning = False
         self._sweep_ttl = sweep_ttl
         self._last_sweep = float("-inf")
+        self._schedule_clock = time.monotonic if clock is time.time else clock
+        self._sweep_thread: threading.Thread | None = None
+        self._pending_evictions: set[str] = set()
 
     def _cache_path(self, agent_id: str) -> Path:
         """Return a direct child of the cache root for an agent id."""
@@ -154,33 +166,47 @@ class AgentCache:
         return workdir.with_name(workdir.name + ".lease")
 
     def _acquire_lease(self, workdir: Path, *, exclusive: bool = False) -> int | None:
-        if fcntl is None:
-            self._warn_unavailable_lease()
-            return None
-        fd = os.open(self._lease_path(workdir), os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            fcntl.flock(fd, (fcntl.LOCK_EX | fcntl.LOCK_NB) if exclusive else fcntl.LOCK_SH)
-        except OSError as exc:
-            os.close(fd)
-            if exc.errno in (errno.EOPNOTSUPP, errno.ENOLCK, errno.EINVAL):
+        with _lease_support_lock:
+            if fcntl is None:
                 self._warn_unavailable_lease()
                 return None
-            raise
-        except BaseException:
-            os.close(fd)
-            raise
-        return fd
+            try:
+                fd = os.open(self._lease_path(workdir), os.O_CREAT | os.O_RDWR, 0o600)
+            except OSError as exc:
+                if exc.errno in (errno.EMFILE, errno.ENFILE):
+                    return None
+                raise
+            try:
+                mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                fcntl.flock(fd, mode | fcntl.LOCK_NB)
+            except OSError as exc:
+                os.close(fd)
+                if exc.errno in (errno.EOPNOTSUPP, errno.ENOLCK, errno.EINVAL):
+                    self._warn_unavailable_lease()
+                    return None
+                if exc.errno in (errno.EMFILE, errno.ENFILE):
+                    return None
+                raise
+            except BaseException:
+                os.close(fd)
+                raise
+            return fd
 
     def _warn_unavailable_lease(self) -> None:
-        with self._memory_lock:
-            if not self._lease_warning:
-                _logger.warning("Agent cache leases unavailable; using age and retention limits")
-                self._lease_warning = True
+        global _lease_support_failed
+        with _lease_support_lock:
+            if not _lease_support_failed:
+                _logger.warning("Agent cache leases unavailable; version deletion disabled")
+                _lease_support_failed = True
 
     def _remember(self, key: tuple[str, str], entry: _Entry) -> None:
         with self._memory_lock:
             self._specs.pop(key, None)
             self._specs[key] = entry
+            leased = [key for key, value in self._specs.items() if value.lease is not None]
+            for old_key in leased[:-_MAX_LEASED_ENTRIES]:
+                old = self._specs[old_key]
+                self._specs[old_key] = _Entry(old.spec, old.workdir, None, old.last_hit)
             while len(self._specs) > _MAX_MEMORY_VERSIONS:
                 self._specs.pop(next(iter(self._specs)), None)
 
@@ -193,6 +219,8 @@ class AgentCache:
         self._cache_path(agent_id).mkdir(parents=True, exist_ok=True)
 
     def _collect(self, agent_id: str, *, ttl: float, retain: int) -> None:
+        if _lease_support_failed:
+            return
         try:
             with self._lock(agent_id).acquire(timeout=0):
                 parent = self._cache_path(agent_id)
@@ -218,8 +246,10 @@ class AgentCache:
                     try:
                         fd = self._acquire_lease(entry, exclusive=True)
                         try:
-                            self._quarantine(entry)
-                            self._lease_path(entry).unlink(missing_ok=True)
+                            with _lease_support_lock:
+                                if fd is not None and not _lease_support_failed:
+                                    self._quarantine(entry)
+                                    self._lease_path(entry).unlink(missing_ok=True)
                         finally:
                             if fd is not None:
                                 os.close(fd)
@@ -232,8 +262,13 @@ class AgentCache:
                     try:
                         fd = self._acquire_lease(workdir, exclusive=True)
                         try:
-                            if not workdir.exists():
-                                lease.unlink(missing_ok=True)
+                            with _lease_support_lock:
+                                if (
+                                    fd is not None
+                                    and not _lease_support_failed
+                                    and not workdir.exists()
+                                ):
+                                    lease.unlink(missing_ok=True)
                         finally:
                             if fd is not None:
                                 os.close(fd)
@@ -246,15 +281,35 @@ class AgentCache:
 
     def _after_publish(self, agent_id: str) -> None:
         self._collect(agent_id, ttl=self._grace_age, retain=self._retained_versions)
-        self._sweep()
+        self._schedule_sweep()
 
-    def _sweep(self) -> None:
-        # Only warm traffic after deletion delays reclamation until a cold load or eviction.
-        now = self._clock()
+    def _schedule_sweep(self) -> None:
+        now = self._schedule_clock()
         with self._memory_lock:
             if now - self._last_sweep < self._grace_age / 4:
                 return
+            if self._sweep_thread is not None and self._sweep_thread.is_alive():
+                return
             self._last_sweep = now
+            self._sweep_thread = threading.Thread(target=self._run_sweep, daemon=True)
+            self._sweep_thread.start()
+
+    def _run_sweep(self) -> None:
+        try:
+            self._sweep()
+        except Exception:
+            _logger.exception("Agent cache sweep failed")
+
+    def _sweep(self) -> None:
+        now = self._schedule_clock()
+        with self._memory_lock:
+            for key, entry in list(self._specs.items()):
+                if entry.lease is not None and now - entry.last_hit >= self._grace_age:
+                    self._specs[key] = _Entry(entry.spec, entry.workdir, None, entry.last_hit)
+            evictions = self._pending_evictions.copy()
+            self._pending_evictions.clear()
+        for agent_id in evictions:
+            self._collect(agent_id, ttl=self._grace_age, retain=0)
         root = self._cache_dir / ".versions"
         if root.is_dir():
             for parent in root.iterdir():
@@ -265,11 +320,35 @@ class AgentCache:
         self, agent_id: str, bundle_location: str, *, expand_env: bool = False
     ) -> LoadedAgent:
         self._version_path(agent_id, bundle_location)
+        self._schedule_sweep()
         key = (agent_id, bundle_location)
         with self._memory_lock:
             cached = self._specs.get(key)
-        if cached is not None and cached.workdir.is_dir():
-            return cached.loaded()
+        if cached is not None:
+            if cached.lease is None:
+                try:
+                    fd = self._acquire_lease(cached.workdir)
+                except (BlockingIOError, FileNotFoundError):
+                    fd = None
+                if fd is not None:
+                    candidate = _Entry(
+                        cached.spec, cached.workdir, _Lease(fd), self._schedule_clock()
+                    )
+                    if (
+                        candidate.workdir.is_dir()
+                        and _published_location(candidate.workdir) == bundle_location
+                    ):
+                        with self._memory_lock:
+                            if self._specs.get(key) is cached:
+                                self._specs[key] = candidate
+                        return candidate.loaded()
+            elif cached.workdir.is_dir():
+                with self._memory_lock:
+                    if self._specs.get(key) is cached:
+                        self._specs[key] = _Entry(
+                            cached.spec, cached.workdir, cached.lease, self._schedule_clock()
+                        )
+                return cached.loaded()
         return self._load_or_publish(agent_id, bundle_location, None, expand_env=expand_env)
 
     def replace(
@@ -285,8 +364,8 @@ class AgentCache:
             for key in list(self._specs):
                 if key[0] == agent_id:
                     self._specs.pop(key, None)
-        self._collect(agent_id, ttl=self._grace_age, retain=0)
-        self._sweep()
+            self._pending_evictions.add(agent_id)
+        self._schedule_sweep()
 
     def _staging_root(self) -> Path:
         """Return the reserved staging namespace on the cache filesystem."""
@@ -310,7 +389,6 @@ class AgentCache:
     def _load_or_publish(
         self, agent_id: str, bundle_location: str, bundle_bytes: bytes | None, *, expand_env: bool
     ) -> LoadedAgent:
-        self._sweep()
         workdir = self._version_path(agent_id, bundle_location)
         key = (agent_id, bundle_location)
         published = False
@@ -374,13 +452,17 @@ class AgentCache:
                             exclusive = self._acquire_lease(workdir, exclusive=True)
                         except BlockingIOError:
                             exclusive = None
+                        removed = False
                         if exclusive is not None:
                             try:
-                                self._quarantine(workdir)
-                                self._lease_path(workdir).unlink(missing_ok=True)
+                                with _lease_support_lock:
+                                    if not _lease_support_failed:
+                                        self._quarantine(workdir)
+                                        self._lease_path(workdir).unlink(missing_ok=True)
+                                        removed = True
                             finally:
                                 os.close(exclusive)
-                        else:
+                        if not removed:
                             workdir = workdir.with_name(workdir.name + "." + uuid.uuid4().hex)
                     fd = self._acquire_lease(workdir)
             try:
@@ -424,7 +506,7 @@ class AgentCache:
                             )
                 lease = _Lease(fd) if fd is not None else None
                 fd = None
-                entry = _Entry(spec, workdir, lease)
+                entry = _Entry(spec, workdir, lease, self._schedule_clock())
                 self._remember(key, entry)
             finally:
                 if fd is not None:

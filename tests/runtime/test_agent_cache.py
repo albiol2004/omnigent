@@ -6,7 +6,6 @@ import concurrent.futures
 import errno
 import io
 import logging
-import os
 import tarfile
 import threading
 from pathlib import Path
@@ -134,7 +133,7 @@ def test_load_cache_miss_downloads_and_extracts(
 
     assert loaded.spec.name == "test-agent"
     assert loaded.spec.spec_version == 1
-    assert loaded.workdir == cache_dir / "agent-1"
+    assert loaded.workdir.parent == cache_dir / "agent-1"
     assert loaded.workdir.is_dir()
     assert (loaded.workdir / "config.yaml").exists()
 
@@ -240,10 +239,9 @@ def test_load_reextracts_when_disk_entry_lost_config(
 
     # First cache instance populates the disk tier.
     cache_1 = AgentCache(artifact_store=artifact_store, cache_dir=cache_dir)
-    cache_1.load("agent-wiped", loc)
+    workdir = cache_1.load("agent-wiped", loc).workdir
 
     # The extracted entry loses config.yaml; a stale leftover remains.
-    workdir = cache_dir / "agent-wiped"
     (workdir / "config.yaml").unlink()
     (workdir / "stale-leftover").write_text("junk", encoding="utf-8")
 
@@ -275,10 +273,10 @@ def test_load_reextracts_when_disk_entry_config_corrupt(
     _store_bundle(artifact_store, loc)
 
     cache_1 = AgentCache(artifact_store=artifact_store, cache_dir=cache_dir)
-    cache_1.load("agent-corrupt", loc)
+    workdir = cache_1.load("agent-corrupt", loc).workdir
 
     # Truncated write leaves invalid YAML behind.
-    (cache_dir / "agent-corrupt" / "config.yaml").write_text(config, encoding="utf-8")
+    (workdir / "config.yaml").write_text(config, encoding="utf-8")
 
     cache_2 = AgentCache(artifact_store=artifact_store, cache_dir=cache_dir)
     loaded = cache_2.load("agent-corrupt", loc)
@@ -337,9 +335,9 @@ def test_load_poisoned_disk_entry_with_missing_bundle_raises(
     _store_bundle(artifact_store, loc)
 
     cache_1 = AgentCache(artifact_store=artifact_store, cache_dir=cache_dir)
-    cache_1.load("agent-gone", loc)
+    workdir = cache_1.load("agent-gone", loc).workdir
 
-    (cache_dir / "agent-gone" / "config.yaml").unlink()
+    (workdir / "config.yaml").unlink()
     artifact_store.delete(loc)
 
     cache_2 = AgentCache(artifact_store=artifact_store, cache_dir=cache_dir)
@@ -378,60 +376,31 @@ def test_load_invalid_spec_raises_omnigent_error(
         agent_cache.load("bad-agent", loc)
 
 
-def test_evict_clears_both_tiers(
-    agent_cache: AgentCache,
-    artifact_store: LocalArtifactStore,
-    cache_dir: Path,
+def test_evict_drops_memory_without_removing_reader_workdir(
+    agent_cache: AgentCache, artifact_store: LocalArtifactStore
 ) -> None:
-    """evict() removes from memory and disk."""
-    loc = "agent-4/abc123"
-    _store_bundle(artifact_store, loc)
-
-    agent_cache.load("agent-4", loc)
-    assert (cache_dir / "agent-4").is_dir()
-
+    """Eviction must reparse disk while preserving a running reader's files."""
+    location = "agent-4/abc123"
+    _store_bundle(artifact_store, location)
+    first = agent_cache.load("agent-4", location)
     agent_cache.evict("agent-4")
-
-    # Disk cache cleared
-    assert not (cache_dir / "agent-4").exists()
-
-    # Memory cache cleared — remove from artifact store to prove
-    # load() can't fall back to a cached spec in memory
-    artifact_store.delete(loc)
-    with pytest.raises(KeyError):
-        agent_cache.load("agent-4", loc)
+    second = agent_cache.load("agent-4", location)
+    assert first.workdir == second.workdir and first.workdir.is_dir()
+    assert first.spec is not second.spec
 
 
 def test_evict_tolerates_concurrent_removal(
-    agent_cache: AgentCache,
-    artifact_store: LocalArtifactStore,
-    cache_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    agent_cache: AgentCache, artifact_store: LocalArtifactStore
 ) -> None:
-    loc = "agent-race/abc123"
-    _store_bundle(artifact_store, loc)
-    agent_cache.load("agent-race", loc)
-    workdir = cache_dir / "agent-race"
-    (workdir / "extra.txt").write_text("extra")
-    real_unlink = os.unlink
-    removed = False
+    """Eviction remains safe if another process has removed the disk entry."""
+    location = "agent-race/abc123"
+    _store_bundle(artifact_store, location)
+    workdir = agent_cache.load("agent-race", location).workdir
+    import shutil
 
-    def concurrent_removal(path: str | bytes, *, dir_fd: int | None = None) -> None:
-        nonlocal removed
-        real_unlink(path, dir_fd=dir_fd)
-        if not removed:
-            removed = True
-            # A missing child must not leave a partially evicted cache directory.
-            raise FileNotFoundError("concurrent removal")
-
-    monkeypatch.setattr(os, "unlink", concurrent_removal)
+    shutil.rmtree(workdir)
     agent_cache.evict("agent-race")
-
-    assert removed
-    assert not workdir.exists()
-    artifact_store.delete(loc)
-    with pytest.raises(KeyError):
-        agent_cache.load("agent-race", loc)
+    assert agent_cache.load("agent-race", location).workdir.is_dir()
 
 
 def test_evict_noop_for_uncached_agent(
@@ -458,14 +427,14 @@ def test_cache_operations_allow_symlinked_cache_root(
     bundle_bytes = _store_bundle(artifact_store, bundle_location)
 
     loaded = agent_cache.load("agent-1", bundle_location)
-    assert loaded.workdir == target.resolve() / "agent-1"
+    assert loaded.workdir.parent == target.resolve() / "agent-1"
     assert agent_cache.load("agent-1", bundle_location).spec is loaded.spec
     disk_cache = AgentCache(artifact_store, cache_dir)
     assert disk_cache.load("agent-1", bundle_location).workdir == loaded.workdir
     assert agent_cache.replace("agent-1", bundle_location, bundle_bytes).workdir == loaded.workdir
     agent_cache.evict("agent-1")
 
-    assert not loaded.workdir.exists()
+    assert loaded.workdir.exists()
     assert cache_dir.is_symlink()
     assert target.is_dir()
 
@@ -733,7 +702,7 @@ def test_replace_swaps_spec(
 
     # New spec is returned and cached
     assert loaded_v2.spec.description == "updated agent"
-    assert loaded_v2.workdir == cache_dir / "agent-5"
+    assert loaded_v2.workdir.parent == cache_dir / "agent-5"
     assert loaded_v2.workdir.is_dir()
 
     # Subsequent load() returns the new spec from memory cache
@@ -777,12 +746,15 @@ def test_concurrent_cold_loads_never_read_an_unpublished_directory(
         first_loaded = first.result()
 
     assert (first_loaded.spec.name, second_loaded.spec.name) == ("test-agent", "winner")
-    assert first_loaded.workdir == second_loaded.workdir == cache_dir / "agent-shared"
+    assert first_loaded.workdir != second_loaded.workdir
+    assert (
+        first_loaded.workdir.parent == second_loaded.workdir.parent == cache_dir / "agent-shared"
+    )
     # The loser rebuilt its own entry rather than pair its spec with the winner's files.
     assert (
         yaml.safe_load((first_loaded.workdir / "config.yaml").read_text())["name"] == "test-agent"
     )
-    assert [p.name for p in (cache_dir / ".staging").iterdir()] in ([], ["repair.lock"])
+    assert all(p.suffix == ".lock" for p in (cache_dir / ".staging").iterdir())
 
 
 def test_a_cold_load_that_loses_to_another_revision_serves_its_own_files(
@@ -823,7 +795,7 @@ def test_load_failure_cleans_unpublished_extraction(
 
     assert not (cache_dir / "invalid-agent").exists()
     assert list(cache_dir.iterdir()) == [cache_dir / ".staging"]
-    assert not any((cache_dir / ".staging").iterdir())
+    assert all(p.suffix == ".lock" for p in (cache_dir / ".staging").iterdir())
 
     _store_bundle(artifact_store, bundle_location)
     assert cache.load("invalid-agent", bundle_location).spec.name == "test-agent"
@@ -891,16 +863,17 @@ def test_cache_staging_only_uses_writable_cache_root(
     cache = AgentCache(artifact_store, cache_dir)
     cache.load("agent", "agent/v1")
     assert cache.replace("agent", "agent/v2", bundle).workdir.is_dir()
-    assert not any((cache_dir / ".staging").iterdir())
+    assert all(p.suffix == ".lock" for p in (cache_dir / ".staging").iterdir())
 
 
 @pytest.mark.parametrize("error_number", [errno.EXDEV, errno.EACCES, errno.ENOSPC])
-def test_replace_restores_previous_bundle_when_publish_fails(
+def test_replace_publish_failure_preserves_old_version(
     artifact_store: LocalArtifactStore,
     cache_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
     error_number: int,
 ) -> None:
+    """A failed publication must not expose a partial version or disturb old readers."""
     _store_bundle(artifact_store, "agent/v1")
     cache = AgentCache(artifact_store, cache_dir)
     previous = cache.load("agent", "agent/v1")
@@ -910,26 +883,21 @@ def test_replace_restores_previous_bundle_when_publish_fails(
         {"config.yaml": _MINIMAL_CONFIG.replace("test-agent", "updated")},
     )
     real_rename = Path.rename
-    failed = False
 
-    def fail_publish_once(source: Path, target: Path) -> Path:
-        nonlocal failed
-        if target == previous.workdir and not failed:
-            failed = True
+    def fail_publish(source: Path, target: Path) -> Path:
+        if target.parent == previous.workdir.parent and target != previous.workdir:
             raise OSError(error_number, "publish failed")
         return real_rename(source, target)
 
-    monkeypatch.setattr(Path, "rename", fail_publish_once)
-    with pytest.raises(OSError) as error:
-        cache.replace("agent", "agent/v2", bundle)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "rename", fail_publish)
+        with pytest.raises(OSError) as error:
+            cache.replace("agent", "agent/v2", bundle)
     assert error.value.errno == error_number
     assert previous.workdir.is_dir()
     assert cache.load("agent", "agent/v1").spec is previous.spec
-    artifact_store.delete("agent/v1")
-    disk_cache = AgentCache(artifact_store, cache_dir)
-    assert disk_cache.load("agent", "agent/v1").spec.name == "test-agent"
-    assert not any((cache_dir / ".staging").iterdir())
-    assert cache.replace("agent", "agent/v2", bundle).spec.name == "updated"
+    assert len(list(previous.workdir.parent.iterdir())) == 1
+    assert cache.load("agent", "agent/v2").spec.name == "updated"
 
 
 def test_cache_rejects_redirected_staging_root(
@@ -949,89 +917,74 @@ def test_cache_rejects_redirected_staging_root(
     assert not any(outside.iterdir())
 
 
-def test_replace_retains_backup_and_invalidates_memory_if_rollback_fails(
-    artifact_store: LocalArtifactStore, cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+def test_replace_and_repair_leave_other_version_unchanged(
+    artifact_store: LocalArtifactStore, cache_dir: Path
 ) -> None:
-    _store_bundle(artifact_store, "agent/v1")
+    """Replacing and repairing a different version cannot move or rewrite a reader's files."""
+    old_bundle = _store_bundle(artifact_store, "agent/v1")
+    new_bundle = _store_bundle(artifact_store, "agent/v2")
     cache = AgentCache(artifact_store, cache_dir)
-    previous = cache.load("agent", "agent/v1")
-    bundle = _store_bundle(
-        artifact_store,
-        "agent/v2",
-        {"config.yaml": _MINIMAL_CONFIG.replace("test-agent", "updated")},
+    old = cache.replace("agent", "agent/v1", old_bundle)
+    config = old.workdir / "config.yaml"
+    marker = old.workdir / ".omnigent-bundle-location"
+    before = (
+        old.workdir.stat().st_ino,
+        config.stat().st_ino,
+        config.read_bytes(),
+        marker.read_bytes(),
     )
-    real_rename = Path.rename
-
-    def fail_publish_and_restore(source: Path, target: Path) -> Path:
-        if target == previous.workdir:
-            raise OSError(errno.EACCES, "destination unavailable")
-        return real_rename(source, target)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(Path, "rename", fail_publish_and_restore)
-        with pytest.raises(OSError):
-            cache.replace("agent", "agent/v2", bundle)
-    backups = list((cache_dir / ".staging").glob("*/previous/config.yaml"))
-    assert len(backups) == 1
-    assert yaml.safe_load(backups[0].read_text())["name"] == "test-agent"
-    assert cache.load("agent", "agent/v2").spec.name == "updated"
+    new = cache.replace("agent", "agent/v2", new_bundle)
+    (new.workdir / "config.yaml").unlink()
+    AgentCache(artifact_store, cache_dir).load("agent", "agent/v2")
+    assert before == (
+        old.workdir.stat().st_ino,
+        config.stat().st_ino,
+        config.read_bytes(),
+        marker.read_bytes(),
+    )
 
 
-def test_replace_keeps_live_bundle_when_backup_rename_fails(
-    artifact_store: LocalArtifactStore, cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+def test_gc_keeps_recent_and_newest_versions_and_collects_old(
+    artifact_store: LocalArtifactStore, cache_dir: Path
 ) -> None:
-    bundle = _store_bundle(artifact_store, "agent/v1")
-    cache = AgentCache(artifact_store, cache_dir)
-    previous = cache.load("agent", "agent/v1")
-    real_rename = Path.rename
+    """GC cannot remove the requested, recent, or newest versions and must reclaim older ones."""
+    now = [1000.0]
+    cache = AgentCache(
+        artifact_store, cache_dir, clock=lambda: now[0], grace_age=10, retained_versions=3
+    )
+    paths = []
+    for index in range(4):
+        location = f"agent/{index}"
+        _store_bundle(artifact_store, location)
+        paths.append(cache.load("agent", location).workdir)
+        now[0] += 1
+    assert all(path.exists() for path in paths)
+    now[0] = 1020
+    cache.load("agent", "agent/3")
+    assert not paths[0].exists()
+    assert all(path.exists() for path in paths[1:])
 
-    def fail_backup(source: Path, target: Path) -> Path:
-        if source == previous.workdir:
-            raise OSError(errno.EACCES, "cannot move live directory")
-        return real_rename(source, target)
 
-    monkeypatch.setattr(Path, "rename", fail_backup)
-    with pytest.raises(OSError, match="cannot move live directory"):
-        cache.replace("agent", "agent/v2", bundle)
-    assert previous.workdir.is_dir()
-    assert cache.load("agent", "agent/v1").spec is previous.spec
-    assert not any((cache_dir / ".staging").iterdir())
-
-
-@pytest.mark.parametrize("failed_cleanup", ["bundle", "backup"])
 def test_cleanup_failure_is_logged_without_breaking_publication(
     artifact_store: LocalArtifactStore,
     cache_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    failed_cleanup: str,
 ) -> None:
+    """A losing publisher's cleanup failure must not hide its successful load."""
     bundle = _store_bundle(artifact_store, "agent/v1")
     cache = AgentCache(artifact_store, cache_dir)
-    cache.load("agent", "agent/v1")
+    first = cache.load("agent", "agent/v1")
     real_rmtree = agent_cache_module.shutil.rmtree
-    leftover: list[Path] = []
 
     def fail_cleanup(path, *args, **kwargs):
-        path = Path(path)
-        if path.name.startswith(f"{failed_cleanup}-"):
-            if failed_cleanup == "bundle":
-                # Published staging paths no longer exist; don't warn for those.
-                raise FileNotFoundError(path)
-            leftover.append(path)
+        if Path(path).name.startswith("bundle-") and Path(path).exists():
             raise PermissionError("cleanup denied")
         return real_rmtree(path, *args, **kwargs)
 
     monkeypatch.setattr(agent_cache_module.shutil, "rmtree", fail_cleanup)
-    loaded = cache.replace("agent", "agent/v2", bundle)
-    assert loaded.workdir.is_dir()
-    assert cache.load("agent", "agent/v2").spec is loaded.spec
-    if failed_cleanup == "backup":
-        assert len(leftover) == 1
-        assert (leftover[0] / "previous" / "config.yaml").is_file()
-        assert str(leftover[0]) in caplog.text and "cleanup denied" in caplog.text
-    else:
-        assert not caplog.records
+    assert cache.replace("agent", "agent/v1", bundle).workdir == first.workdir
+    assert "cleanup denied" in caplog.text
 
 
 def test_cleanup_warning_preserves_original_validation_error(
@@ -1052,3 +1005,40 @@ def test_cleanup_warning_preserves_original_validation_error(
     assert "Could not clean agent cache staging directory" in caplog.text
     assert "cleanup denied" in caplog.text
     assert not (cache_dir / "agent").exists()
+
+
+def test_late_old_load_cannot_overwrite_new_version(
+    artifact_store: LocalArtifactStore, cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow old extraction must not poison the new version's memory or files."""
+    old = "agent-race/old"
+    new = "agent-race/new"
+    _store_bundle(artifact_store, old)
+    _store_bundle(
+        artifact_store, new, {"config.yaml": _MINIMAL_CONFIG.replace("test-agent", "new")}
+    )
+    cache = AgentCache(artifact_store, cache_dir)
+    started = threading.Event()
+    release = threading.Event()
+    real_load_spec = agent_cache_module.load_spec
+
+    def pause_old(source, **kwargs):
+        if isinstance(source, bytes) and kwargs.get("dest") is not None and not started.is_set():
+            started.set()
+            release.wait()
+        return real_load_spec(source, **kwargs)
+
+    monkeypatch.setattr(agent_cache_module, "load_spec", pause_old)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        old_future = pool.submit(cache.load, "agent-race", old)
+        started.wait()
+        try:
+            new_loaded = cache.load("agent-race", new)
+        finally:
+            release.set()
+        old_loaded = old_future.result()
+    assert old_loaded.spec.name == "test-agent"
+    assert new_loaded.spec.name == "new"
+    assert old_loaded.workdir != new_loaded.workdir
+    assert cache.load("agent-race", new).spec.name == "new"
+    assert yaml.safe_load((new_loaded.workdir / "config.yaml").read_text())["name"] == "new"

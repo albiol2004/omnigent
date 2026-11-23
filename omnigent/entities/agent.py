@@ -69,4 +69,4 @@ class LoadedAgent:
 
     spec: AgentSpec
     workdir: Path
-    _lease: object | None = field(default=None, repr=False, compare=False)
+    _hold: object | None = field(default=None, repr=False, compare=False)

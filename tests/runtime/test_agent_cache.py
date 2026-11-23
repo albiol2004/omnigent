@@ -964,7 +964,13 @@ def test_gc_keeps_recent_and_newest_versions_and_collects_old(
     """GC cannot remove the requested, recent, or newest versions and must reclaim older ones."""
     now = [1000.0]
     cache = AgentCache(
-        artifact_store, cache_dir, clock=lambda: now[0], grace_age=10, retained_versions=3
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        grace_age=10,
+        retained_versions=3,
+        sweep_ttl=10,
+        current_location=lambda _: "agent/4",
     )
     paths = []
     for index in range(4):
@@ -976,6 +982,7 @@ def test_gc_keeps_recent_and_newest_versions_and_collects_old(
     cache.evict("agent")
     now[0] = 1020
     cache.replace("agent", "agent/4", _store_bundle(artifact_store, "agent/4"))
+    cache._sweep()
     assert not paths[0].exists()
     assert all(path.exists() for path in paths[2:])
 
@@ -1064,9 +1071,22 @@ def test_gc_does_not_delete_versions_held_by_another_cache(
 ) -> None:
     """GC must not delete a version held by a separate open flock description."""
     now = [1000.0]
-    holder = AgentCache(artifact_store, cache_dir, clock=lambda: now[0], grace_age=10)
+    holder = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        grace_age=10,
+        sweep_ttl=10,
+        current_location=lambda _: None,
+    )
     collector = AgentCache(
-        artifact_store, cache_dir, clock=lambda: now[0], grace_age=10, retained_versions=0
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        grace_age=10,
+        retained_versions=0,
+        sweep_ttl=10,
+        current_location=lambda _: None,
     )
     _store_bundle(artifact_store, "agent/old")
     old = holder.load("agent", "agent/old")
@@ -1080,6 +1100,7 @@ def test_gc_does_not_delete_versions_held_by_another_cache(
     if holder._sweep_thread:
         holder._sweep_thread.join()
     holder.evict("agent")
+    now[0] += 20
     holder._sweep()
     assert not old_path.exists()
 
@@ -1119,10 +1140,20 @@ def test_sweep_removes_deleted_agent_but_preserves_other_process_lease(
     """A deleted agent must expire without collecting a version leased elsewhere."""
     now = [1000.0]
     cache = AgentCache(
-        artifact_store, cache_dir, clock=lambda: now[0], grace_age=10, sweep_ttl=100
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        grace_age=10,
+        sweep_ttl=100,
+        current_location=lambda _: None,
     )
     holder = AgentCache(
-        artifact_store, cache_dir, clock=lambda: now[0], grace_age=10, sweep_ttl=100
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        grace_age=10,
+        sweep_ttl=100,
+        current_location=lambda _: None,
     )
     for location in ("deleted/v1", "held/v1"):
         _store_bundle(artifact_store, location)
@@ -1210,38 +1241,10 @@ def test_failed_publish_cleans_lease_and_sweep_removes_orphans(
         with pytest.raises(OSError, match="publish failed"):
             cache.load("failed", "failed/v1")
     parent = cache_dir / ".versions" / "failed"
-    assert not list(parent.glob("*.lease"))
-    (parent / "orphan.lease").touch()
+    assert not list(parent.iterdir())
     cache.replace("other", "other/v1", _store_bundle(artifact_store, "other/v1"))
     cache._sweep()
     assert not parent.exists()
-
-
-def test_unavailable_flock_does_not_break_cold_load(
-    artifact_store: LocalArtifactStore,
-    cache_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Unsupported filesystem locking must not crash a cold load."""
-    if agent_cache_module.fcntl is None:
-        pytest.skip("flock unavailable")
-    _store_bundle(artifact_store, "agent/v1")
-
-    def unsupported(*args):
-        raise OSError(errno.ENOLCK, "unsupported")
-
-    class UnsupportedFlock:
-        LOCK_EX = agent_cache_module.fcntl.LOCK_EX
-        LOCK_NB = agent_cache_module.fcntl.LOCK_NB
-        LOCK_SH = agent_cache_module.fcntl.LOCK_SH
-        flock = staticmethod(unsupported)
-
-    monkeypatch.setattr(agent_cache_module, "_lease_support_failed", False)
-    monkeypatch.setattr(agent_cache_module, "fcntl", UnsupportedFlock)
-    cache = AgentCache(artifact_store, cache_dir)
-    assert cache.load("agent", "agent/v1").spec.name == "test-agent"
-    assert caplog.text.count("leases unavailable") == 1
 
 
 def test_cold_load_sweeps_deleted_agent_after_ttl(
@@ -1251,7 +1254,12 @@ def test_cold_load_sweeps_deleted_agent_after_ttl(
     """Cold disk hits must sweep deleted agents even without a new publication."""
     now = [1000.0]
     cache = AgentCache(
-        artifact_store, cache_dir, clock=lambda: now[0], grace_age=10, sweep_ttl=100
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        grace_age=10,
+        sweep_ttl=100,
+        current_location=lambda _: None,
     )
     for name in ("deleted", "other"):
         _store_bundle(artifact_store, f"{name}/v1")
@@ -1302,8 +1310,7 @@ def test_warm_hit_keeps_spec_and_workdir_together_during_evict(
     original = cache.load("agent", "agent/v1")
     sibling = original.workdir.with_name(original.workdir.name + ".sibling")
     original.workdir.rename(sibling)
-    assert isinstance(original._lease, agent_cache_module._Lease)
-    entry = agent_cache_module._Entry(original.spec, sibling, original._lease)
+    entry = agent_cache_module._Entry(original.spec, sibling, agent_cache_module._Hold(sibling))
     cache._specs[("agent", "agent/v1")] = entry
     is_dir = Path.is_dir
     evicted = False
@@ -1321,110 +1328,43 @@ def test_warm_hit_keeps_spec_and_workdir_together_during_evict(
     assert result.workdir == sibling
 
 
-def test_idle_entries_release_and_warm_load_releases_again(artifact_store, cache_dir):
-    """Idle memory entries must not block collection and must re-lease before reuse."""
-    now = [1000.0]
-    cache = AgentCache(
-        artifact_store, cache_dir, clock=lambda: now[0], grace_age=10, sweep_ttl=100
-    )
-    _store_bundle(artifact_store, "agent/v1")
-    result = cache.load("agent", "agent/v1")
-    path, spec = result.workdir, result.spec
-    del result
-    now[0] += 11
-    cache._sweep()
-    assert cache._specs[("agent", "agent/v1")].lease is None
-    warm = cache.load("agent", "agent/v1")
-    assert warm.spec is spec and warm._lease is not None
-    del warm
-    now[0] += 11
-    cache._sweep()
-    agent_cache_module.shutil.rmtree(path)
-    assert cache.load("agent", "agent/v1").spec is not spec
-
-
 def test_loaded_agent_copy_does_not_duplicate_lease_fd(artifact_store, cache_dir):
     """Copying a loaded agent must not independently close its lease descriptor."""
     _store_bundle(artifact_store, "agent/v1")
     loaded = AgentCache(artifact_store, cache_dir).load("agent", "agent/v1")
     copied = copy.deepcopy(loaded)
     restored = pickle.loads(pickle.dumps(loaded))
-    assert copied._lease is loaded._lease
-    assert restored._lease is None
+    assert copied._hold is loaded._hold
+    assert restored._hold is None
     del copied, restored
-    assert isinstance(loaded._lease, agent_cache_module._Lease)
-    agent_cache_module.os.fstat(loaded._lease.fd)
-
-
-def test_descriptor_exhaustion_does_not_fail_load_or_disable_collection(
-    artifact_store, cache_dir, monkeypatch
-):
-    """Descriptor exhaustion must degrade a load without disabling future collection."""
-    _store_bundle(artifact_store, "agent/v1")
-    cache = AgentCache(artifact_store, cache_dir)
-    real_open = agent_cache_module.os.open
-
-    def fail_lease(path, *args, **kwargs):
-        if str(path).endswith(".lease"):
-            raise OSError(errno.EMFILE, "too many files")
-        return real_open(path, *args, **kwargs)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(agent_cache_module.os, "open", fail_lease)
-        assert cache.load("agent", "agent/v1").spec.name == "test-agent"
-    assert not agent_cache_module._lease_support_failed
-
-
-def test_unsupported_lease_prevents_other_cache_from_collecting(
-    artifact_store, cache_dir, monkeypatch
-):
-    """A reader without flock must survive collection by another cache in this process."""
-    now = [1000.0]
-    _store_bundle(artifact_store, "held/v1")
-    _store_bundle(artifact_store, "other/v1")
-    holder = AgentCache(
-        artifact_store, cache_dir, clock=lambda: now[0], grace_age=10, sweep_ttl=100
-    )
-    collector = AgentCache(
-        artifact_store, cache_dir, clock=lambda: now[0], grace_age=10, sweep_ttl=100
-    )
-    real_fcntl = agent_cache_module.fcntl
-    assert real_fcntl is not None
-
-    class UnsupportedFlock:
-        LOCK_EX = real_fcntl.LOCK_EX
-        LOCK_NB = real_fcntl.LOCK_NB
-        LOCK_SH = real_fcntl.LOCK_SH
-
-        @staticmethod
-        def flock(*args):
-            raise OSError(errno.ENOLCK, "unsupported")
-
-    monkeypatch.setattr(agent_cache_module, "_lease_support_failed", False)
-    with monkeypatch.context() as patch:
-        patch.setattr(agent_cache_module, "fcntl", UnsupportedFlock)
-        held = holder.load("held", "held/v1")
-        if holder._sweep_thread:
-            holder._sweep_thread.join()
-    now[0] += 101
-    collector.load("other", "other/v1")
-    if collector._sweep_thread:
-        collector._sweep_thread.join()
-    assert held.workdir.is_dir()
+    assert isinstance(loaded._hold, agent_cache_module._Hold)
 
 
 def test_warm_traffic_schedules_sweep_after_idle_peer_releases(artifact_store, cache_dir):
     """Warm-only traffic must reclaim a deleted version once an idle peer releases it."""
     now = [1000.0]
-    peer = AgentCache(artifact_store, cache_dir, clock=lambda: now[0], grace_age=10, sweep_ttl=100)
+    peer = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        grace_age=10,
+        sweep_ttl=100,
+        current_location=lambda _: None,
+    )
     cache = AgentCache(
-        artifact_store, cache_dir, clock=lambda: now[0], grace_age=10, sweep_ttl=100
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        grace_age=10,
+        sweep_ttl=100,
+        current_location=lambda _: None,
     )
     for name in ("deleted", "warm"):
         _store_bundle(artifact_store, f"{name}/v1")
     result = peer.load("deleted", "deleted/v1")
     path = result.workdir
     del result
+    peer.evict("deleted")
     warm = cache.load("warm", "warm/v1")
     for instance in (peer, cache):
         if instance._sweep_thread:
@@ -1436,3 +1376,108 @@ def test_warm_traffic_schedules_sweep_after_idle_peer_releases(artifact_store, c
     cache._sweep_thread.join()
     assert not path.exists()
     assert warm.workdir.exists()
+
+
+def test_marker_cleanup_respects_current_retention_and_deleted_agents(artifact_store, cache_dir):
+    """Old versions must be collected without losing the current or newest versions."""
+    now = [1000.0]
+    current = ["agent/0"]
+    cache = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=10,
+        current_location=lambda _: current[0],
+    )
+    paths = []
+    for index in range(5):
+        location = f"agent/{index}"
+        _store_bundle(artifact_store, location)
+        paths.append(cache.load("agent", location).workdir)
+        now[0] += 1
+    cache.evict("agent")
+    now[0] += 20
+    cache._sweep()
+    assert paths[0].exists() and not paths[1].exists()
+    assert not paths[1].with_name(paths[1].name + ".last_used").exists()
+    assert all(path.exists() for path in paths[2:])
+    current[0] = None
+    cache._sweep()
+    assert not any(path.exists() for path in paths)
+
+
+def test_held_version_heartbeat_prevents_collection_for_weeks(artifact_store, cache_dir):
+    """An idle live result must remain held and refresh its marker over time."""
+    now = [1000.0]
+    cache = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=10,
+        current_location=lambda _: None,
+    )
+    _store_bundle(artifact_store, "agent/old")
+    loaded = cache.load("agent", "agent/old")
+    cache.evict("agent")
+    marker = loaded.workdir.with_name(loaded.workdir.name + ".last_used")
+    for _ in range(4):
+        now[0] += 8 * 86400
+        cache._sweep()
+        assert loaded.workdir.is_dir()
+        assert marker.stat().st_mtime == now[0]
+
+
+def test_marker_touch_failure_does_not_fail_load(artifact_store, cache_dir, monkeypatch, caplog):
+    """A read-only marker must not make a valid bundle unloadable."""
+    _store_bundle(artifact_store, "agent/v1")
+    original = agent_cache_module.os.utime
+
+    def fail_marker(path, *args, **kwargs):
+        if str(path).endswith(".last_used"):
+            raise OSError("read-only")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(agent_cache_module.os, "utime", fail_marker)
+    cache = AgentCache(artifact_store, cache_dir)
+    assert cache.load("agent", "agent/v1").spec.name == "test-agent"
+    assert cache.load("agent", "agent/v1").spec.name == "test-agent"
+    assert caplog.text.count("Could not touch agent cache marker") == 1
+
+
+def test_cleanup_does_not_block_warm_or_cold_load(artifact_store, cache_dir, monkeypatch):
+    """A stalled deletion must not hold a lock needed by either load path."""
+    now = [1000.0]
+    cache = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=10,
+        current_location=lambda _: None,
+    )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    for location in ("old/v1", "warm/v1", "cold/v1"):
+        _store_bundle(artifact_store, location)
+    old = cache.load("old", "old/v1")
+    cache.load("warm", "warm/v1")
+    del old
+    cache.evict("old")
+    now[0] += 11
+    started, release = threading.Event(), threading.Event()
+    real_rmtree = agent_cache_module.shutil.rmtree
+
+    def pause_trash(path, *args, **kwargs):
+        if Path(path).parent.name == ".trash":
+            started.set()
+            release.wait()
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(agent_cache_module.shutil, "rmtree", pause_trash)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        sweep = pool.submit(cache._sweep)
+        started.wait()
+        try:
+            assert cache.load("warm", "warm/v1").workdir.is_dir()
+            assert cache.load("cold", "cold/v1").workdir.is_dir()
+        finally:
+            release.set()
+        sweep.result()

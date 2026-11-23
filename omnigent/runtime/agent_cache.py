@@ -211,6 +211,7 @@ class AgentCache:
 
         def protected_paths() -> set[Path]:
             entries = []
+            inaccessible = set()
             try:
                 for path in parent.iterdir():
                     try:
@@ -223,6 +224,7 @@ class AgentCache:
                     except FileNotFoundError:
                         continue
                     except OSError:
+                        inaccessible.add(path)
                         _logger.exception("Could not inspect agent cache version %s", path)
             except FileNotFoundError:
                 return set()
@@ -241,9 +243,16 @@ class AgentCache:
                 if current != set()
                 else set()
             )
+            protected.update(inaccessible)
             if current is not None:
                 protected.update(
-                    path for _, path in entries if _published_location(path) in current
+                    path
+                    for _, path in entries
+                    if path.name.partition(".")[0]
+                    in {
+                        hashlib.sha256(location.encode("utf-8")).hexdigest()
+                        for location in current
+                    }
                 )
             elif entries:
                 protected.add(entries[0][1])
@@ -315,7 +324,9 @@ class AgentCache:
     def _candidate_protected(
         self, entry: Path, destination: Path, current: set[str] | None
     ) -> bool:
-        if current is not None and _published_location(destination) in current:
+        if current is not None and entry.name.partition(".")[0] in {
+            hashlib.sha256(location.encode("utf-8")).hexdigest() for location in current
+        }:
             return True
         if current == set():
             return False
@@ -333,7 +344,7 @@ class AgentCache:
                 (published(path), path.name) > (candidate_time, entry.name) for path in siblings
             )
             return newer < max(self._retained_versions, 1 if current is None else 0)
-        except FileNotFoundError:
+        except OSError:
             return True
 
     def _schedule_sweep(self) -> None:
@@ -366,6 +377,7 @@ class AgentCache:
         cache_ref: weakref.ReferenceType[AgentCache],
         *,
         waiter: Callable[[float], bool] = threading.Event().wait,
+        snapshot_hook: Callable[[], None] = lambda: None,
     ) -> None:
         cache = cache_ref()
         if cache is None:
@@ -385,21 +397,24 @@ class AgentCache:
                             roots = list(_heartbeat_roots.items())
                         with _holds_lock:
                             held = [hold.workdir for hold in _holds]
+                        snapshot_hook()
                         for cache_root, (refs, clock) in roots:
                             paths = [path for path in held if path.parent.parent == cache_root]
                             with _heartbeat_lock:
-                                if _heartbeat_roots.get(cache_root) is not None:
-                                    refs.difference_update(
-                                        ref for ref in list(refs) if ref() is None
-                                    )
+                                registration = _heartbeat_roots.get(cache_root)
+                                if registration is None:
+                                    continue
+                                refs = registration[0]
+                                refs.difference_update(ref for ref in list(refs) if ref() is None)
+                                with _holds_lock:
+                                    paths = [
+                                        hold.workdir
+                                        for hold in _holds
+                                        if hold.workdir.parent.parent == cache_root
+                                    ]
                                     if not refs and not paths:
                                         _heartbeat_roots.pop(cache_root, None)
                                         continue
-                            for ref in list(refs):
-                                instance = ref()
-                                if instance is not None:
-                                    instance._prune_touches(held)
-                            instance = None
                             for workdir in paths:
                                 try:
                                     marker = AgentCache._marker(workdir)
@@ -408,6 +423,14 @@ class AgentCache:
                                     os.utime(marker, (now, now))
                                 except Exception:
                                     _logger.exception("Could not refresh agent cache heartbeat")
+                            for ref in list(refs):
+                                instance = ref()
+                                if instance is not None:
+                                    try:
+                                        instance._prune_touches(held)
+                                    except Exception:
+                                        _logger.exception("Could not prune agent cache touches")
+                            instance = None
                     except Exception:
                         _logger.exception("Could not refresh agent cache heartbeat")
                     if waiter(_TOUCH_INTERVAL):
@@ -443,13 +466,19 @@ class AgentCache:
     def _prune_touches(self, held: list[Path]) -> None:
         held_paths = set(held)
         for path in list(self._last_touches):
-            if path not in held_paths and not path.exists():
-                self._last_touches.pop(path, None)
+            try:
+                if path not in held_paths and not path.exists():
+                    self._last_touches.pop(path, None)
+            except Exception:
+                _logger.exception("Could not inspect agent cache touch %s", path)
 
     def _sweep(self) -> None:
         with _holds_lock:
             held = [hold.workdir for hold in _holds]
-        self._prune_touches(held)
+        try:
+            self._prune_touches(held)
+        except Exception:
+            _logger.exception("Could not prune agent cache touches")
         root = self._cache_dir.resolve(strict=False) / ".versions"
         try:
             if not stat.S_ISDIR(root.lstat().st_mode) or root.resolve(strict=False) != root:
@@ -460,10 +489,8 @@ class AgentCache:
             _logger.exception("Could not inspect agent cache root %s", root)
             return
         trash = root / ".trash"
-        if not self._safe_trash(trash):
-            return
         try:
-            trash_entries = list(trash.iterdir())
+            trash_entries = list(trash.iterdir()) if self._safe_trash(trash) else []
         except OSError:
             _logger.exception("Could not list agent cache trash %s", trash)
             trash_entries = []
@@ -490,8 +517,20 @@ class AgentCache:
             _logger.exception("Could not list agent cache root %s", root)
             return
         for parent in parents:
-            if parent.is_dir() and not parent.is_symlink() and not parent.name.startswith("."):
-                for marker in parent.glob("*.last_used"):
+            try:
+                is_agent = (
+                    parent.is_dir() and not parent.is_symlink() and not parent.name.startswith(".")
+                )
+            except OSError:
+                _logger.exception("Could not inspect agent cache directory %s", parent)
+                continue
+            if is_agent:
+                try:
+                    markers = list(parent.glob("*.last_used"))
+                except OSError:
+                    _logger.exception("Could not list agent cache markers %s", parent)
+                    markers = []
+                for marker in markers:
                     try:
                         version = marker.with_name(marker.name.removesuffix(".last_used"))
                         if (
@@ -505,7 +544,7 @@ class AgentCache:
                         _logger.exception("Could not remove agent cache marker %s", marker)
                 try:
                     self._collect(parent.name)
-                except OSError:
+                except Exception:
                     _logger.exception("Could not sweep agent cache directory %s", parent)
 
     def load(

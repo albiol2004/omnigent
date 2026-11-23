@@ -2012,3 +2012,123 @@ def test_shared_root_heartbeat_survives_other_cache_dying(artifact_store, cache_
     targets[0]()
     assert second._marker(loaded.workdir).stat().st_mtime == now[0] - 3600
     assert second.load("agent", "agent/v1").workdir == loaded.workdir
+
+
+def test_unreadable_current_markers_preserve_original_and_repair(
+    artifact_store, cache_dir, monkeypatch
+):
+    """Unreadable markers must not let collection delete either current directory."""
+    now = [1000.0]
+    cache = AgentCache(
+        artifact_store, cache_dir, clock=lambda: now[0], current_location=lambda _: {"agent/0"}
+    )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    _store_bundle(artifact_store, "agent/0")
+    original = cache.load("agent", "agent/0").workdir
+    (original / agent_cache_module._LOCATION_MARKER).write_bytes(b"\xff")
+    repaired = cache.load("agent", "agent/0").workdir
+    (repaired / agent_cache_module._LOCATION_MARKER).write_bytes(b"\xff")
+    for index in range(1, 5):
+        now[0] += 1
+        location = f"agent/{index}"
+        _store_bundle(artifact_store, location)
+        cache.load("agent", location)
+    cache.evict("agent")
+    now[0] += 8 * 86400
+    cache._sweep()
+    assert original.exists() and repaired.exists()
+
+
+def test_metadata_error_does_not_stop_heartbeat_or_sweep(artifact_store, cache_dir, monkeypatch):
+    """An inaccessible unheld version must not interrupt refresh or other cleanup."""
+    now = [1000.0]
+    cache = AgentCache(
+        artifact_store, cache_dir, clock=lambda: now[0], current_location=lambda _: set()
+    )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    for name in ("held", "bad", "collect"):
+        _store_bundle(artifact_store, f"{name}/v1")
+    held = cache.load("held", "held/v1")
+    bad = cache.load("bad", "bad/v1").workdir
+    collected = cache.load("collect", "collect/v1").workdir
+    cache.evict("bad")
+    cache.evict("collect")
+    trash = cache_dir / ".versions" / ".trash"
+    trash.mkdir(exist_ok=True)
+    stale = trash / "1-stale"
+    stale.mkdir()
+    original_exists = Path.exists
+
+    def exists(path):
+        if path == bad:
+            raise PermissionError("inaccessible")
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", exists)
+    monkeypatch.setattr(agent_cache_module._logger, "exception", lambda *args, **kwargs: None)
+    targets = []
+
+    class InlineThread:
+        def __init__(self, *, target, daemon):
+            targets.append(target)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(agent_cache_module, "_heartbeat_pid", None)
+    monkeypatch.setattr(agent_cache_module, "_heartbeat_roots", {})
+    monkeypatch.setattr(agent_cache_module.threading, "Thread", InlineThread)
+    ticks = [0]
+
+    def wait(_):
+        ticks[0] += 1
+        now[0] += 3600
+        return ticks[0] == 193
+
+    AgentCache._start_heartbeat(weakref.ref(cache), waiter=wait)
+    targets[0]()
+    assert cache._marker(held.workdir).stat().st_mtime == now[0] - 3600
+    cache._sweep()
+    assert not collected.exists() and not stale.exists()
+
+
+def test_heartbeat_keeps_root_when_hold_appears_after_snapshot(
+    artifact_store, cache_dir, monkeypatch
+):
+    """A new hold must prevent stale heartbeat snapshots from unregistering its root."""
+    now = [1000.0]
+    targets = []
+
+    class InlineThread:
+        def __init__(self, *, target, daemon):
+            targets.append(target)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(agent_cache_module, "_heartbeat_pid", None)
+    monkeypatch.setattr(agent_cache_module, "_heartbeat_roots", {})
+    monkeypatch.setattr(agent_cache_module.threading, "Thread", InlineThread)
+    first = [AgentCache(artifact_store, cache_dir, clock=lambda: now[0])]
+    second = AgentCache(artifact_store, cache_dir, clock=lambda: now[0])
+    monkeypatch.setattr(second, "_schedule_sweep", lambda: None)
+    _store_bundle(artifact_store, "agent/v1")
+    held = []
+
+    def snapshot_hook():
+        if not held:
+            held.append(second.load("agent", "agent/v1"))
+            first.clear()
+
+    ticks = [0]
+
+    def wait(_):
+        ticks[0] += 1
+        now[0] += 3600
+        return ticks[0] == 193
+
+    AgentCache._start_heartbeat(weakref.ref(first[0]), waiter=wait, snapshot_hook=snapshot_hook)
+    targets[0]()
+    root = cache_dir.resolve() / ".versions"
+    assert root in agent_cache_module._heartbeat_roots
+    assert second._marker(held[0].workdir).stat().st_mtime == now[0] - 3600

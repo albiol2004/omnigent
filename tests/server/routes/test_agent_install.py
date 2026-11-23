@@ -24,6 +24,7 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
 
 from omnigent.db.utils import builtin_agent_id, generate_agent_id, installed_agent_id
 from omnigent.entities import Agent
@@ -185,6 +186,69 @@ async def test_create_only_install_rejects_overwrite(client, agent_store):
     assert (after.bundle_location, after.version) == (before.bundle_location, before.version)
     config = await client.get(f"/v1/agents/{agent_id}/config", headers=ALICE)
     assert config.headers["etag"] == first.headers["etag"]
+
+
+async def test_create_only_existing_agent_does_not_write_artifact(
+    client, agent_store, artifact_store, monkeypatch
+):
+    # Catch a rejected upload failing or altering the existing artifact before the conflict check.
+    first = await _install(client, ALICE, "orion")
+    agent_id = first.json()["id"]
+    before = agent_store.get(agent_id)
+    archive = artifact_store.get(before.bundle_location)
+    calls = []
+
+    def failing_put(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise OSError("artifact store unavailable")
+
+    monkeypatch.setattr(artifact_store, "put", failing_put)
+    result = await _install(client, {**ALICE, "If-None-Match": "*"}, "orion", "different")
+    assert result.status_code == 412
+    assert not calls
+    assert agent_store.get(agent_id) == before
+    assert artifact_store.get(before.bundle_location) == archive
+
+
+async def test_create_only_unrecognized_duplicate_error_returns_412(
+    client, agent_store, monkeypatch
+):
+    # Catch a concurrent insert returning 500 when its backend uses an unknown error message.
+    original = agent_store.create_user_agent
+
+    def insert_then_raise(*args, **kwargs):
+        original(*args, **kwargs)
+        raise IntegrityError(None, None, Exception("unrecognized constraint violation"))
+
+    monkeypatch.setattr(agent_store, "create_user_agent", insert_then_raise)
+    result = await _install(client, {**ALICE, "If-None-Match": "*"}, "orion")
+    assert result.status_code == 412
+    assert agent_store.get(installed_agent_id("alice@example.com", "orion")) is not None
+
+
+async def test_create_only_duplicate_deleted_before_lookup_returns_412(
+    client, agent_store, monkeypatch
+):
+    # Catch a duplicate insert becoming a 500 when the winning row is immediately deleted.
+    original = agent_store.create_user_agent
+
+    def insert_then_conflict_and_delete(*args, **kwargs):
+        original(*args, **kwargs)
+        try:
+            return original(*args, **kwargs)
+        finally:
+            agent_store.delete(args[0])
+
+    monkeypatch.setattr(agent_store, "create_user_agent", insert_then_conflict_and_delete)
+    result = await _install(client, {**ALICE, "If-None-Match": "*"}, "orion")
+    assert result.status_code == 412
+    assert agent_store.get(installed_agent_id("alice@example.com", "orion")) is None
+
+
+async def test_create_only_accepts_trailing_header_whitespace(client):
+    # Catch parser-dependent rejection of optional whitespace after the wildcard.
+    result = await _install(client, {**ALICE, "If-None-Match": "* "}, "orion")
+    assert result.status_code == 200
 
 
 @pytest.mark.parametrize("values", [['"abc"'], ['W/"x"'], ["*, *"], ["*", "*"]])

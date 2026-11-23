@@ -302,12 +302,25 @@ def _install_user_agent_if_absent(
             code=ErrorCode.CONFLICT,
         )
     agent_id = installed_agent_id(owner, name)
+    if agent_store.get(agent_id) is not None:
+        return None
     location = content_bundle_location(agent_id, bundle_bytes)
+    # A concurrent loser can still write an artifact before the atomic insert fails.
     artifact_store.put(location, bundle_bytes)
     try:
         return agent_store.create_user_agent(agent_id, name, location, owner=owner)
-    except IntegrityError:
-        if agent_store.get(agent_id) is None:
+    except IntegrityError as exc:
+        # A winning row may already have been deleted; identify its PK violation directly.
+        message = str(exc.orig).lower()
+        duplicate = (
+            "pk_agents" in message
+            or "agents_pkey" in message
+            or ("unique" in message and "agents.id" in message)
+            or ("duplicate entry" in message and "for key 'primary'" in message)
+            or ("duplicate entry" in message and "for key 'agents.primary'" in message)
+            or agent_store.get(agent_id) is not None
+        )
+        if not duplicate:
             raise
         return None
 
@@ -665,7 +678,11 @@ def create_builtin_agents_router(
         if not _valid_if_match(request):
             return _config_error(400, "invalid_input", "Supply one strong configuration ETag")
         none_match_values = request.headers.getlist("if-none-match")
-        if none_match_values and (none_match_values != ["*"] or if_match is not None):
+        if none_match_values and (
+            len(none_match_values) != 1
+            or none_match_values[0].strip(" \t") != "*"
+            or if_match is not None
+        ):
             return _config_error(400, "invalid_input", "Supply If-None-Match: * alone")
         if if_match is not None and not agent_store.supports_config_edit:
             raise HTTPException(status_code=501, detail="Agent configuration editing unavailable")

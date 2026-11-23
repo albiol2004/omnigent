@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from starlette.datastructures import UploadFile
 from starlette.types import Message
 
@@ -296,20 +296,25 @@ def _install_user_agent_if_absent(
     name: str,
     bundle_bytes: bytes,
 ) -> Agent | None:
+    agent_id = installed_agent_id(owner, name)
+    if agent_store.get(agent_id) is not None:
+        return None
     if agent_store.get_by_name(name) is not None:
         raise OmnigentError(
             f"{name!r} is a server agent; rename your agent to install it.",
             code=ErrorCode.CONFLICT,
         )
-    agent_id = installed_agent_id(owner, name)
-    if agent_store.get(agent_id) is not None:
-        return None
     location = content_bundle_location(agent_id, bundle_bytes)
-    # A concurrent loser can still write an artifact before the atomic insert fails.
-    artifact_store.put(location, bundle_bytes)
+    # A racing loser may leave an orphan blob or rewrite equivalent bytes at the same key.
+    try:
+        artifact_store.put(location, bundle_bytes)
+    except Exception:
+        if agent_store.get(agent_id) is not None:
+            return None
+        raise
     try:
         return agent_store.create_user_agent(agent_id, name, location, owner=owner)
-    except IntegrityError as exc:
+    except DBAPIError as exc:
         # A winning row may already have been deleted; identify its PK violation directly.
         message = str(exc.orig).lower()
         duplicate = (

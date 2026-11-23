@@ -24,7 +24,7 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from omnigent.db.utils import builtin_agent_id, generate_agent_id, installed_agent_id
 from omnigent.entities import Agent
@@ -224,6 +224,57 @@ async def test_create_only_unrecognized_duplicate_error_returns_412(
     result = await _install(client, {**ALICE, "If-None-Match": "*"}, "orion")
     assert result.status_code == 412
     assert agent_store.get(installed_agent_id("alice@example.com", "orion")) is not None
+
+
+async def test_create_only_operational_error_with_winner_returns_412(
+    client, agent_store, monkeypatch
+):
+    # Catch D1 reporting a concurrent duplicate as an OperationalError.
+    original = agent_store.create_user_agent
+
+    def insert_then_raise(*args, **kwargs):
+        original(*args, **kwargs)
+        raise OperationalError(None, None, Exception("unknown backend error"))
+
+    monkeypatch.setattr(agent_store, "create_user_agent", insert_then_raise)
+    result = await _install(client, {**ALICE, "If-None-Match": "*"}, "orion")
+    assert result.status_code == 412
+    assert agent_store.get(installed_agent_id("alice@example.com", "orion")) is not None
+
+
+async def test_create_only_artifact_failure_with_winner_returns_412(
+    client, agent_store, artifact_store, monkeypatch
+):
+    # Catch an artifact failure masking a concurrent successful insert.
+    def insert_then_fail(location, bundle):
+        agent_store.create_user_agent(
+            installed_agent_id("alice@example.com", "orion"),
+            "orion",
+            location,
+            owner="alice@example.com",
+        )
+        raise OSError("artifact store unavailable")
+
+    monkeypatch.setattr(artifact_store, "put", insert_then_fail)
+    result = await _install(client, {**ALICE, "If-None-Match": "*"}, "orion")
+    assert result.status_code == 412
+
+
+async def test_create_only_existing_user_takes_precedence_over_server_name(client, agent_store):
+    # Catch a later server registration masking an existing user row with a 409.
+    first = await _install(client, ALICE, "shadowed")
+    before = agent_store.get(first.json()["id"])
+    agent_store.create(generate_agent_id(), "shadowed", "test:///shadowed")
+    result = await _install(client, {**ALICE, "If-None-Match": "*"}, "shadowed", "changed")
+    assert result.status_code == 412
+    assert agent_store.get(before.id) == before
+
+
+async def test_create_only_server_name_without_user_remains_reserved(client, agent_store):
+    # Catch create-only accepting a server name when no user row exists.
+    agent_store.create(generate_agent_id(), "reserved", "test:///reserved")
+    result = await _install(client, {**ALICE, "If-None-Match": "*"}, "reserved")
+    assert result.status_code == 409
 
 
 async def test_create_only_duplicate_deleted_before_lookup_returns_412(

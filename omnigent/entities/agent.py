@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from omnigent.spec import AgentSpec
@@ -69,3 +69,4 @@ class LoadedAgent:
 
     spec: AgentSpec
     workdir: Path
+    _lease: object | None = field(default=None, repr=False, compare=False)

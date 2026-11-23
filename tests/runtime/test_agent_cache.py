@@ -1071,8 +1071,12 @@ def test_gc_does_not_delete_versions_held_by_another_cache(
     now[0] += 20
     collector.replace("agent", "agent/new", _store_bundle(artifact_store, "agent/new"))
     assert old.workdir.exists()
+    old_path = old.workdir
     holder.evict("agent")
-    assert not old.workdir.exists()
+    assert old_path.exists()
+    del old
+    holder.evict("agent")
+    assert not old_path.exists()
 
 
 def test_warm_load_does_not_wait_for_another_version_repair(
@@ -1119,10 +1123,12 @@ def test_sweep_removes_deleted_agent_but_preserves_other_process_lease(
         _store_bundle(artifact_store, location)
     deleted = cache.load("deleted", "deleted/v1")
     held = holder.load("held", "held/v1")
+    deleted_path = deleted.workdir
+    del deleted
     cache.evict("deleted")
     now[0] += 101
     cache.replace("other", "other/v1", _store_bundle(artifact_store, "other/v1"))
-    assert not deleted.workdir.parent.exists()
+    assert not deleted_path.parent.exists()
     assert held.workdir.exists()
 
 
@@ -1144,7 +1150,6 @@ def test_parse_failure_after_publication_releases_lease(
         with pytest.raises(ValueError, match="final parse failed"):
             cache.replace("agent", "agent/v1", bundle)
     assert ("agent", "agent/v1") not in cache._specs
-    assert ("agent", "agent/v1") not in cache._leases
     assert cache.load("agent", "agent/v1").spec.name == "test-agent"
 
 
@@ -1203,3 +1208,104 @@ def test_failed_publish_cleans_lease_and_sweep_removes_orphans(
     (parent / "orphan.lease").touch()
     cache.replace("other", "other/v1", _store_bundle(artifact_store, "other/v1"))
     assert not parent.exists()
+
+
+def test_unavailable_flock_does_not_break_cold_load(
+    artifact_store: LocalArtifactStore,
+    cache_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Unsupported filesystem locking must not crash a cold load."""
+    if agent_cache_module.fcntl is None:
+        pytest.skip("flock unavailable")
+    _store_bundle(artifact_store, "agent/v1")
+
+    def unsupported(*args):
+        raise OSError(errno.ENOLCK, "unsupported")
+
+    class UnsupportedFlock:
+        LOCK_EX = agent_cache_module.fcntl.LOCK_EX
+        LOCK_NB = agent_cache_module.fcntl.LOCK_NB
+        LOCK_SH = agent_cache_module.fcntl.LOCK_SH
+        flock = staticmethod(unsupported)
+
+    monkeypatch.setattr(agent_cache_module, "fcntl", UnsupportedFlock)
+    cache = AgentCache(artifact_store, cache_dir)
+    assert cache.load("agent", "agent/v1").spec.name == "test-agent"
+    assert caplog.text.count("leases unavailable") == 1
+
+
+def test_cold_load_sweeps_deleted_agent_after_ttl(
+    artifact_store: LocalArtifactStore,
+    cache_dir: Path,
+) -> None:
+    """Cold disk hits must sweep deleted agents even without a new publication."""
+    now = [1000.0]
+    cache = AgentCache(
+        artifact_store, cache_dir, clock=lambda: now[0], grace_age=10, sweep_ttl=100
+    )
+    for name in ("deleted", "other"):
+        _store_bundle(artifact_store, f"{name}/v1")
+        cache.load(name, f"{name}/v1")
+    deleted_path = cache.load("deleted", "deleted/v1").workdir
+    cache.evict("deleted")
+    cache.evict("other")
+    now[0] += 101
+    cache.load("other", "other/v1")
+    assert not deleted_path.exists()
+
+
+def test_concurrent_cold_loads_at_memory_cap_keep_returned_leases(
+    artifact_store: LocalArtifactStore,
+    cache_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent insertions at the cap must not evict a live result's lease."""
+    monkeypatch.setattr(agent_cache_module, "_MAX_MEMORY_VERSIONS", 1)
+    cache = AgentCache(artifact_store, cache_dir)
+    for name in ("first", "second", "third"):
+        _store_bundle(artifact_store, f"{name}/v1")
+    first = cache.load("first", "first/v1")
+    barrier = threading.Barrier(2)
+    original = cache._remember
+
+    def synchronized(key, entry):
+        barrier.wait()
+        original(key, entry)
+
+    monkeypatch.setattr(cache, "_remember", synchronized)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda name: cache.load(name, f"{name}/v1"), ("second", "third")))
+    cache.evict("first")
+    assert first.workdir.is_dir()
+    assert all(result.workdir.is_dir() for result in results)
+
+
+def test_warm_hit_keeps_spec_and_workdir_together_during_evict(
+    artifact_store: LocalArtifactStore,
+    cache_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Eviction during a warm hit must not substitute a different workdir."""
+    _store_bundle(artifact_store, "agent/v1")
+    cache = AgentCache(artifact_store, cache_dir)
+    original = cache.load("agent", "agent/v1")
+    sibling = original.workdir.with_name(original.workdir.name + ".sibling")
+    original.workdir.rename(sibling)
+    entry = agent_cache_module._Entry(original.spec, sibling, original._lease)
+    cache._specs[("agent", "agent/v1")] = entry
+    is_dir = Path.is_dir
+    evicted = False
+
+    def evict_during_check(path):
+        nonlocal evicted
+        if path == sibling and not evicted:
+            evicted = True
+            cache.evict("agent")
+        return is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", evict_during_check)
+    result = cache.load("agent", "agent/v1")
+    assert result.spec is original.spec
+    assert result.workdir == sibling

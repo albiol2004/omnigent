@@ -18,9 +18,8 @@ tails cursor's chat ``store.db`` — the SAME store the forwarder mirrors — fo
 4. if the pending call instead disappears on its own (the user answered in the
    embedded terminal), POST ``external_elicitation_resolved`` to clear the card.
 
-Detection lives in the transcript (keyed on the stable ``toolCallId``), NOT in
-pane scraping — which silently missed any prompt whose wording fell outside a
-regex. The pane is still used only to *deliver* the keystroke verdict. This does
+Detection uses the transcript (keyed on the stable ``toolCallId``), with a
+live pane hint corroborating shell gates. Other kinds use the settle window. This does
 NOT modify cursor's JS bundle and does NOT suppress cursor's native gate; the
 TUI prompt remains the source of truth and the benign fallback if store
 detection ever fails. Sessions launched with ``--yolo`` / ``--force`` / ``-f``
@@ -42,9 +41,13 @@ import functools
 import hashlib
 import json
 import logging
+import math
+import os
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import httpx
 
@@ -170,7 +173,7 @@ async def _run_one_approval(
     bridge_dir: Path,
     prompt: CursorApprovalPrompt,
     elicitation_id: str,
-) -> None:
+) -> bool:
     """Park one cursor approval prompt on the server and send the verdict key."""
     result = await _park_cursor_elicitation(
         client,
@@ -183,7 +186,7 @@ async def _run_one_approval(
         },
     )
     if result is None:
-        return
+        return False
     action = result.get("action")
     if action == "accept":
         await _send_cursor_keys(bridge_dir, session_id, prompt.accept_key)
@@ -196,6 +199,7 @@ async def _run_one_approval(
         # by hand). The settle pause before Enter (see _send_cursor_keys) gives
         # the reason prompt time to render first.
         await _send_cursor_keys(bridge_dir, session_id, prompt.decline_key, "Enter")
+    return action in {"accept", "decline", "cancel"}
 
 
 async def _run_one_question(
@@ -205,7 +209,7 @@ async def _run_one_question(
     bridge_dir: Path,
     call: CursorPendingToolCall,
     elicitation_id: str,
-) -> None:
+) -> bool:
     """Park one cursor ``AskQuestion`` on the server and drive the TUI picker.
 
     Renders as the structured multiple-choice form (not an approve/reject card)
@@ -228,14 +232,11 @@ async def _run_one_question(
         },
     )
     if result is None:
-        return
+        return False
     action = result.get("action")
     if action == "accept":
         content = result.get("content")
         keys = _askquestion_keystrokes(call.args, content if isinstance(content, dict) else {})
-        _logger.debug(
-            "cursor question accept; session=%s content=%r keys=%r", session_id, content, keys
-        )
         await _send_cursor_keys(bridge_dir, session_id, *keys)
     elif action in {"decline", "cancel"}:
         # The question picker's "Esc to skip" dismisses cleanly (no rejection-
@@ -245,6 +246,7 @@ async def _run_one_question(
         _logger.warning(
             "cursor question verdict: unexpected action=%r; session=%s", action, session_id
         )
+    return action in {"accept", "decline", "cancel"}
 
 
 async def _post_external_elicitation_resolved(
@@ -323,13 +325,26 @@ _SHELL_TOOL_NAMES = frozenset({"shell", "run", "runterminalcmd", "terminal", "ba
 # answered by driving the TUI picker rather than a single y/Escape keystroke.
 _QUESTION_TOOL_NAMES = frozenset({"askquestion"})
 
-# Short settle before surfacing a pending call. The auto-approve flash is now
-# excluded *structurally* (see read_cursor_pending_tool_calls: a committed call
-# appears without the marker), so this is only a small backstop for the sub-poll
-# race where cursor's marker frame is observed a tick before its committed frame.
-# Kept short so a genuinely-gated prompt that resolves quickly (e.g. an
-# Auto-review retry) still surfaces a card rather than being suppressed.
-_ELICITATION_SETTLE_S = 0.5
+# Pending checkpoint markers can precede a gate decision by several seconds.
+_ELICITATION_SETTLE_S = 4.0
+
+
+def _approval_settle_seconds() -> float:
+    """Read the runner override, falling back safely on invalid values."""
+    value = os.environ.get("OMNIGENT_CURSOR_APPROVAL_SETTLE_S", "")
+    if not value:
+        return _ELICITATION_SETTLE_S
+    try:
+        seconds = float(value)
+        if math.isfinite(seconds) and seconds >= 0:
+            return seconds
+    except ValueError:
+        pass
+    _logger.warning(
+        "Invalid OMNIGENT_CURSOR_APPROVAL_SETTLE_S; using %.1fs", _ELICITATION_SETTLE_S
+    )
+    return _ELICITATION_SETTLE_S
+
 
 # Give visible gates time to render and handle keystrokes under load. Pending
 # checkpoint markers alone do not mean that Cursor is awaiting approval.
@@ -775,16 +790,13 @@ async def _yolo_auto_accept(
             call.tool_call_id.splitlines()[0],
         )
         return _YoloAccept.SURFACE_CARD
-    # A call nobody ever sees needs its arguments in the record, or an operator
-    # has no way to tell an auto-approved ``ls`` from an auto-approved ``rm``.
     _logger.info(
         "cursor elicitation: auto-accepting %s under yolo (attempt %d); "
-        "session=%s tool_call_id=%s preview=%s",
+        "session=%s tool_call_id=%s",
         call.tool_name,
         retry.attempts + 1 if retry is not None else 1,
         session_id,
         call.tool_call_id.splitlines()[0],
-        _preview_for_args(call.args),
     )
     if not await _send_cursor_keys(bridge_dir, session_id, _TRANSCRIPT_ACCEPT_KEY):
         return _YoloAccept.SURFACE_CARD
@@ -829,8 +841,10 @@ async def supervise_cursor_transcript_elicitations(
     launch_epoch_ms: int,
     auth: httpx.Auth | None = None,
     poll_interval_s: float = _POLL_INTERVAL_S,
-    settle_s: float = _ELICITATION_SETTLE_S,
+    settle_s: float | None = None,
     auto_accept_approvals: bool = False,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> None:
     """Mirror cursor's gated tool calls to web elicitations via the chat store.
 
@@ -881,6 +895,9 @@ async def supervise_cursor_transcript_elicitations(
     next_auto_accept_at = 0.0
     store_path: Path | None = None
     loop = asyncio.get_running_loop()
+    clock = clock or loop.time
+    if settle_s is None:
+        settle_s = _approval_settle_seconds()
     timeout = httpx.Timeout(_POST_TIMEOUT_S, connect=10.0)
     from omnigent.cli_auth import open_server_client
 
@@ -911,13 +928,23 @@ async def supervise_cursor_transcript_elicitations(
                     else []
                 )
                 seen_ids = {call.tool_call_id for call in pending_calls}
-                now = loop.time()
+                now = clock()
                 # Surfaced calls whose pending entry vanished → answered in the
                 # TUI (or executed after approval): release the web card.
                 for tool_call_id in [tcid for tcid in active if tcid not in seen_ids]:
                     entry = active.pop(tool_call_id)
                     task = entry["task"]
                     if isinstance(task, asyncio.Task) and not task.done():
+                        entry["closed"] = True
+                        _logger.info(
+                            "cursor card cleared session=%s call_id=%r tool=%s elapsed_ms=%d "
+                            "corroboration=%s closed=marker_disappeared",
+                            session_id,
+                            tool_call_id,
+                            entry["tool"],
+                            int((now - cast(float, entry["first"])) * 1000),
+                            entry["source"],
+                        )
                         await _post_external_elicitation_resolved(
                             client, session_id, str(entry["elicitation_id"])
                         )
@@ -980,6 +1007,16 @@ async def supervise_cursor_transcript_elicitations(
                             )
                         if outcome is not _YoloAccept.SURFACE_CARD:
                             continue
+                    source = "settle-only"
+                    # The observed Cursor shell gate advertises its accept key in
+                    # the live pane. Other gate kinds lack a verified pane signature.
+                    if not auto_accept_approvals and call.tool_name.lower() in _SHELL_TOOL_NAMES:
+                        if len(pending_calls) != 1:
+                            continue
+                        pane = await asyncio.to_thread(capture_cursor_pane, bridge_dir)
+                        if not pane or not _pane_shows_accept_prompt(pane):
+                            continue
+                        source = "pane-accept-hint"
                     elicitation_id = cursor_tool_call_elicitation_id(session_id, call.tool_call_id)
                     _logger.debug(
                         "cursor elicitation: surfacing %s; session=%s tool_call_id=%s",
@@ -1004,10 +1041,49 @@ async def supervise_cursor_transcript_elicitations(
                             elicitation_id=elicitation_id,
                         )
                     task = asyncio.create_task(coro, name=f"cursor-approval-{elicitation_id}")
-                    active[call.tool_call_id] = {
+                    entry: dict[str, object] = {
                         "elicitation_id": elicitation_id,
                         "task": task,
+                        "tool": call.tool_name,
+                        "first": first,
+                        "source": source,
+                        "closed": False,
                     }
+                    active[call.tool_call_id] = entry
+                    _logger.info(
+                        "cursor card surfaced session=%s call_id=%r tool=%s elapsed_ms=%d "
+                        "corroboration=%s closed=none",
+                        session_id,
+                        call.tool_call_id,
+                        call.tool_name,
+                        int((now - first) * 1000),
+                        source,
+                    )
+
+                    def log_closed(
+                        done: asyncio.Task,
+                        *,
+                        card: dict[str, object] = entry,
+                        call_id: str = call.tool_call_id,
+                    ) -> None:
+                        if card["closed"]:
+                            return
+                        card["closed"] = True
+                        reason = "other"
+                        if not done.cancelled() and done.exception() is None and done.result():
+                            reason = "user_answer"
+                        _logger.info(
+                            "cursor card cleared session=%s call_id=%r tool=%s elapsed_ms=%d "
+                            "corroboration=%s closed=%s",
+                            session_id,
+                            call_id,
+                            card["tool"],
+                            int((clock() - cast(float, card["first"])) * 1000),
+                            card["source"],
+                            reason,
+                        )
+
+                    task.add_done_callback(log_closed)
                     auto_accept_available = False
                     first_seen.pop(call.tool_call_id, None)
             except asyncio.CancelledError:
@@ -1018,4 +1094,4 @@ async def supervise_cursor_transcript_elicitations(
                     session_id,
                     bridge_dir,
                 )
-            await asyncio.sleep(poll_interval_s)
+            await sleep(poll_interval_s)

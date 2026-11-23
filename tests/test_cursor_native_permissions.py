@@ -448,6 +448,7 @@ async def test_supervise_transcript_parks_call_in_cold_resumed_chat(
     )
     bridge_dir = tmp_path / "bridge"
     bridge_dir.mkdir()
+    monkeypatch.setattr(cnp, "capture_cursor_pane", lambda _bridge: _ACCEPT_PANE)
     assert cnf.preseed_resume_state(bridge_dir, workspace, "chat_resumed", launch_epoch_ms)
     # Recency-filtered discovery alone cannot see the resumed chat.
     assert cnf._discover_store(workspace, launch_epoch_ms) is None
@@ -1272,3 +1273,87 @@ async def test_supervise_transcript_follows_forwarder_bound_store(
     with contextlib.suppress(asyncio.CancelledError):
         await task
     assert read and set(read) == {mine}
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "pane", "frames", "answer", "expected_hooks", "expected_keys"),
+    [
+        ("Shell", _ACCEPT_PANE, [0.0, 3.9, 4.1], False, 0, []),
+        ("Shell", _IDLE_PANE, [0.0, 4.1, 5.0], False, 0, []),
+        ("Shell", _ACCEPT_PANE, [0.0, 4.1, 5.0], True, 1, [("y",)]),
+        ("AskQuestion", _IDLE_PANE, [0.0, 4.1, 5.0], False, 1, []),
+    ],
+    ids=[
+        "cleared-before-settle",
+        "shell-without-prompt",
+        "shell-prompt-answered",
+        "structured-question",
+    ],
+)
+async def test_supervisor_requires_settle_and_shell_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    tool_name: str,
+    pane: str,
+    frames: list[float],
+    answer: bool,
+    expected_hooks: int,
+    expected_keys: list[tuple[str, ...]],
+) -> None:
+    """A slow pending shell marker must not become a false approval card."""
+    pending = [CursorPendingToolCall("call_test", tool_name, _ASKQUESTION_ARGS)]
+    posts, keys = _install_supervisor_fakes(monkeypatch, tmp_path, pending=pending, pane=pane)
+    ticks = iter(frames)
+    now = [next(ticks)]
+    real_sleep = asyncio.sleep
+
+    class Client:
+        async def post(
+            self, url: str, json: dict | None = None, **_kwargs: object
+        ) -> httpx.Response:
+            posts.append((url, json or {}))
+            if answer:
+                return httpx.Response(200, json={"action": "accept"})
+            await asyncio.Event().wait()
+            return httpx.Response(200)
+
+    monkeypatch.setattr(cnp.httpx, "AsyncClient", lambda **_kwargs: _FakeAsyncCM(Client()))
+
+    async def advance(_seconds: float) -> None:
+        await real_sleep(0)
+        try:
+            now[0] = next(ticks)
+        except StopIteration:
+            raise asyncio.CancelledError from None
+        if frames[1] == 3.9 and now[0] == 4.1:
+            pending.clear()
+
+    with pytest.raises(asyncio.CancelledError):
+        await cnp.supervise_cursor_transcript_elicitations(
+            base_url="http://x",
+            headers={},
+            session_id="conv_test",
+            bridge_dir=tmp_path,
+            workspace="/ws",
+            launch_epoch_ms=0,
+            settle_s=4.0,
+            clock=lambda: now[0],
+            sleep=advance,
+        )
+    assert len(_hook_posts(posts)) == expected_hooks
+    assert keys == expected_keys
+    assert not any(payload.get("type") == "external_elicitation_resolved" for _, payload in posts)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [(None, 4.0), ("1.25", 1.25), ("-1", 4.0), ("nan", 4.0), ("bad", 4.0)]
+)
+def test_cursor_approval_settle_configuration(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: float
+) -> None:
+    """Invalid overrides cannot silently disable the approval settle window."""
+    if value is None:
+        monkeypatch.delenv("OMNIGENT_CURSOR_APPROVAL_SETTLE_S", raising=False)
+    else:
+        monkeypatch.setenv("OMNIGENT_CURSOR_APPROVAL_SETTLE_S", value)
+    assert cnp._approval_settle_seconds() == expected

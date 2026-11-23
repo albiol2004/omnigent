@@ -11200,6 +11200,24 @@
               "description": "One strong configuration ETag; wildcard is unsupported.",
               "title": "If-Match"
             }
+          },
+          {
+            "description": "Use * to create only when the agent does not exist.",
+            "in": "header",
+            "name": "if-none-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Use * to create only when the agent does not exist.",
+              "title": "If-None-Match"
+            }
           }
         ],
         "responses": {
@@ -11228,7 +11246,7 @@
                 }
               }
             },
-            "description": "Invalid If-Match header"
+            "description": "Invalid or conflicting If-Match or If-None-Match header"
           },
           "412": {
             "content": {
@@ -11238,7 +11256,7 @@
                 }
               }
             },
-            "description": "Agent changed; reload before saving"
+            "description": "If-Match or If-None-Match precondition failed"
           },
           "422": {
             "content": {

@@ -288,6 +288,30 @@ def _install_user_agent_if_match(
     return updated
 
 
+def _install_user_agent_if_absent(
+    agent_store: AgentStore,
+    artifact_store: ArtifactStore,
+    *,
+    owner: str | None,
+    name: str,
+    bundle_bytes: bytes,
+) -> Agent | None:
+    if agent_store.get_by_name(name) is not None:
+        raise OmnigentError(
+            f"{name!r} is a server agent; rename your agent to install it.",
+            code=ErrorCode.CONFLICT,
+        )
+    agent_id = installed_agent_id(owner, name)
+    location = content_bundle_location(agent_id, bundle_bytes)
+    artifact_store.put(location, bundle_bytes)
+    try:
+        return agent_store.create_user_agent(agent_id, name, location, owner=owner)
+    except IntegrityError:
+        if agent_store.get(agent_id) is None:
+            raise
+        return None
+
+
 def install_user_agent(
     agent_store: AgentStore,
     artifact_store: ArtifactStore,
@@ -594,8 +618,14 @@ def create_builtin_agents_router(
         dependencies=[Depends(require_trusted_origin)],
         responses={
             200: {"headers": {"ETag": {"schema": {"type": "string"}}}},
-            400: {"model": ErrorResponse, "description": "Invalid If-Match header"},
-            412: {"model": ErrorResponse, "description": "Agent changed; reload before saving"},
+            400: {
+                "model": ErrorResponse,
+                "description": "Invalid or conflicting If-Match or If-None-Match header",
+            },
+            412: {
+                "model": ErrorResponse,
+                "description": "If-Match or If-None-Match precondition failed",
+            },
             422: {
                 "description": "Missing multipart bundle",
                 "content": {
@@ -617,6 +647,9 @@ def create_builtin_agents_router(
         if_match: str | None = Header(
             default=None, description="One strong configuration ETag; wildcard is unsupported."
         ),
+        if_none_match: str | None = Header(
+            default=None, description="Use * to create only when the agent does not exist."
+        ),
     ) -> AgentObject | JSONResponse:
         """Install (or reinstall) the caller's user agent from a bundle.
 
@@ -631,6 +664,9 @@ def create_builtin_agents_router(
         require_user_agents()
         if not _valid_if_match(request):
             return _config_error(400, "invalid_input", "Supply one strong configuration ETag")
+        none_match_values = request.headers.getlist("if-none-match")
+        if none_match_values and (none_match_values != ["*"] or if_match is not None):
+            return _config_error(400, "invalid_input", "Supply If-None-Match: * alone")
         if if_match is not None and not agent_store.supports_config_edit:
             raise HTTPException(status_code=501, detail="Agent configuration editing unavailable")
         if artifact_store is None:
@@ -651,7 +687,16 @@ def create_builtin_agents_router(
         )
         if spec.name is None:  # validate_agent_bundle rejects this; narrows the type
             raise OmnigentError("agent spec has no name", code=ErrorCode.INVALID_INPUT)
-        if if_match is None:
+        if if_none_match is not None:
+            agent = await asyncio.to_thread(
+                _install_user_agent_if_absent,
+                agent_store,
+                artifact_store,
+                owner=user_id,
+                name=spec.name,
+                bundle_bytes=bundle_bytes,
+            )
+        elif if_match is None:
             agent = await asyncio.to_thread(
                 install_user_agent,
                 agent_store,
@@ -673,8 +718,13 @@ def create_builtin_agents_router(
                 expected_etag=if_match,
             )
         if agent is None:
-            return _config_error(412, "precondition_failed", "Agent changed; reload before saving")
-        if if_match is not None:
+            message = (
+                "Agent already exists; reload before saving"
+                if if_none_match is not None
+                else "Agent changed; reload before saving"
+            )
+            return _config_error(412, "precondition_failed", message)
+        if if_match is not None or if_none_match is not None:
             _config_headers(response, agent)
         # Loads (extracts) the just-written bundle; keep it off the event loop.
         return await asyncio.to_thread(_to_agent_object, agent, agent_cache)

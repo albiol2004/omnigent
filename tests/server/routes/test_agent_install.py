@@ -170,6 +170,85 @@ async def test_conditional_install_and_stale_tag(client):
     assert latest.headers["etag"] == after.headers["etag"] and latest.json() == after.json()
 
 
+async def test_create_only_install_rejects_overwrite(client, agent_store):
+    # Catch a create-only request overwriting an existing bundle or revision.
+    headers = {**ALICE, "If-None-Match": "*"}
+    first = await _install(client, headers, "orion", "v1")
+    assert first.status_code == 200
+    agent_id = first.json()["id"]
+    before = agent_store.get(agent_id)
+    assert first.headers["etag"]
+    second = await _install(client, headers, "orion", "v2")
+    assert second.status_code == 412
+    assert second.json()["error"]["code"] == "precondition_failed"
+    after = agent_store.get(agent_id)
+    assert (after.bundle_location, after.version) == (before.bundle_location, before.version)
+    config = await client.get(f"/v1/agents/{agent_id}/config", headers=ALICE)
+    assert config.headers["etag"] == first.headers["etag"]
+
+
+@pytest.mark.parametrize("values", [['"abc"'], ['W/"x"'], ["*, *"], ["*", "*"]])
+async def test_create_only_rejects_ambiguous_preconditions(client, values):
+    # Catch malformed and duplicate create-only headers being accepted.
+    headers = list(ALICE.items()) + [("If-None-Match", value) for value in values]
+    result = await client.post(
+        "/v1/agents",
+        headers=headers,
+        files={"bundle": ("bundle.tar.gz", build_agent_bundle("orion"), "application/gzip")},
+    )
+    assert result.status_code == 400
+    assert result.json()["error"]["code"] == "invalid_input"
+
+
+async def test_create_only_rejects_both_preconditions(client):
+    # Catch conflicting conditional headers being silently prioritized.
+    result = await _install(
+        client, {**ALICE, "If-Match": '"' + "a" * 64 + '"', "If-None-Match": "*"}, "orion"
+    )
+    assert result.status_code == 400
+    assert result.json()["error"]["code"] == "invalid_input"
+
+
+async def test_concurrent_create_only_preserves_winning_bundle(client, agent_store, monkeypatch):
+    # Catch concurrent create-only requests overwriting the winning insert.
+    barrier = threading.Barrier(2)
+    original = agent_store.create_user_agent
+    lock = threading.Lock()
+    calls = 0
+
+    def synchronized(*args, **kwargs):
+        nonlocal calls
+        with lock:
+            calls += 1
+        barrier.wait()
+        return original(*args, **kwargs)
+
+    async def upload(bundle):
+        try:
+            return await client.post(
+                "/v1/agents",
+                headers={**ALICE, "If-None-Match": "*"},
+                files={"bundle": ("bundle.tar.gz", bundle, "application/gzip")},
+            )
+        finally:
+            with lock:
+                if calls < 2:
+                    barrier.abort()
+
+    monkeypatch.setattr(agent_store, "create_user_agent", synchronized)
+    bundles = [
+        build_agent_bundle("orion", description=description) for description in ("v1", "v2")
+    ]
+    results = await asyncio.gather(*(upload(bundle) for bundle in bundles))
+    assert calls == 2
+    assert sorted(result.status_code for result in results) == [200, 412]
+    winner = next(index for index, result in enumerate(results) if result.status_code == 200)
+    agent = agent_store.get(installed_agent_id("alice@example.com", "orion"))
+    assert agent.bundle_location == content_bundle_location(agent.id, bundles[winner])
+    config = await client.get(f"/v1/agents/{agent.id}/config", headers=ALICE)
+    assert config.headers["etag"] == results[winner].headers["etag"]
+
+
 @pytest.mark.parametrize("method", ["conditional_post", "post", "patch"])
 async def test_committed_write_survives_cache_eviction_failure(client, monkeypatch, method):
     # Catch committed writes returning 500 when cache eviction races with a reader.

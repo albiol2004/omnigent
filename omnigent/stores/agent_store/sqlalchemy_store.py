@@ -197,6 +197,15 @@ class SqlAlchemyAgentStore(AgentStore):
             session_id = self._session_id_for_agent(agent_id)
         return sql_agent_to_entity(row, session_id=session_id)
 
+    def current_bundle_locations(self, agent_id: str) -> set[str]:
+        """Read every workspace's current location without conversation lookups."""
+        with self._session("select_current_bundle_locations") as session:
+            return set(
+                session.execute(
+                    select(SqlAgent.bundle_location).where(SqlAgent.id == agent_id)
+                ).scalars()
+            )
+
     def get_by_name(self, name: str) -> Agent | None:
         """
         Look up a registered template agent by its unique name.

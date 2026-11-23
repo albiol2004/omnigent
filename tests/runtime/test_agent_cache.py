@@ -7,9 +7,11 @@ import copy
 import errno
 import io
 import logging
+import os
 import pickle
 import tarfile
 import threading
+import weakref
 from pathlib import Path
 
 import pytest
@@ -970,7 +972,7 @@ def test_gc_keeps_recent_and_newest_versions_and_collects_old(
         grace_age=10,
         retained_versions=3,
         sweep_ttl=10,
-        current_location=lambda _: "agent/4",
+        current_location=lambda _: {"agent/4"},
     )
     paths = []
     for index in range(4):
@@ -1077,7 +1079,7 @@ def test_gc_does_not_delete_versions_held_by_another_cache(
         clock=lambda: now[0],
         grace_age=10,
         sweep_ttl=10,
-        current_location=lambda _: None,
+        current_location=lambda _: set(),
     )
     collector = AgentCache(
         artifact_store,
@@ -1086,7 +1088,7 @@ def test_gc_does_not_delete_versions_held_by_another_cache(
         grace_age=10,
         retained_versions=0,
         sweep_ttl=10,
-        current_location=lambda _: None,
+        current_location=lambda _: set(),
     )
     _store_bundle(artifact_store, "agent/old")
     old = holder.load("agent", "agent/old")
@@ -1145,7 +1147,7 @@ def test_sweep_removes_deleted_agent_but_preserves_other_process_lease(
         clock=lambda: now[0],
         grace_age=10,
         sweep_ttl=100,
-        current_location=lambda _: None,
+        current_location=lambda _: set(),
     )
     holder = AgentCache(
         artifact_store,
@@ -1153,7 +1155,7 @@ def test_sweep_removes_deleted_agent_but_preserves_other_process_lease(
         clock=lambda: now[0],
         grace_age=10,
         sweep_ttl=100,
-        current_location=lambda _: None,
+        current_location=lambda _: set(),
     )
     for location in ("deleted/v1", "held/v1"):
         _store_bundle(artifact_store, location)
@@ -1259,7 +1261,7 @@ def test_cold_load_sweeps_deleted_agent_after_ttl(
         clock=lambda: now[0],
         grace_age=10,
         sweep_ttl=100,
-        current_location=lambda _: None,
+        current_location=lambda _: set(),
     )
     for name in ("deleted", "other"):
         _store_bundle(artifact_store, f"{name}/v1")
@@ -1268,8 +1270,11 @@ def test_cold_load_sweeps_deleted_agent_after_ttl(
     cache.evict("deleted")
     cache.evict("other")
     now[0] += 101
+    if cache._sweep_thread:
+        cache._sweep_thread.join()
     cache.load("other", "other/v1")
-    cache._sweep()
+    assert cache._sweep_thread is not None
+    cache._sweep_thread.join()
     assert not deleted_path.exists()
 
 
@@ -1349,7 +1354,7 @@ def test_warm_traffic_schedules_sweep_after_idle_peer_releases(artifact_store, c
         clock=lambda: now[0],
         grace_age=10,
         sweep_ttl=100,
-        current_location=lambda _: None,
+        current_location=lambda _: set(),
     )
     cache = AgentCache(
         artifact_store,
@@ -1357,7 +1362,7 @@ def test_warm_traffic_schedules_sweep_after_idle_peer_releases(artifact_store, c
         clock=lambda: now[0],
         grace_age=10,
         sweep_ttl=100,
-        current_location=lambda _: None,
+        current_location=lambda _: set(),
     )
     for name in ("deleted", "warm"):
         _store_bundle(artifact_store, f"{name}/v1")
@@ -1381,13 +1386,13 @@ def test_warm_traffic_schedules_sweep_after_idle_peer_releases(artifact_store, c
 def test_marker_cleanup_respects_current_retention_and_deleted_agents(artifact_store, cache_dir):
     """Old versions must be collected without losing the current or newest versions."""
     now = [1000.0]
-    current = ["agent/0"]
+    current: list[str | None] = ["agent/0"]
     cache = AgentCache(
         artifact_store,
         cache_dir,
         clock=lambda: now[0],
         sweep_ttl=10,
-        current_location=lambda _: current[0],
+        current_location=lambda _: {current[0]} if current[0] is not None else set(),
     )
     paths = []
     for index in range(5):
@@ -1406,25 +1411,66 @@ def test_marker_cleanup_respects_current_retention_and_deleted_agents(artifact_s
     assert not any(path.exists() for path in paths)
 
 
-def test_held_version_heartbeat_prevents_collection_for_weeks(artifact_store, cache_dir):
-    """An idle live result must remain held and refresh its marker over time."""
+def test_held_version_heartbeat_prevents_collection_for_weeks(
+    artifact_store, cache_dir, monkeypatch
+):
+    """A blocked sweep and a collected cache must not stop held marker refreshes."""
     now = [1000.0]
+    callbacks = []
+
+    class FakeTimer:
+        def __init__(self, interval, callback):
+            self.callback = callback
+            self.daemon = False
+
+        def start(self):
+            callbacks.append(self.callback)
+
+    monkeypatch.setattr(agent_cache_module.threading, "Timer", FakeTimer)
+    started, release = threading.Event(), threading.Event()
+
+    def blocked_resolver(_):
+        started.set()
+        release.wait()
+        return set()
+
     cache = AgentCache(
         artifact_store,
         cache_dir,
         clock=lambda: now[0],
-        sweep_ttl=10,
-        current_location=lambda _: None,
+        sweep_ttl=7 * 86400,
+        current_location=blocked_resolver,
     )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
     _store_bundle(artifact_store, "agent/old")
     loaded = cache.load("agent", "agent/old")
     cache.evict("agent")
+    agent_cache_module.AgentCache._start_heartbeat(weakref.ref(cache))
     marker = loaded.workdir.with_name(loaded.workdir.name + ".last_used")
-    for _ in range(4):
-        now[0] += 8 * 86400
-        cache._sweep()
-        assert loaded.workdir.is_dir()
-        assert marker.stat().st_mtime == now[0]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        sweep = pool.submit(cache._sweep)
+        started.wait()
+        try:
+            for _ in range(8 * 24):
+                now[0] += 3600
+                callbacks.pop(0)()
+            assert marker.stat().st_mtime == now[0]
+        finally:
+            release.set()
+        sweep.result()
+    del cache
+    now[0] += 3600
+    callbacks.pop(0)()
+    assert marker.stat().st_mtime == now[0]
+    collector = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=7 * 86400,
+        current_location=lambda _: set(),
+    )
+    collector._sweep()
+    assert loaded.workdir.is_dir()
 
 
 def test_marker_touch_failure_does_not_fail_load(artifact_store, cache_dir, monkeypatch, caplog):
@@ -1452,7 +1498,7 @@ def test_cleanup_does_not_block_warm_or_cold_load(artifact_store, cache_dir, mon
         cache_dir,
         clock=lambda: now[0],
         sweep_ttl=10,
-        current_location=lambda _: None,
+        current_location=lambda _: set(),
     )
     monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
     for location in ("old/v1", "warm/v1", "cold/v1"):
@@ -1481,3 +1527,187 @@ def test_cleanup_does_not_block_warm_or_cold_load(artifact_store, cache_dir, mon
         finally:
             release.set()
         sweep.result()
+
+
+def test_collector_restores_version_touched_before_rename(artifact_store, cache_dir, monkeypatch):
+    """A cold load between selection and rename must not lose its workdir."""
+    now = [1000.0]
+    cache = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=10,
+        current_location=lambda _: set(),
+    )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    _store_bundle(artifact_store, "agent/v1")
+    path = cache.load("agent", "agent/v1").workdir
+    cache.evict("agent")
+    now[0] += 20
+    original = Path.rename
+    loaded = []
+
+    def load_before_rename(source, target):
+        if source == path and target.parent.name == ".trash":
+            loaded.append(cache.load("agent", "agent/v1"))
+        return original(source, target)
+
+    monkeypatch.setattr(Path, "rename", load_before_rename)
+    cache._sweep()
+    assert loaded and loaded[0].workdir.is_dir()
+
+
+def test_second_sweep_does_not_delete_pending_restore(artifact_store, cache_dir, monkeypatch):
+    """A concurrent sweep must not delete a version awaiting its restore check."""
+    now = [10000.0]
+    cache = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=10,
+        trash_grace=100,
+        current_location=lambda _: set(),
+    )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    _store_bundle(artifact_store, "agent/v1")
+    path = cache.load("agent", "agent/v1").workdir
+    cache.evict("agent")
+    now[0] += 20
+    trash = cache_dir / ".versions" / ".trash"
+    trash.mkdir(exist_ok=True)
+    old = trash / f"{int((now[0] - 101) * 1_000_000_000)}-old"
+    old.mkdir()
+    original = Path.rename
+
+    def sweep_after_rename(source, target):
+        result = original(source, target)
+        if source == path and target.parent == trash:
+            os.utime(cache._marker(path), (now[0], now[0]))
+            cache._sweep()
+            assert target.is_dir()
+            assert not old.exists()
+        return result
+
+    monkeypatch.setattr(Path, "rename", sweep_after_rename)
+    cache._sweep()
+    assert path.is_dir()
+
+
+def test_loader_republishes_version_while_in_trash(artifact_store, cache_dir, monkeypatch):
+    """A cold load during a trash rename must publish a usable version."""
+    now = [1000.0]
+    cache = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=10,
+        current_location=lambda _: set(),
+    )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    _store_bundle(artifact_store, "agent/v1")
+    path = cache.load("agent", "agent/v1").workdir
+    cache.evict("agent")
+    now[0] += 20
+    original = Path.rename
+    loaded = []
+
+    def load_after_rename(source, target):
+        result = original(source, target)
+        if source == path and target.parent.name == ".trash":
+            loaded.append(cache.load("agent", "agent/v1"))
+        return result
+
+    monkeypatch.setattr(Path, "rename", load_after_rename)
+    cache._sweep()
+    assert loaded and loaded[0].workdir.is_dir()
+
+
+def test_sweep_protects_current_location_in_another_workspace(
+    artifact_store, cache_dir, monkeypatch
+):
+    """A current location outside workspace zero must survive cleanup."""
+    now = [1000.0]
+    cache = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=10,
+        retained_versions=0,
+        current_location=lambda _: {"agent/other"},
+    )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    _store_bundle(artifact_store, "agent/other")
+    path = cache.load("agent", "agent/other").workdir
+    cache.evict("agent")
+    now[0] += 20
+    cache._sweep()
+    assert path.is_dir()
+
+
+def test_sweep_cleans_interrupted_trash_and_orphan_marker(artifact_store, cache_dir, monkeypatch):
+    """A crash after rename must not leave trash, marker, or an empty parent."""
+    now = [1000.0]
+    cache = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=10,
+        current_location=lambda _: set(),
+    )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    _store_bundle(artifact_store, "agent/v1")
+    path = cache.load("agent", "agent/v1").workdir
+    cache.evict("agent")
+    now[0] += 20
+    trash = cache_dir / ".versions" / ".trash"
+    trash.mkdir(exist_ok=True)
+    interrupted = trash / "interrupted"
+    path.rename(interrupted)
+    os.utime(interrupted, (now[0] - 3601, now[0] - 3601))
+    recent = trash / "unparseable"
+    recent.mkdir()
+    os.utime(recent, (now[0], now[0]))
+    cache._sweep()
+    assert recent.is_dir()
+    assert not (trash / "interrupted").exists()
+    assert not path.parent.exists()
+
+
+def test_loader_publishes_when_collector_restores_during_fetch(
+    artifact_store, cache_dir, monkeypatch
+):
+    """A restored directory must not make a cold publisher fail with ENOTEMPTY."""
+    now = [1000.0]
+    cache = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=10,
+        current_location=lambda _: set(),
+    )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    _store_bundle(artifact_store, "agent/v1")
+    path = cache.load("agent", "agent/v1").workdir
+    cache.evict("agent")
+    now[0] += 20
+    original_rename = Path.rename
+    original_get = artifact_store.get
+    loaded = []
+    trashed = []
+
+    def restore_during_fetch(location):
+        original_rename(trashed[0], path)
+        return original_get(location)
+
+    def load_after_rename(source, target):
+        result = original_rename(source, target)
+        if source == path and target.parent.name == ".trash":
+            trashed.append(target)
+            with monkeypatch.context() as patch:
+                patch.setattr(artifact_store, "get", restore_during_fetch)
+                loaded.append(cache.load("agent", "agent/v1"))
+        return result
+
+    monkeypatch.setattr(Path, "rename", load_after_rename)
+    cache._sweep()
+    assert loaded and loaded[0].workdir.is_dir()

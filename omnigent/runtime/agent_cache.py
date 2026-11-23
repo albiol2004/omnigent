@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import logging
 import os
@@ -106,7 +107,8 @@ class AgentCache:
         grace_age: float = 7 * 86400,
         retained_versions: int = 3,
         sweep_ttl: float = 7 * 86400,
-        current_location: Callable[[str], str | None] | None = None,
+        trash_grace: float = 3600,
+        current_location: Callable[[str], set[str]] | None = None,
     ) -> None:
         self._artifact_store = artifact_store
         self._cache_dir = cache_dir
@@ -116,6 +118,7 @@ class AgentCache:
         self._specs: dict[tuple[str, str], _Entry] = {}
         self._memory_lock = threading.Lock()
         self._sweep_ttl = sweep_ttl
+        self._trash_grace = trash_grace
         self._last_sweep = float("-inf")
         self._schedule_clock = time.monotonic if clock is time.time else clock
         self._sweep_thread: threading.Thread | None = None
@@ -189,55 +192,92 @@ class AgentCache:
 
     def _collect(self, agent_id: str) -> None:
         parent = self._cache_path(agent_id)
-        try:
+
+        def protected_paths() -> set[Path]:
             entries = []
-            for entry in parent.iterdir():
-                try:
-                    if not entry.is_symlink() and entry.is_dir():
-                        marker = entry / _LOCATION_MARKER
-                        published = (
-                            marker.stat().st_mtime if marker.exists() else entry.stat().st_mtime
-                        )
-                        entries.append((published, entry))
-                except FileNotFoundError:
-                    continue
-        except FileNotFoundError:
-            return
-        entries.sort(key=lambda item: (item[0], item[1].name), reverse=True)
-        unknown = object()
-        current: str | object | None = unknown
-        if self._current_location is not None:
             try:
-                current = self._current_location(agent_id)
-            except Exception:
-                _logger.exception("Could not resolve current agent cache location")
-        protected = (
-            {path for _, path in entries[: self._retained_versions]}
-            if current is not None
-            else set()
-        )
-        if current is unknown and entries:
-            protected.add(entries[0][1])
-        elif isinstance(current, str):
-            protected.update(path for _, path in entries if _published_location(path) == current)
-        with _holds_lock:
-            held = {hold.workdir for hold in _holds}
-        for _, entry in entries:
-            if entry in protected or entry in held:
-                continue
+                for path in parent.iterdir():
+                    try:
+                        if not path.is_symlink() and path.is_dir():
+                            marker = path / _LOCATION_MARKER
+                            published = (
+                                marker.stat().st_mtime if marker.exists() else path.stat().st_mtime
+                            )
+                            entries.append((published, path))
+                    except FileNotFoundError:
+                        continue
+            except FileNotFoundError:
+                return set()
+            entries.sort(key=lambda item: (item[0], item[1].name), reverse=True)
+            current = None
+            if self._current_location is not None:
+                try:
+                    current = self._current_location(agent_id)
+                except Exception:
+                    _logger.exception("Could not resolve current agent cache location")
+            protected = (
+                {path for _, path in entries[: self._retained_versions]}
+                if current != set()
+                else set()
+            )
+            if current is not None:
+                protected.update(
+                    path for _, path in entries if _published_location(path) in current
+                )
+            elif entries:
+                protected.add(entries[0][1])
+            return protected
+
+        def eligible(entry: Path, trashed: Path | None = None) -> bool:
+            with _holds_lock:
+                if any(hold.workdir == entry for hold in _holds):
+                    return False
             try:
                 marker = self._marker(entry)
-                try:
-                    last_used = marker.stat().st_mtime
-                except FileNotFoundError:
-                    last_used = entry.stat().st_mtime
-                if self._clock() - last_used <= self._sweep_ttl:
-                    continue
+                last_used = (
+                    marker.stat().st_mtime
+                    if marker.exists()
+                    else (trashed or entry).stat().st_mtime
+                )
+                return self._clock() - last_used > self._sweep_ttl
+            except FileNotFoundError:
+                return False
+
+        protected = protected_paths()
+        try:
+            candidates = list(parent.iterdir())
+        except FileNotFoundError:
+            return
+        for entry in candidates:
+            if (
+                entry in protected
+                or entry.is_symlink()
+                or not entry.is_dir()
+                or not eligible(entry)
+            ):
+                continue
+            try:
                 trash = self._cache_dir / ".versions" / ".trash"
                 trash.mkdir(parents=True, exist_ok=True)
-                destination = trash / uuid.uuid4().hex
+                destination = trash / f"{int(self._clock() * 1_000_000_000)}-{uuid.uuid4().hex}"
                 entry.rename(destination)
-                marker.unlink(missing_ok=True)
+                # A touch before this check is visible; a later loader sees the
+                # missing directory and republishes before returning it.
+                # A collector stalled beyond trash grace may lose the restore; a
+                # loader seeing the missing directory republishes the version.
+                # Rank the trashed candidate without exposing it to loaders.
+                if self._candidate_protected(agent_id, entry, destination) or not eligible(
+                    entry, destination
+                ):
+                    try:
+                        self._prepare_parent(agent_id)
+                        destination.rename(entry)
+                    except OSError as exc:
+                        if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+                            raise
+                        shutil.rmtree(destination)
+                    continue
+                self._marker(entry).unlink(missing_ok=True)
                 shutil.rmtree(destination)
             except FileNotFoundError:
                 continue
@@ -245,6 +285,33 @@ class AgentCache:
                 _logger.exception("Could not collect agent cache version %s", entry)
         with contextlib.suppress(OSError):
             parent.rmdir()
+
+    def _candidate_protected(self, agent_id: str, entry: Path, destination: Path) -> bool:
+        try:
+            current = self._current_location(agent_id) if self._current_location else None
+        except Exception:
+            _logger.exception("Could not resolve current agent cache location")
+            current = None
+        if current is not None and _published_location(destination) in current:
+            return True
+        if current == set():
+            return False
+        try:
+
+            def published(path: Path) -> float:
+                marker = path / _LOCATION_MARKER
+                return marker.stat().st_mtime if marker.exists() else path.stat().st_mtime
+
+            candidate_time = published(destination)
+            siblings = [
+                path for path in entry.parent.iterdir() if path.is_dir() and not path.is_symlink()
+            ]
+            newer = sum(
+                (published(path), path.name) > (candidate_time, entry.name) for path in siblings
+            )
+            return newer < max(self._retained_versions, 1 if current is None else 0)
+        except FileNotFoundError:
+            return True
 
     def _schedule_sweep(self) -> None:
         now = self._schedule_clock()
@@ -270,20 +337,33 @@ class AgentCache:
 
     @staticmethod
     def _start_heartbeat(cache_ref: weakref.ReferenceType[AgentCache]) -> None:
-        def heartbeat() -> None:
-            cache = cache_ref()
-            if cache is None:
-                return
-            cache._run_sweep()
-            try:
-                AgentCache._start_heartbeat(cache_ref)
-            except Exception:
-                cache._heartbeat_started = False
-                _logger.exception("Could not start agent cache heartbeat")
+        cache = cache_ref()
+        if cache is None:
+            return
+        root = cache._cache_dir.resolve(strict=False) / ".versions"
+        clock = cache._clock
 
-        timer = threading.Timer(_TOUCH_INTERVAL, heartbeat)
-        timer.daemon = True
-        timer.start()
+        def schedule() -> None:
+            timer = threading.Timer(_TOUCH_INTERVAL, heartbeat)
+            timer.daemon = True
+            timer.start()
+
+        def heartbeat() -> None:
+            with _holds_lock:
+                held = [hold.workdir for hold in _holds if hold.workdir.parent.parent == root]
+            if not held and cache_ref() is None:
+                return
+            schedule()
+            for workdir in held:
+                try:
+                    marker = AgentCache._marker(workdir)
+                    marker.touch(exist_ok=True)
+                    now = clock()
+                    os.utime(marker, (now, now))
+                except OSError:
+                    _logger.warning("Could not touch agent cache marker", exc_info=True)
+
+        schedule()
 
     def _run_sweep(self) -> None:
         try:
@@ -292,18 +372,39 @@ class AgentCache:
             _logger.exception("Agent cache sweep failed")
 
     def _sweep(self) -> None:
-        # Failed marker writes are non-fatal; a continuously unrefreshable hold
-        # can be removed by another process after the seven-day safety window.
-        with _holds_lock:
-            held = [hold.workdir for hold in _holds]
-        for workdir in held:
-            if workdir.parent.parent == self._cache_dir.resolve(strict=False) / ".versions":
-                self._touch(workdir)
         root = self._cache_dir / ".versions"
-        if root.is_dir():
-            for parent in root.iterdir():
-                if parent.is_dir() and not parent.is_symlink() and not parent.name.startswith("."):
-                    self._collect(parent.name)
+        if not root.is_dir():
+            return
+        trash = root / ".trash"
+        if trash.is_dir():
+            for entry in trash.iterdir():
+                try:
+                    timestamp, separator, suffix = entry.name.partition("-")
+                    if separator and suffix and timestamp.isascii() and timestamp.isdigit():
+                        renamed_at = int(timestamp) / 1_000_000_000
+                    else:
+                        renamed_at = entry.lstat().st_mtime
+                    if self._clock() - renamed_at <= self._trash_grace:
+                        continue
+                    if entry.is_dir() and not entry.is_symlink():
+                        shutil.rmtree(entry)
+                    else:
+                        entry.unlink(missing_ok=True)
+                except FileNotFoundError:
+                    pass
+        for parent in root.iterdir():
+            if parent.is_dir() and not parent.is_symlink() and not parent.name.startswith("."):
+                for marker in parent.glob("*.last_used"):
+                    try:
+                        version = marker.with_name(marker.name.removesuffix(".last_used"))
+                        if (
+                            not version.exists()
+                            and self._clock() - marker.stat().st_mtime > self._sweep_ttl
+                        ):
+                            marker.unlink(missing_ok=True)
+                    except FileNotFoundError:
+                        pass
+                self._collect(parent.name)
 
     def load(
         self, agent_id: str, bundle_location: str, *, expand_env: bool = False
@@ -313,9 +414,10 @@ class AgentCache:
         key = (agent_id, bundle_location)
         with self._memory_lock:
             cached = self._specs.get(key)
-        if cached is not None and cached.workdir.is_dir():
-            self._touch(cached.workdir)
-            return cached.loaded()
+        if cached is not None:
+            self._touch(cached.workdir, force=True)
+            if cached.workdir.is_dir() and _published_location(cached.workdir) == bundle_location:
+                return cached.loaded()
         return self._load_or_publish(agent_id, bundle_location, None, expand_env=expand_env)
 
     def replace(
@@ -388,6 +490,7 @@ class AgentCache:
             hold = None
             for candidate in candidates:
                 candidate_hold = _Hold(candidate)
+                self._touch(candidate, force=True)
                 try:
                     if _published_location(candidate) != bundle_location:
                         raise ValueError("bundle location marker mismatch")
@@ -437,11 +540,19 @@ class AgentCache:
                     os.utime(marker, (now, now))
                     self._prepare_parent(agent_id)
                     hold = _Hold(workdir)
-                    try:
-                        staging.rename(workdir)
-                    except FileNotFoundError:
-                        self._prepare_parent(agent_id)
-                        staging.rename(workdir)
+                    for attempt in range(3):
+                        try:
+                            self._prepare_parent(agent_id)
+                            staging.rename(workdir)
+                            break
+                        except FileNotFoundError:
+                            if attempt == 2:
+                                raise
+                        except OSError as exc:
+                            if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY) or attempt == 2:
+                                raise
+                            workdir = workdir.with_name(workdir.name + "." + uuid.uuid4().hex)
+                            hold = _Hold(workdir)
                     spec = load_spec(workdir, expand_env=expand_env, prune_invalid_sub_agents=True)
                     if rebuilding:
                         _logger.info(

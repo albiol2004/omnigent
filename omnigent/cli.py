@@ -4839,9 +4839,7 @@ def server(
     agent_cache = AgentCache(
         artifact_store=artifact_store,
         cache_dir=Path(art_loc) / ".cache",
-        current_location=lambda agent_id: (
-            agent.bundle_location if (agent := agent_store.get(agent_id)) is not None else None
-        ),
+        current_location=agent_store.current_bundle_locations,
     )
     # CLI flag > config file > RuntimeCaps default (7200s = 2 hours).
     # 7200 matches RuntimeCaps.execution_timeout default.

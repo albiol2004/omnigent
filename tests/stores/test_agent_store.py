@@ -925,3 +925,17 @@ def test_agent_updates_are_workspace_scoped(agent_store: SqlAlchemyAgentStore) -
     assert updated is not None and updated.version == 3
     with workspace_scope(42):
         assert agent_store.get(agent.id) == other
+
+
+def test_current_bundle_locations_includes_other_workspaces(
+    agent_store: SqlAlchemyAgentStore,
+) -> None:
+    """Cleanup must not mistake another workspace's agent for a deleted agent."""
+    agent_store.create("c0000000000000000000000000000001", "default", "default/bundle")
+    with workspace_scope(7):
+        agent_store.create("c0000000000000000000000000000001", "other", "other/bundle")
+    assert agent_store.current_bundle_locations("c0000000000000000000000000000001") == {
+        "default/bundle",
+        "other/bundle",
+    }
+    assert agent_store.current_bundle_locations("c0000000000000000000000000000002") == set()

@@ -110,6 +110,13 @@ class AgentStore(ABC):
         """
         ...
 
+    def current_bundle_locations(self, agent_id: str) -> set[str]:
+        """Return current bundle locations across all workspaces.
+
+        Unsupported stores raise so callers can retain versions conservatively.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def get_names(self, agent_ids: builtins.list[str]) -> dict[str, str]:
         """

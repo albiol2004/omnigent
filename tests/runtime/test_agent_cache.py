@@ -1738,10 +1738,10 @@ def test_heartbeat_start_failure_retries_on_next_load(artifact_store, cache_dir,
     assert loaded.workdir.exists()
 
 
-def test_sweep_resolves_current_location_at_most_twice_per_agent(
+def test_sweep_resolves_current_location_for_each_renamed_candidate(
     artifact_store, cache_dir, monkeypatch
 ):
-    """Collecting many versions must not resolve current location per version."""
+    """The resolver runs once for selection and once per renamed candidate."""
     now = [1000.0]
     calls = []
     cache = AgentCache(
@@ -1760,7 +1760,7 @@ def test_sweep_resolves_current_location_at_most_twice_per_agent(
     cache.evict("agent")
     now[0] += 20
     cache._sweep()
-    assert calls == ["agent", "agent"]
+    assert calls == ["agent"] * (1 + len(paths))
     assert all(not path.exists() for path in paths)
 
 
@@ -1856,8 +1856,10 @@ def test_sweep_continues_after_listing_error(artifact_store, cache_dir, monkeypa
     assert "blocked listing" in caplog.text
 
 
-def test_collected_versions_remove_touch_and_lock_metadata(artifact_store, cache_dir, monkeypatch):
-    """Collected versions must not leak timestamps or unlocked lock files."""
+def test_collected_versions_remove_touches_but_preserve_publish_locks(
+    artifact_store, cache_dir, monkeypatch
+):
+    """Collection must drop timestamps without touching publish locks."""
     now = [1000.0]
     cache = AgentCache(
         artifact_store,
@@ -1876,7 +1878,7 @@ def test_collected_versions_remove_touch_and_lock_metadata(artifact_store, cache
     now[0] += 20
     cache._sweep()
     assert all(path not in cache._last_touches for path in paths)
-    assert all(not Path(cache._lock("agent", path.name).lock_file).exists() for path in paths)
+    assert all(Path(cache._lock("agent", path.name).lock_file).exists() for path in paths)
 
 
 def test_heartbeat_uses_one_thread_for_multiple_caches(artifact_store, cache_dir, monkeypatch):
@@ -1898,3 +1900,115 @@ def test_heartbeat_uses_one_thread_for_multiple_caches(artifact_store, cache_dir
     AgentCache._start_heartbeat(weakref.ref(first))
     AgentCache._start_heartbeat(weakref.ref(second))
     assert len(starts) == 1
+
+
+def test_sweep_restores_candidate_that_becomes_current_during_deletion(
+    artifact_store, cache_dir, monkeypatch
+):
+    """Reinstalling a location during a sweep must preserve that version."""
+    now = [1000.0]
+    current = [set()]
+    cache = AgentCache(
+        artifact_store,
+        cache_dir,
+        clock=lambda: now[0],
+        sweep_ttl=10,
+        current_location=lambda _: current[0],
+    )
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    paths = []
+    for location in ("agent/first", "agent/second"):
+        _store_bundle(artifact_store, location)
+        paths.append(cache.load("agent", location).workdir)
+    cache.evict("agent")
+    now[0] += 20
+    original = agent_cache_module.shutil.rmtree
+
+    def reinstall_after_first(path, *args, **kwargs):
+        result = original(path, *args, **kwargs)
+        if Path(path).parent.name == ".trash":
+            remaining = next((p for p in paths if p.exists()), None)
+            if remaining is not None:
+                current[0] = {(remaining / agent_cache_module._LOCATION_MARKER).read_text()}
+        return result
+
+    monkeypatch.setattr(agent_cache_module.shutil, "rmtree", reinstall_after_first)
+    cache._sweep()
+    assert sum(path.exists() for path in paths) == 1
+    assert current[0] == {
+        (path / agent_cache_module._LOCATION_MARKER).read_text() for path in paths if path.exists()
+    }
+
+
+def test_invalid_utf8_warm_marker_republishes_sibling(artifact_store, cache_dir, monkeypatch):
+    """A damaged marker must not make a warmed agent unloadable."""
+    cache = AgentCache(artifact_store, cache_dir)
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    _store_bundle(artifact_store, "agent/v1")
+    old = cache.load("agent", "agent/v1")
+    marker = old.workdir / agent_cache_module._LOCATION_MARKER
+    marker.write_bytes(b"\xff")
+    repaired = cache.load("agent", "agent/v1")
+    assert repaired.spec.name == "test-agent"
+    assert repaired.workdir != old.workdir
+    assert marker.read_bytes() == b"\xff"
+    assert (repaired.workdir / agent_cache_module._LOCATION_MARKER).read_text() == "agent/v1"
+
+
+def test_sweep_drops_missing_unheld_touch_timestamps(artifact_store, cache_dir, monkeypatch):
+    """A peer's deletion must not leave stale touch timestamps indefinitely."""
+    cache = AgentCache(artifact_store, cache_dir)
+    monkeypatch.setattr(cache, "_schedule_sweep", lambda: None)
+    _store_bundle(artifact_store, "agent/v1")
+    path = cache.load("agent", "agent/v1").workdir
+    cache.evict("agent")
+    agent_cache_module.shutil.rmtree(path)
+    cache._sweep()
+    assert path not in cache._last_touches
+
+
+def test_shared_root_heartbeat_survives_other_cache_dying(artifact_store, cache_dir, monkeypatch):
+    """A dead cache must not unregister a live cache sharing its root."""
+    now = [1000.0]
+    targets = []
+
+    class InlineThread:
+        def __init__(self, *, target, daemon):
+            targets.append(target)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(agent_cache_module, "_heartbeat_pid", None)
+    monkeypatch.setattr(agent_cache_module, "_heartbeat_roots", {})
+    monkeypatch.setattr(agent_cache_module.threading, "Thread", InlineThread)
+    first = AgentCache(artifact_store, cache_dir, clock=lambda: now[0])
+    second = AgentCache(artifact_store, cache_dir, clock=lambda: now[0])
+    _store_bundle(artifact_store, "agent/v1")
+    monkeypatch.setattr(second, "_schedule_sweep", lambda: None)
+    loaded = second.load("agent", "agent/v1")
+    ticks = [0]
+
+    def wait(_):
+        ticks[0] += 1
+        if ticks[0] == 1:
+            root = cache_dir.resolve() / ".versions"
+            assert any(ref() is second for ref in agent_cache_module._heartbeat_roots[root][0])
+            agent_cache_module._heartbeat_roots.pop(root)
+            monkeypatch.setattr(
+                second, "_schedule_sweep", lambda: AgentCache._schedule_sweep(second)
+            )
+            second._last_sweep = now[0]
+            assert second.load("agent", "agent/v1").workdir == loaded.workdir
+            assert any(ref() is second for ref in agent_cache_module._heartbeat_roots[root][0])
+        now[0] += 3600
+        return ticks[0] >= 193
+
+    AgentCache._start_heartbeat(weakref.ref(second), waiter=wait)
+    first_ref = weakref.ref(first)
+    AgentCache._start_heartbeat(first_ref, waiter=wait)
+    del first
+    assert first_ref() is None
+    targets[0]()
+    assert second._marker(loaded.workdir).stat().st_mtime == now[0] - 3600
+    assert second.load("agent", "agent/v1").workdir == loaded.workdir

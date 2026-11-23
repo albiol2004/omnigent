@@ -24,7 +24,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from filelock import FileLock, Timeout
+from filelock import FileLock
 
 from omnigent.debug_logging import debug_event
 from omnigent.entities import LoadedAgent
@@ -42,7 +42,9 @@ _holds_lock = threading.Lock()
 _TOUCH_INTERVAL = 3600
 _heartbeat_lock = threading.Lock()
 _heartbeat_pid: int | None = None
-_heartbeat_roots: dict[Path, tuple[weakref.ReferenceType[AgentCache], Callable[[], float]]] = {}
+_heartbeat_roots: dict[
+    Path, tuple[set[weakref.ReferenceType[AgentCache]], Callable[[], float]]
+] = {}
 
 
 def _cleanup_staging_dir(path: Path) -> None:
@@ -58,7 +60,7 @@ def _published_location(workdir: Path) -> str | None:
     """Return the bundle location a cache directory holds, or ``None`` if unknown."""
     try:
         return (workdir / _LOCATION_MARKER).read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError):
         return None
 
 
@@ -135,7 +137,7 @@ class AgentCache:
         self._current_location = current_location
         self._last_touches: dict[Path, float] = {}
         self._touch_warned = False
-        self._heartbeat_started = False
+        self._heartbeat_ref: weakref.ReferenceType[AgentCache] = weakref.ref(self)
 
     def _cache_path(self, agent_id: str) -> Path:
         """Return a direct child of the cache root for an agent id."""
@@ -270,8 +272,6 @@ class AgentCache:
         except OSError:
             _logger.exception("Could not list agent cache directory %s", parent)
             return
-        current = None
-        rechecked = False
         for entry in candidates:
             try:
                 if (
@@ -286,14 +286,11 @@ class AgentCache:
                     return
                 destination = trash / f"{int(self._clock() * 1_000_000_000)}-{uuid.uuid4().hex}"
                 entry.rename(destination)
-                if not rechecked:
-                    rechecked = True
-                    try:
-                        current = (
-                            self._current_location(agent_id) if self._current_location else None
-                        )
-                    except Exception:
-                        _logger.exception("Could not resolve current agent cache location")
+                current = None
+                try:
+                    current = self._current_location(agent_id) if self._current_location else None
+                except Exception:
+                    _logger.exception("Could not resolve current agent cache location")
                 if self._candidate_protected(entry, destination, current) or not eligible(
                     entry, destination
                 ):
@@ -308,12 +305,6 @@ class AgentCache:
                 self._marker(entry).unlink(missing_ok=True)
                 shutil.rmtree(destination)
                 self._last_touches.pop(entry, None)
-                lock = self._lock(agent_id, entry.name)
-                try:
-                    with lock.acquire(timeout=0):
-                        Path(lock.lock_file).unlink(missing_ok=True)
-                except Timeout:
-                    pass
             except FileNotFoundError:
                 continue
             except OSError:
@@ -348,12 +339,14 @@ class AgentCache:
     def _schedule_sweep(self) -> None:
         now = self._schedule_clock()
         with self._memory_lock:
-            if not self._heartbeat_started:
-                self._heartbeat_started = True
+            root = self._cache_dir.resolve(strict=False) / ".versions"
+            with _heartbeat_lock:
+                registration = _heartbeat_roots.get(root)
+                registered = registration is not None and self._heartbeat_ref in registration[0]
+            if not registered:
                 try:
-                    self._start_heartbeat(weakref.ref(self))
+                    self._start_heartbeat(self._heartbeat_ref)
                 except Exception:
-                    self._heartbeat_started = False
                     _logger.exception("Could not start agent cache heartbeat")
             if now - self._last_sweep < min(_TOUCH_INTERVAL, self._grace_age / 4):
                 return
@@ -380,7 +373,8 @@ class AgentCache:
         root = cache._cache_dir.resolve(strict=False) / ".versions"
         global _heartbeat_pid
         with _heartbeat_lock:
-            _heartbeat_roots[root] = (cache_ref, cache._clock)
+            refs, _ = _heartbeat_roots.setdefault(root, (set(), cache._clock))
+            refs.add(cache_ref)
             if _heartbeat_pid == os.getpid():
                 return
 
@@ -391,13 +385,21 @@ class AgentCache:
                             roots = list(_heartbeat_roots.items())
                         with _holds_lock:
                             held = [hold.workdir for hold in _holds]
-                        for cache_root, (ref, clock) in roots:
+                        for cache_root, (refs, clock) in roots:
                             paths = [path for path in held if path.parent.parent == cache_root]
-                            if not paths and ref() is None:
-                                with _heartbeat_lock:
-                                    if _heartbeat_roots.get(cache_root) == (ref, clock):
+                            with _heartbeat_lock:
+                                if _heartbeat_roots.get(cache_root) is not None:
+                                    refs.difference_update(
+                                        ref for ref in list(refs) if ref() is None
+                                    )
+                                    if not refs and not paths:
                                         _heartbeat_roots.pop(cache_root, None)
-                                continue
+                                        continue
+                            for ref in list(refs):
+                                instance = ref()
+                                if instance is not None:
+                                    instance._prune_touches(held)
+                            instance = None
                             for workdir in paths:
                                 try:
                                     marker = AgentCache._marker(workdir)
@@ -411,7 +413,13 @@ class AgentCache:
                     if waiter(_TOUCH_INTERVAL):
                         return
 
-            threading.Thread(target=heartbeat, daemon=True).start()
+            try:
+                threading.Thread(target=heartbeat, daemon=True).start()
+            except Exception:
+                refs.discard(cache_ref)
+                if not refs:
+                    _heartbeat_roots.pop(root, None)
+                raise
             _heartbeat_pid = os.getpid()
 
     def _safe_trash(self, trash: Path) -> bool:
@@ -432,7 +440,16 @@ class AgentCache:
         except Exception:
             _logger.exception("Agent cache sweep failed")
 
+    def _prune_touches(self, held: list[Path]) -> None:
+        held_paths = set(held)
+        for path in list(self._last_touches):
+            if path not in held_paths and not path.exists():
+                self._last_touches.pop(path, None)
+
     def _sweep(self) -> None:
+        with _holds_lock:
+            held = [hold.workdir for hold in _holds]
+        self._prune_touches(held)
         root = self._cache_dir.resolve(strict=False) / ".versions"
         try:
             if not stat.S_ISDIR(root.lstat().st_mode) or root.resolve(strict=False) != root:
@@ -503,6 +520,9 @@ class AgentCache:
             self._touch(cached.workdir)
             if cached.workdir.is_dir() and _published_location(cached.workdir) == bundle_location:
                 return cached.loaded()
+            with self._memory_lock:
+                if self._specs.get(key) is cached:
+                    self._specs.pop(key, None)
         return self._load_or_publish(agent_id, bundle_location, None, expand_env=expand_env)
 
     def replace(

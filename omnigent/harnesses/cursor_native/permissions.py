@@ -18,8 +18,12 @@ tails cursor's chat ``store.db`` — the SAME store the forwarder mirrors — fo
 4. if the pending call instead disappears on its own (the user answered in the
    embedded terminal), POST ``external_elicitation_resolved`` to clear the card.
 
-Detection uses the transcript (keyed on the stable ``toolCallId``), with a
-live pane hint corroborating shell gates. Other kinds use the settle window. This does
+Detection uses the transcript (keyed on the stable ``toolCallId``), and a
+gated call surfaces only when the live pane shows Cursor's accept-key hint while
+exactly one gateable call is pending. A pending marker alone proves nothing (a
+tool call routinely stays pending far longer than the settle window while it
+simply runs), so there is no settle-only fallback; read-only tools never need
+approval and never surface. This does
 NOT modify cursor's JS bundle and does NOT suppress cursor's native gate; the
 TUI prompt remains the source of truth and the benign fallback if store
 detection ever fails. Sessions launched with ``--yolo`` / ``--force`` / ``-f``
@@ -320,6 +324,33 @@ _KEY_ENTER_SETTLE_S = 0.4
 # Tool names cursor treats as shell-ish, for the card's coarse operation_type.
 _SHELL_TOOL_NAMES = frozenset({"shell", "run", "runterminalcmd", "terminal", "bash"})
 
+# Tool names (lower-cased, underscores removed) that only read, list, search or
+# plan. Cursor never gates these behind an approval prompt in the workspace, yet
+# their pending marker lingers while they run, so they never surface a card.
+# Gateable kinds (edit/StrReplace, Write, Delete, shell, MCP/CallDynamicTool,
+# web fetch/search, mode switch) are deliberately absent.
+_READ_ONLY_TOOL_NAMES = frozenset(
+    {
+        "read",
+        "readfile",
+        "readlints",
+        "grep",
+        "rg",
+        "glob",
+        "ls",
+        "listdir",
+        "semanticsearch",
+        "codebasesearch",
+        "filesearch",
+        "todowrite",
+        "readtodos",
+        "awaitshell",
+        "getdynamictools",
+        "listmcpresources",
+        "fetchmcpresource",
+    }
+)
+
 # Tool names that are structured multiple-choice questions, not approval gates.
 # These surface as an interactive question form (not approve/reject) and are
 # answered by driving the TUI picker rather than a single y/Escape keystroke.
@@ -353,7 +384,9 @@ _YOLO_ACCEPT_MAX_RETRY_S = 5.0
 _YOLO_ACCEPT_TIMEOUT_S = 30.0
 
 # Cursor's approval block advertises its accept key as a parenthesised hint on
-# the chosen option line, e.g. ``→ Run (once) (y)``. Auto-accept requires that
+# the chosen option line, e.g. ``→ Run (once) (y)``. The pinned CLI renders the
+# same ``(y)`` hint for shell (``Run (once)``), MCP (``Run (once)``), file write
+# and edit (``Proceed``), delete, web fetch and search. Auto-accept requires that
 # hint to be on screen before it sends anything, so a stale pending marker with
 # no prompt rendered never types a literal ``y`` into cursor's composer. A
 # wording change leaves the native prompt available in the embedded terminal.
@@ -389,6 +422,11 @@ def cursor_launch_args_enable_yolo(args: list[str] | None) -> bool:
         if sep and name in _YOLO_FLAGS and value.strip().lower() not in _YOLO_FALSEY_VALUES:
             return True
     return False
+
+
+def _is_read_only_call(call: CursorPendingToolCall) -> bool:
+    """Whether *call* is a read/list/search/plan tool that never needs approval."""
+    return call.tool_name.lower().replace("_", "") in _READ_ONLY_TOOL_NAMES
 
 
 def _pane_shows_accept_prompt(pane: str) -> bool:
@@ -1007,11 +1045,22 @@ async def supervise_cursor_transcript_elicitations(
                             )
                         if outcome is not _YoloAccept.SURFACE_CARD:
                             continue
-                    source = "settle-only"
-                    # The observed Cursor shell gate advertises its accept key in
-                    # the live pane. Other gate kinds lack a verified pane signature.
-                    if not auto_accept_approvals and call.tool_name.lower() in _SHELL_TOOL_NAMES:
-                        if len(pending_calls) != 1:
+                    if _is_question_call(call):
+                        source = "question"
+                    elif _is_read_only_call(call):
+                        # Read-only tools never need approval, so a lingering
+                        # marker (or a failed yolo accept) never makes a card.
+                        continue
+                    elif auto_accept_approvals:
+                        # Yolo already confirmed a visible gate (or a dead pane)
+                        # before handing the call back to the card path.
+                        source = "yolo-fallback"
+                    else:
+                        # Every other kind surfaces only while the pane shows
+                        # Cursor's accept prompt and exactly one gateable call
+                        # is pending (the pane renders one prompt at a time).
+                        gateable = [c for c in pending_calls if not _is_read_only_call(c)]
+                        if len(gateable) != 1:
                             continue
                         pane = await asyncio.to_thread(capture_cursor_pane, bridge_dir)
                         if not pane or not _pane_shows_accept_prompt(pane):

@@ -373,6 +373,8 @@ async def test_supervise_transcript_parks_new_call_then_releases_on_resolve(
     monkeypatch.setattr(cnp, "read_cursor_pending_tool_calls", lambda _s: list(pending_now))
     # Keystroke + park boundaries faked.
     monkeypatch.setattr(cnp, "send_cursor_pane_keys", lambda *_a, **_k: None)
+    # A non-question gate surfaces only while the pane shows its accept prompt.
+    monkeypatch.setattr(cnp, "capture_cursor_pane", lambda _bridge: _DELETE_PANE)
 
     class _Resp:
         status_code = 200
@@ -593,6 +595,18 @@ _ACCEPT_PANE = (
     "    Run Everything (shift+tab)\n"
     "    Skip (esc or n)\n"
 )
+# Panes for the other gateable kinds, with the labels and ``(y)`` hints the
+# pinned cursor-agent CLI (2026.11.22) renders for them.
+_EDIT_PANE = (
+    " Write to this file?\n"
+    "  → Proceed (y)\n"
+    "    Reject & propose changes (esc or n or p)\n"
+    "    Add Write(src/app.py) to allowlist? (tab)\n"
+)
+_MCP_PANE = (
+    " Run this MCP tool?\n  → Run (once) (y)\n    Allowlist MCP Tool (tab)\n    Skip (esc or n)\n"
+)
+_DELETE_PANE = " Delete this file?\n  → Delete (y)\n    Keep (n)\n"
 # A live pane with no gate on screen — the stale-marker case, where a keystroke
 # would land in cursor's composer instead of answering anything.
 _IDLE_PANE = "  ~/ws\n  Ask me anything…\n"
@@ -1281,16 +1295,33 @@ async def test_supervise_transcript_follows_forwarder_bound_store(
         ("Shell", _ACCEPT_PANE, [0.0, 3.9, 4.1], False, 0, []),
         ("Shell", _IDLE_PANE, [0.0, 4.1, 5.0], False, 0, []),
         ("Shell", _ACCEPT_PANE, [0.0, 4.1, 5.0], True, 1, [("y",)]),
+        # Read-only tools never gate; a marker pending for minutes is just a
+        # running tool, even with some other prompt on screen.
+        ("Read", _IDLE_PANE, [0.0, 30.0, 160.0], False, 0, []),
+        ("Grep", _ACCEPT_PANE, [0.0, 30.0, 160.0], False, 0, []),
+        # Edits / MCP calls pending far past the settle window with no prompt
+        # on screen are not approvals either (the settle-only false cards).
+        ("StrReplace", _IDLE_PANE, [0.0, 30.0, 160.0], False, 0, []),
+        ("CallDynamicTool", _IDLE_PANE, [0.0, 30.0, 160.0], False, 0, []),
+        # With the pane prompt up they surface and a web answer drives the pane.
+        ("StrReplace", _EDIT_PANE, [0.0, 4.1, 5.0], True, 1, [("y",)]),
+        ("CallDynamicTool", _MCP_PANE, [0.0, 4.1, 5.0], True, 1, [("y",)]),
         ("AskQuestion", _IDLE_PANE, [0.0, 4.1, 5.0], False, 1, []),
     ],
     ids=[
         "cleared-before-settle",
         "shell-without-prompt",
         "shell-prompt-answered",
+        "read-long-pending",
+        "grep-long-pending-with-prompt-on-screen",
+        "edit-long-pending-without-prompt",
+        "mcp-long-pending-without-prompt",
+        "edit-prompt-answered",
+        "mcp-prompt-answered",
         "structured-question",
     ],
 )
-async def test_supervisor_requires_settle_and_shell_prompt(
+async def test_supervisor_surfaces_only_pane_corroborated_gates(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     tool_name: str,
@@ -1300,7 +1331,7 @@ async def test_supervisor_requires_settle_and_shell_prompt(
     expected_hooks: int,
     expected_keys: list[tuple[str, ...]],
 ) -> None:
-    """A slow pending shell marker must not become a false approval card."""
+    """A slow pending marker alone is never an approval card; only a pane prompt makes one."""
     pending = [CursorPendingToolCall("call_test", tool_name, _ASKQUESTION_ARGS)]
     posts, keys = _install_supervisor_fakes(monkeypatch, tmp_path, pending=pending, pane=pane)
     ticks = iter(frames)
@@ -1343,6 +1374,30 @@ async def test_supervisor_requires_settle_and_shell_prompt(
     assert len(_hook_posts(posts)) == expected_hooks
     assert keys == expected_keys
     assert not any(payload.get("type") == "external_elicitation_resolved" for _, payload in posts)
+
+
+async def test_stale_read_marker_does_not_block_pane_corroborated_edit_card(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Read-only markers do not count toward "exactly one call is pending".
+
+    Cursor shows one prompt at a time and never prompts for reads, so a stale
+    pending Read beside a real edit gate must not hide the edit's approval card.
+    Two gateable calls pending together stay ambiguous and surface nothing.
+    """
+    read = CursorPendingToolCall("call_read", "Read", {"path": "/ws/a.py"})
+    edit = CursorPendingToolCall("call_edit", "StrReplace", {"path": "/ws/a.py"})
+    other = CursorPendingToolCall("call_edit2", "Write", {"path": "/ws/b.py"})
+    pending = [read, edit, other]
+    posts, _keys = _install_supervisor_fakes(
+        monkeypatch, tmp_path, pending=pending, pane=_EDIT_PANE
+    )
+    task = _start_supervisor(tmp_path, session_id="conv_amb", auto_accept_approvals=False)
+    assert not await _wait_for(lambda: bool(_hook_posts(posts)), timeout_s=0.3)
+    pending.remove(other)
+    assert await _wait_for(lambda: len(_hook_posts(posts)) == 1)
+    await _stop(task)
+    assert "StrReplace" in _hook_posts(posts)[0][1]["message"]
 
 
 @pytest.mark.parametrize(
